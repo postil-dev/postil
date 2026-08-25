@@ -1,8 +1,18 @@
 import { apiBase } from "@/lib/github/app-auth";
 import { isPostilBotLogin } from "@/lib/github/conversation";
+import { isValidGitHubRepositoryFullName } from "@/lib/github/repository-identity";
 
 const PAGE_SIZE = 25;
 const MAX_PAGES = 80;
+const MAX_FINDINGS = 64;
+const MAX_MARKERS = 16;
+const MAX_TEXT_BYTES = 128 * 1024;
+const MAX_CHECK_SUMMARY_BYTES = 65_535;
+const MAX_AGGREGATE_TEXT_BYTES = 4 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
+const MAX_PATH_BYTES = 4_096;
+const MAX_DETAILS_URL_BYTES = 2_048;
+const MAX_ANNOTATIONS_PER_REQUEST = 50;
 const MAXIMUM_RESPONSE_BYTES = 16_777_216;
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -14,12 +24,14 @@ export interface GitHubReviewCommentIntent {
   startSide?: "LEFT" | "RIGHT";
   body: string;
   marker: string;
+  compatibleMarkers?: readonly string[];
 }
 
 export interface GitHubCompositeReviewIntent {
   commitId: string;
   body: string;
   marker: string;
+  compatibleMarkers?: readonly string[];
   comments: GitHubReviewCommentIntent[];
 }
 
@@ -28,6 +40,12 @@ export interface GitHubFileCommentIntent {
   path: string;
   body: string;
   marker: string;
+  compatibleMarkers?: readonly string[];
+}
+
+export interface GitHubFindingMarkerSet {
+  marker: string;
+  compatibleMarkers?: readonly string[];
 }
 
 export interface GitHubReviewObservation {
@@ -36,6 +54,12 @@ export interface GitHubReviewObservation {
   body: string;
   commentIdsByMarker: Record<string, string>;
   missingCommentMarkers: string[];
+}
+
+export interface GitHubReviewIdentityObservation {
+  reviewId: string;
+  commitId: string;
+  body: string;
 }
 
 export interface GitHubFileCommentObservation {
@@ -49,7 +73,7 @@ export interface GitHubReviewCommentUpdateIntent {
   commentId: string;
   commitId: string;
   path: string;
-  expectedMarkers: string[];
+  expectedMarkers: readonly string[];
   body: string;
 }
 
@@ -83,6 +107,17 @@ export interface GitHubCheckRunCompletionIntent
   readonly title: string;
   readonly summary: string;
   readonly annotations?: readonly GitHubCheckRunAnnotationIntent[];
+}
+
+export interface GitHubCheckRunObservation {
+  readonly checkRunId: string;
+  readonly status: string;
+  readonly conclusion: string | null;
+}
+
+export interface GitHubCheckRunCompletionObservation
+  extends GitHubCheckRunObservation {
+  readonly desiredState: "applied" | "retryable" | "conflict";
 }
 
 export class GitHubReviewPlacementRejectedError extends Error {
@@ -175,6 +210,11 @@ interface GitHubAppIdentity {
   id: number;
 }
 
+interface NormalizedMarkerSet {
+  marker: string;
+  markers: readonly string[];
+}
+
 /** Create one owned in-progress check run and reconcile an uncertain POST. */
 export async function createGitHubCheckRun(
   token: string,
@@ -248,7 +288,57 @@ export async function createGitHubCheckRun(
   );
 }
 
-/** Complete one owned check run after proving its immutable identity. */
+/** Find one exact owned check run, returning null only for proven absence. */
+export async function findGitHubCheckRunByExternalId(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunStartIntent,
+  signal?: AbortSignal,
+): Promise<GitHubCheckRunObservation | null> {
+  validateCheckRunStartIntent(intent);
+  const githubApp = configuredGithubAppIdentity(intent);
+  const matches = await listExactCheckRuns(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    signal,
+  );
+  const run = matches[0];
+  return run === undefined
+    ? null
+    : {
+        checkRunId: String(run.id),
+        status: run.status ?? "",
+        conclusion: run.conclusion ?? null,
+      };
+}
+
+/** Observe whether one owned check run has the requested terminal state. */
+export async function observeGitHubCheckRunCompletion(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  signal?: AbortSignal,
+): Promise<GitHubCheckRunCompletionObservation> {
+  validateCheckRunCompletionIntent(intent);
+  const githubApp = configuredGithubAppIdentity(intent);
+  const { run, annotations } = await observeExactCheckRunCompletion(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    signal,
+  );
+  return {
+    checkRunId: String(run.id),
+    status: run.status ?? "",
+    conclusion: run.conclusion ?? null,
+    desiredState: classifyCheckRunCompletion(run, annotations, intent),
+  };
+}
+
+/** Complete one owned check run with resumable annotation batches. */
 export async function completeGitHubCheckRun(
   token: string,
   repoFullName: string,
@@ -258,35 +348,71 @@ export async function completeGitHubCheckRun(
   validateCheckRunCompletionIntent(intent);
   const githubApp = configuredGithubAppIdentity(intent);
   signal?.throwIfAborted();
-  const current = await getExactCheckRun(
+  const observed = await observeExactCheckRunCompletion(
     token,
     repoFullName,
     intent,
     githubApp,
     signal,
   );
-  const currentAnnotations = await getExactCheckRunAnnotations(
-    token,
-    repoFullName,
-    intent,
-    signal,
-  );
   const annotations = intent.annotations ?? [];
   const desiredAnnotations = normalizeCheckRunAnnotations(annotations);
-  const annotationsAreExact = checkRunAnnotationsEqual(
-    currentAnnotations,
-    desiredAnnotations,
+  const observedState = classifyCheckRunCompletion(
+    observed.run,
+    observed.annotations,
+    intent,
   );
-  if (current.status === "completed") {
-    if (isExactCompletedCheckRun(current, intent) && annotationsAreExact) return;
+  if (observedState === "applied") return;
+  if (observedState === "conflict") {
     throw new GitHubPublicationAmbiguousError("check-run completion terminal state");
   }
-  if (!annotationsAreExact && currentAnnotations.length > 0) {
-    throw new GitHubPublicationAmbiguousError("check-run completion annotations");
+
+  let publishedAnnotationCount = observed.annotations.length;
+  while (true) {
+    signal?.throwIfAborted();
+    const remaining = annotations.slice(publishedAnnotationCount);
+    const finalPayload = buildCheckRunPatch(intent, remaining, true);
+    if (
+      remaining.length <= MAX_ANNOTATIONS_PER_REQUEST &&
+      serializedJsonByteLength(finalPayload) <= MAX_REQUEST_BYTES
+    ) {
+      await completeGitHubCheckRunWithPayload(
+        token,
+        repoFullName,
+        intent,
+        githubApp,
+        finalPayload,
+        signal,
+      );
+      return;
+    }
+
+    const chunk = largestCheckRunAnnotationChunk(intent, remaining);
+    const expectedPrefix = desiredAnnotations.slice(
+      0,
+      publishedAnnotationCount + chunk.length,
+    );
+    await appendGitHubCheckRunAnnotations(
+      token,
+      repoFullName,
+      intent,
+      githubApp,
+      chunk,
+      expectedPrefix,
+      signal,
+    );
+    publishedAnnotationCount += chunk.length;
   }
-  if (intent.detailsUrl === undefined && current.details_url != null) {
-    throw new GitHubPublicationAmbiguousError("check-run completion details URL");
-  }
+}
+
+async function completeGitHubCheckRunWithPayload(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  githubApp: GitHubAppIdentity,
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<void> {
   signal?.throwIfAborted();
 
   const path = `${repositoryPath(repoFullName)}/check-runs/${intent.checkRunId}`;
@@ -296,40 +422,7 @@ export async function completeGitHubCheckRun(
       token,
       "PATCH",
       path,
-      {
-        status: "completed",
-        conclusion: intent.conclusion,
-        output: {
-          title: intent.title,
-          summary: intent.summary,
-          ...(annotationsAreExact || desiredAnnotations.length === 0
-            ? {}
-            : {
-                annotations: annotations.map((annotation) => ({
-                  path: annotation.path,
-                  start_line: annotation.startLine,
-                  end_line: annotation.endLine,
-                  annotation_level: annotation.annotationLevel,
-                  message: annotation.message,
-                  ...(annotation.title === undefined
-                    ? {}
-                    : { title: annotation.title }),
-                  ...(annotation.rawDetails === undefined
-                    ? {}
-                    : { raw_details: annotation.rawDetails }),
-                  ...(annotation.startColumn === undefined
-                    ? {}
-                    : { start_column: annotation.startColumn }),
-                  ...(annotation.endColumn === undefined
-                    ? {}
-                    : { end_column: annotation.endColumn }),
-                })),
-              }),
-        },
-        ...(intent.detailsUrl === undefined
-          ? {}
-          : { details_url: intent.detailsUrl }),
-      },
+      payload,
       signal,
     );
   } catch (error) {
@@ -404,14 +497,41 @@ export async function publishGitHubCompositeReview(
 ): Promise<GitHubReviewObservation> {
   const path = pullRequestPath(repoFullName, pullRequestNumber);
   validateSha(intent.commitId);
-  validateMarker(intent.marker, "review");
-  requireMarker(intent.body, intent.marker);
+  const reviewMarkers = validateMarkerSet(
+    intent.marker,
+    intent.compatibleMarkers,
+    "review",
+  );
+  requireAnyMarker(intent.body, reviewMarkers);
+  if (!Array.isArray(intent.comments) || intent.comments.length > MAX_FINDINGS) {
+    throw invalidIntent();
+  }
   for (const comment of intent.comments) {
     validateReviewComment(comment);
   }
-  validateUniqueFindingMarkers(
-    intent.comments.map((comment) => comment.marker),
-  );
+  const commentMarkerSets = validateUniqueFindingMarkerSets(intent.comments);
+  validateAggregateTextBytes([
+    intent.body,
+    ...intent.comments.map((comment) => comment.body),
+  ]);
+  const payload = {
+    commit_id: intent.commitId,
+    event: "COMMENT",
+    body: intent.body,
+    comments: intent.comments.map((comment) => ({
+      path: comment.path,
+      line: comment.line,
+      side: comment.side,
+      ...(comment.startLine === undefined
+        ? {}
+        : { start_line: comment.startLine }),
+      ...(comment.startSide === undefined
+        ? {}
+        : { start_side: comment.startSide }),
+      body: comment.body,
+    })),
+  };
+  requireSerializedRequestWithinLimit(payload);
   signal?.throwIfAborted();
 
   let response: Response;
@@ -420,23 +540,7 @@ export async function publishGitHubCompositeReview(
       token,
       "POST",
       `${path}/reviews`,
-      {
-        commit_id: intent.commitId,
-        event: "COMMENT",
-        body: intent.body,
-        comments: intent.comments.map((comment) => ({
-          path: comment.path,
-          line: comment.line,
-          side: comment.side,
-          ...(comment.startLine === undefined
-            ? {}
-            : { start_line: comment.startLine }),
-          ...(comment.startSide === undefined
-            ? {}
-            : { start_side: comment.startSide }),
-          body: comment.body,
-        })),
-      },
+      payload,
       signal,
     );
   } catch (error) {
@@ -455,14 +559,14 @@ export async function publishGitHubCompositeReview(
       const review = parseReview(
         await readBoundedJson(response),
         intent.commitId,
-        intent.marker,
+        reviewMarkers,
       );
       return await materializeReviewObservation(
         token,
         repoFullName,
         pullRequestNumber,
         review,
-        intent.comments.map((comment) => comment.marker),
+        commentMarkerSets,
         signal,
       );
     } catch (error) {
@@ -506,12 +610,30 @@ export async function findGitHubReviewByMarker(
   marker: string,
   commitId: string,
   signal?: AbortSignal,
-): Promise<{ reviewId: string; commitId: string; body: string } | null> {
-  validateMarker(marker, "review");
+): Promise<GitHubReviewIdentityObservation | null> {
+  return findGitHubReviewByMarkers(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    [marker],
+    commitId,
+    signal,
+  );
+}
+
+/** Find one submitted review across one compatible marker set. */
+export async function findGitHubReviewByMarkers(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  markers: readonly string[],
+  commitId: string,
+  signal?: AbortSignal,
+): Promise<GitHubReviewIdentityObservation | null> {
+  validateMarkerList(markers, "review");
   validateSha(commitId);
   const path = pullRequestPath(repoFullName, pullRequestNumber);
-  const matches: Array<{ reviewId: string; commitId: string; body: string }> =
-    [];
+  let match: GitHubReviewIdentityObservation | undefined;
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const response = await requestGitHub(
       token,
@@ -533,14 +655,18 @@ export async function findGitHubReviewByMarker(
       const review = candidate as ReviewResponse;
       if (
         typeof review?.body !== "string" ||
-        !review.body.includes(marker) ||
+        !includesAnyMarker(review.body, markers) ||
         !isPostilBotLogin(review.user?.login ?? undefined)
       ) {
         continue;
       }
       try {
-        matches.push(parseReview(candidate, commitId, marker));
+        if (match !== undefined) {
+          throw new GitHubPublicationAmbiguousError("review marker identity");
+        }
+        match = parseReview(candidate, commitId, markers);
       } catch (error) {
+        if (error instanceof GitHubPublicationAmbiguousError) throw error;
         throw new GitHubPublicationAmbiguousError("review marker identity", {
           cause: error,
         });
@@ -551,10 +677,58 @@ export async function findGitHubReviewByMarker(
       throw new GitHubPublicationAmbiguousError("review marker search");
     }
   }
-  if (matches.length > 1) {
-    throw new GitHubPublicationAmbiguousError("review marker identity");
-  }
-  return matches[0] ?? null;
+  return match ?? null;
+}
+
+/** Observe one exact composite review and its compatible finding identities. */
+export async function observeGitHubCompositeReviewByMarkers(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  reviewMarkers: readonly string[],
+  commitId: string,
+  expectedCommentMarkers: readonly (string | GitHubFindingMarkerSet)[],
+  signal?: AbortSignal,
+): Promise<GitHubReviewObservation | null> {
+  const markerSets = validateExpectedCommentMarkerSets(expectedCommentMarkers);
+  const review = await findGitHubReviewByMarkers(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    reviewMarkers,
+    commitId,
+    signal,
+  );
+  if (review === null) return null;
+  return materializeReviewObservation(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    review,
+    markerSets,
+    signal,
+  );
+}
+
+/** Observe one exact composite review by its released primary marker. */
+export async function observeGitHubCompositeReviewByMarker(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  marker: string,
+  commitId: string,
+  expectedCommentMarkers: readonly (string | GitHubFindingMarkerSet)[],
+  signal?: AbortSignal,
+): Promise<GitHubReviewObservation | null> {
+  return observeGitHubCompositeReviewByMarkers(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    [marker],
+    commitId,
+    expectedCommentMarkers,
+    signal,
+  );
 }
 
 /** Replace a review summary only after observing the exact durable identity. */
@@ -564,21 +738,22 @@ export async function updateGitHubReviewSummary(
   pullRequestNumber: number,
   reviewId: string,
   commitId: string,
-  marker: string,
+  marker: string | readonly string[],
   body: string,
   signal?: AbortSignal,
-): Promise<{ reviewId: string; commitId: string; body: string }> {
+): Promise<GitHubReviewIdentityObservation> {
   validateRemoteId(reviewId);
   validateSha(commitId);
-  validateMarker(marker, "review");
-  requireMarker(body, marker);
+  const markers = typeof marker === "string" ? [marker] : marker;
+  validateMarkerList(markers, "review");
+  requireAnyMarker(body, markers);
   const current = await getExactReview(
     token,
     repoFullName,
     pullRequestNumber,
     reviewId,
     commitId,
-    marker,
+    markers,
     signal,
   );
   if (current.body === body) return current;
@@ -587,14 +762,13 @@ export async function updateGitHubReviewSummary(
   const path = `${pullRequestPath(repoFullName, pullRequestNumber)}/reviews/${reviewId}`;
   try {
     const response = await requestGitHub(token, "PUT", path, { body }, signal);
+    await response.body?.cancel().catch(() => undefined);
     if (!response.ok && response.status < 500) {
-      await response.body?.cancel().catch(() => undefined);
       throw new GitHubPublicationRejectedError(
         "review summary update",
         response.status,
       );
     }
-    if (!response.ok) await response.body?.cancel().catch(() => undefined);
   } catch (error) {
     const reconciled = await getExactReview(
       token,
@@ -602,7 +776,7 @@ export async function updateGitHubReviewSummary(
       pullRequestNumber,
       reviewId,
       commitId,
-      marker,
+      markers,
       signal,
     ).catch(() => null);
     if (reconciled?.body === body) return reconciled;
@@ -617,7 +791,7 @@ export async function updateGitHubReviewSummary(
     pullRequestNumber,
     reviewId,
     commitId,
-    marker,
+    markers,
     signal,
   ).catch((error) => {
     throw new GitHubPublicationAmbiguousError("review summary verification", {
@@ -640,8 +814,13 @@ export async function publishGitHubFileComment(
 ): Promise<GitHubFileCommentObservation> {
   validateSha(intent.commitId);
   validatePath(intent.path);
-  validateMarker(intent.marker, "finding");
-  requireMarker(intent.body, intent.marker);
+  const markers = validateMarkerSet(
+    intent.marker,
+    intent.compatibleMarkers,
+    "finding",
+  );
+  requireAnyMarker(intent.body, markers);
+  validateAggregateTextBytes([intent.body]);
   const path = `${pullRequestPath(repoFullName, pullRequestNumber)}/comments`;
   signal?.throwIfAborted();
   let response: Response;
@@ -674,7 +853,7 @@ export async function publishGitHubFileComment(
         await readBoundedJson(response),
         intent.commitId,
         intent.path,
-        intent.marker,
+        markers,
       );
     } catch (error) {
       return reconcileFileComment(
@@ -708,6 +887,60 @@ export async function publishGitHubFileComment(
   );
 }
 
+/** Find one exact owned file comment, returning null only for proven absence. */
+export async function findGitHubFileCommentByMarker(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  intent: GitHubFileCommentIntent,
+  signal?: AbortSignal,
+): Promise<GitHubFileCommentObservation | null> {
+  return findGitHubFileCommentByMarkers(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    intent.commitId,
+    intent.path,
+    validateMarkerSet(intent.marker, intent.compatibleMarkers, "finding"),
+    signal,
+  );
+}
+
+/** Find one exact owned file comment across compatible markers. */
+export async function findGitHubFileCommentByMarkers(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  commitId: string,
+  path: string,
+  markers: readonly string[],
+  signal?: AbortSignal,
+): Promise<GitHubFileCommentObservation | null> {
+  validateSha(commitId);
+  validatePath(path);
+  validateMarkerList(markers, "finding");
+  return listGitHubFileCommentByMarkers(
+    token,
+    repoFullName,
+    pullRequestNumber,
+    commitId,
+    path,
+    markers,
+    signal,
+  );
+}
+
+/** Observe one exact owned review comment without changing it. */
+export async function observeGitHubReviewComment(
+  token: string,
+  repoFullName: string,
+  intent: GitHubReviewCommentUpdateIntent,
+  signal?: AbortSignal,
+): Promise<GitHubFileCommentObservation> {
+  validateReviewCommentUpdateIntent(intent);
+  return getExactReviewComment(token, repoFullName, intent, signal);
+}
+
 /** Replace one owned review comment after observing its exact durable identity. */
 export async function updateGitHubReviewComment(
   token: string,
@@ -715,11 +948,7 @@ export async function updateGitHubReviewComment(
   intent: GitHubReviewCommentUpdateIntent,
   signal?: AbortSignal,
 ): Promise<GitHubFileCommentObservation> {
-  validateRemoteId(intent.commentId);
-  validateSha(intent.commitId);
-  validatePath(intent.path);
-  validateExpectedMarkers(intent.expectedMarkers);
-  requireAnyMarker(intent.body, intent.expectedMarkers);
+  validateReviewCommentUpdateIntent(intent);
   const current = await getExactReviewComment(
     token,
     repoFullName,
@@ -798,11 +1027,17 @@ async function reconcileCompositeReview(
   cause: unknown,
 ): Promise<GitHubReviewObservation> {
   try {
-    const review = await findGitHubReviewByMarker(
+    const reviewMarkers = validateMarkerSet(
+      intent.marker,
+      intent.compatibleMarkers,
+      "review",
+    );
+    const commentMarkerSets = validateUniqueFindingMarkerSets(intent.comments);
+    const review = await findGitHubReviewByMarkers(
       token,
       repoFullName,
       pullRequestNumber,
-      intent.marker,
+      reviewMarkers,
       intent.commitId,
       signal,
     );
@@ -814,7 +1049,7 @@ async function reconcileCompositeReview(
       repoFullName,
       pullRequestNumber,
       review,
-      intent.comments.map((comment) => comment.marker),
+      commentMarkerSets,
       signal,
     );
   } catch (error) {
@@ -834,27 +1069,35 @@ async function materializeReviewObservation(
   token: string,
   repoFullName: string,
   pullRequestNumber: number,
-  review: { reviewId: string; commitId: string; body: string },
-  expectedCommentMarkers: string[],
+  review: GitHubReviewIdentityObservation,
+  expectedCommentMarkers: readonly NormalizedMarkerSet[],
   signal?: AbortSignal,
 ): Promise<GitHubReviewObservation> {
-  validateUniqueFindingMarkers(expectedCommentMarkers);
+  if (expectedCommentMarkers.length === 0) {
+    return {
+      ...review,
+      commentIdsByMarker: {},
+      missingCommentMarkers: [],
+    };
+  }
+  const allMarkers = expectedCommentMarkers.flatMap((entry) => entry.markers);
   const comments = await listReviewComments(
     token,
     repoFullName,
     pullRequestNumber,
     review.reviewId,
-    expectedCommentMarkers,
+    allMarkers,
+    expectedCommentMarkers.length + 1,
     signal,
   );
   const commentIdsByMarker: Record<string, string> = {};
   const missingCommentMarkers: string[] = [];
   const claimedCommentIds = new Set<string>();
-  for (const marker of expectedCommentMarkers) {
+  for (const markerSet of expectedCommentMarkers) {
     const matches = comments.filter(
       (comment) =>
         typeof comment.body === "string" &&
-        comment.body.includes(marker) &&
+        includesAnyMarker(comment.body, markerSet.markers) &&
         isPostilBotLogin(comment.user?.login ?? undefined),
     );
     for (const comment of matches) {
@@ -877,7 +1120,7 @@ async function materializeReviewObservation(
     }
     const commentId = matches[0]?.id;
     if (commentId === undefined) {
-      missingCommentMarkers.push(marker);
+      missingCommentMarkers.push(markerSet.marker);
       continue;
     }
     const remoteId = String(commentId);
@@ -887,7 +1130,7 @@ async function materializeReviewObservation(
       );
     }
     claimedCommentIds.add(remoteId);
-    commentIdsByMarker[marker] = remoteId;
+    commentIdsByMarker[markerSet.marker] = remoteId;
   }
   return {
     ...review,
@@ -901,7 +1144,8 @@ async function listReviewComments(
   repoFullName: string,
   pullRequestNumber: number,
   reviewId: string,
-  expectedMarkers: string[],
+  expectedMarkers: readonly string[],
+  maximumMatches: number,
   signal?: AbortSignal,
 ): Promise<ReviewCommentResponse[]> {
   validateRemoteId(reviewId);
@@ -924,14 +1168,20 @@ async function listReviewComments(
     }
     const value = await readBoundedJson(response);
     if (!Array.isArray(value)) throw malformedResponse();
-    comments.push(
-      ...(value as ReviewCommentResponse[]).filter(
-        (comment) =>
-          typeof comment?.body === "string" &&
-          expectedMarkers.some((marker) => comment.body!.includes(marker)) &&
-          isPostilBotLogin(comment.user?.login ?? undefined),
-      ),
-    );
+    for (const comment of value as ReviewCommentResponse[]) {
+      if (
+        typeof comment?.body === "string" &&
+        includesAnyMarker(comment.body, expectedMarkers) &&
+        isPostilBotLogin(comment.user?.login ?? undefined)
+      ) {
+        if (comments.length === maximumMatches) {
+          throw new GitHubPublicationAmbiguousError(
+            "review comment marker identity",
+          );
+        }
+        comments.push(comment);
+      }
+    }
     if (!hasNextPage(response)) return comments;
   }
   throw new GitHubPublicationAmbiguousError("review comment pagination");
@@ -945,59 +1195,83 @@ async function reconcileFileComment(
   signal: AbortSignal | undefined,
   cause: unknown,
 ): Promise<GitHubFileCommentObservation> {
-  const path = `${pullRequestPath(repoFullName, pullRequestNumber)}/comments`;
-  const matches: GitHubFileCommentObservation[] = [];
   try {
-    for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const response = await requestGitHub(
-        token,
-        "GET",
-        `${path}?sort=created&direction=asc&per_page=${PAGE_SIZE}&page=${page}`,
-        undefined,
-        signal,
-      );
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new GitHubPublicationRejectedError(
-          "file comment reconciliation",
-          response.status,
-        );
-      }
-      const value = await readBoundedJson(response);
-      if (!Array.isArray(value)) throw malformedResponse();
-      for (const candidate of value) {
-        const comment = candidate as ReviewCommentResponse;
-        if (
-          Number.isSafeInteger(comment.id) &&
-          comment.id! > 0 &&
-          comment.original_commit_id === intent.commitId &&
-          comment.path === intent.path &&
-          comment.subject_type === "file" &&
-          typeof comment.body === "string" &&
-          comment.body.includes(intent.marker) &&
-          isPostilBotLogin(comment.user?.login ?? undefined)
-        ) {
-          matches.push({
-            commentId: String(comment.id),
-            commitId: comment.original_commit_id,
-            path: comment.path,
-            body: comment.body,
-          });
-        }
-      }
-      if (!hasNextPage(response)) break;
-      if (page === MAX_PAGES) {
-        throw new GitHubPublicationAmbiguousError("file comment marker search");
-      }
-    }
+    const match = await findGitHubFileCommentByMarker(
+      token,
+      repoFullName,
+      pullRequestNumber,
+      intent,
+      signal,
+    );
+    if (match !== null) return match;
   } catch (error) {
     if (error instanceof GitHubPublicationAmbiguousError) throw error;
     throw new GitHubPublicationAmbiguousError("file comment reconciliation", {
       cause: error,
     });
   }
-  if (matches.length === 1) return matches[0]!;
   throw new GitHubPublicationAmbiguousError("file review comment", { cause });
+}
+
+async function listGitHubFileCommentByMarkers(
+  token: string,
+  repoFullName: string,
+  pullRequestNumber: number,
+  commitId: string,
+  expectedPath: string,
+  markers: readonly string[],
+  signal?: AbortSignal,
+): Promise<GitHubFileCommentObservation | null> {
+  const path = `${pullRequestPath(repoFullName, pullRequestNumber)}/comments`;
+  let match: GitHubFileCommentObservation | undefined;
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const response = await requestGitHub(
+      token,
+      "GET",
+      `${path}?sort=created&direction=asc&per_page=${PAGE_SIZE}&page=${page}`,
+      undefined,
+      signal,
+    );
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new GitHubPublicationRejectedError(
+        "file comment reconciliation",
+        response.status,
+      );
+    }
+    const value = await readBoundedJson(response);
+    if (!Array.isArray(value)) throw malformedResponse();
+    for (const candidate of value) {
+      const comment = candidate as ReviewCommentResponse;
+      if (
+        Number.isSafeInteger(comment.id) &&
+        comment.id! > 0 &&
+        comment.original_commit_id === commitId &&
+        comment.path === expectedPath &&
+        comment.subject_type === "file" &&
+        typeof comment.body === "string" &&
+        includesAnyMarker(comment.body, markers) &&
+        isPostilBotLogin(comment.user?.login ?? undefined)
+      ) {
+        if (match !== undefined) {
+          throw new GitHubPublicationAmbiguousError(
+            "file comment marker identity",
+          );
+        }
+        match = {
+          commentId: String(comment.id),
+          commitId: comment.original_commit_id,
+          path: comment.path,
+          body: comment.body,
+        };
+      }
+    }
+    if (!hasNextPage(response)) return match ?? null;
+    if (page === MAX_PAGES) {
+      throw new GitHubPublicationAmbiguousError("file comment marker search");
+    }
+  }
+  throw new GitHubPublicationAmbiguousError("file comment pagination");
 }
 
 async function reconcileReviewCommentUpdate(
@@ -1031,45 +1305,14 @@ async function reconcileCheckRunCreation(
   cause: unknown,
 ): Promise<string> {
   try {
-    const matches: string[] = [];
-    for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const query = new URLSearchParams({
-        check_name: intent.name,
-        filter: "all",
-        per_page: String(PAGE_SIZE),
-        page: String(page),
-      });
-      const response = await requestGitHub(
-        token,
-        "GET",
-        `${repositoryPath(repoFullName)}/commits/${encodeURIComponent(intent.headSha)}/check-runs?${query}`,
-        undefined,
-        signal,
-      );
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new GitHubPublicationRejectedError(
-          "check-run creation reconciliation",
-          response.status,
-        );
-      }
-      const value = await readBoundedJson(response);
-      const checkRuns = (value as { check_runs?: unknown })?.check_runs;
-      if (!Array.isArray(checkRuns)) throw malformedResponse();
-      for (const candidate of checkRuns) {
-        const run = candidate as CheckRunResponse;
-        if (matchesCheckRunIdentity(run, intent, githubApp)) {
-          matches.push(String(run.id));
-        }
-      }
-      if (!hasNextPage(response)) break;
-      if (page === MAX_PAGES) {
-        throw new GitHubPublicationAmbiguousError(
-          "check-run creation reconciliation pagination",
-        );
-      }
-    }
-    if (matches.length === 1) return matches[0]!;
+    const matches = await listExactCheckRuns(
+      token,
+      repoFullName,
+      intent,
+      githubApp,
+      signal,
+    );
+    if (matches.length === 1) return String(matches[0]!.id);
   } catch (error) {
     if (error instanceof GitHubPublicationAmbiguousError) throw error;
     throw new GitHubPublicationAmbiguousError("check-run creation", {
@@ -1077,6 +1320,313 @@ async function reconcileCheckRunCreation(
     });
   }
   throw new GitHubPublicationAmbiguousError("check-run creation", { cause });
+}
+
+async function listExactCheckRuns(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunStartIntent,
+  githubApp: GitHubAppIdentity,
+  signal?: AbortSignal,
+): Promise<Array<CheckRunResponse & { id: number }>> {
+  const matches: Array<CheckRunResponse & { id: number }> = [];
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const query = new URLSearchParams({
+      check_name: intent.name,
+      filter: "all",
+      per_page: String(PAGE_SIZE),
+      page: String(page),
+    });
+    const response = await requestGitHub(
+      token,
+      "GET",
+      `${repositoryPath(repoFullName)}/commits/${encodeURIComponent(intent.headSha)}/check-runs?${query}`,
+      undefined,
+      signal,
+    );
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new GitHubPublicationRejectedError(
+        "check-run creation reconciliation",
+        response.status,
+      );
+    }
+    const value = await readBoundedJson(response);
+    const checkRuns = (value as { check_runs?: unknown })?.check_runs;
+    if (!Array.isArray(checkRuns)) throw malformedResponse();
+    for (const candidate of checkRuns) {
+      const run = candidate as CheckRunResponse;
+      if (matchesCheckRunIdentity(run, intent, githubApp)) {
+        if (matches.length !== 0) {
+          throw new GitHubPublicationAmbiguousError("check-run identity");
+        }
+        matches.push(run);
+      }
+    }
+    if (!hasNextPage(response)) return matches;
+    if (page === MAX_PAGES) {
+      throw new GitHubPublicationAmbiguousError(
+        "check-run creation reconciliation pagination",
+      );
+    }
+  }
+  throw new GitHubPublicationAmbiguousError(
+    "check-run creation reconciliation pagination",
+  );
+}
+
+async function observeExactCheckRunCompletion(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  githubApp: GitHubAppIdentity,
+  signal?: AbortSignal,
+): Promise<{
+  run: CheckRunResponse & { id: number };
+  annotations: NormalizedCheckRunAnnotation[];
+}> {
+  const run = await getExactCheckRun(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    signal,
+  );
+  const annotations = await getExactCheckRunAnnotations(
+    token,
+    repoFullName,
+    intent,
+    signal,
+  );
+  return { run, annotations };
+}
+
+function classifyCheckRunCompletion(
+  run: CheckRunResponse,
+  annotations: readonly NormalizedCheckRunAnnotation[],
+  intent: GitHubCheckRunCompletionIntent,
+): GitHubCheckRunCompletionObservation["desiredState"] {
+  const desiredAnnotations = normalizeCheckRunAnnotations(
+    intent.annotations ?? [],
+  );
+  if (
+    isExactCompletedCheckRun(run, intent) &&
+    checkRunAnnotationsEqual(annotations, desiredAnnotations)
+  ) {
+    return "applied";
+  }
+  if (
+    run.status === "completed" ||
+    !checkRunAnnotationsArePrefix(annotations, desiredAnnotations) ||
+    (intent.detailsUrl === undefined && run.details_url != null)
+  ) {
+    return "conflict";
+  }
+  return "retryable";
+}
+
+async function appendGitHubCheckRunAnnotations(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  githubApp: GitHubAppIdentity,
+  annotations: readonly GitHubCheckRunAnnotationIntent[],
+  expectedPrefix: readonly NormalizedCheckRunAnnotation[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const path = `${repositoryPath(repoFullName)}/check-runs/${intent.checkRunId}`;
+  const payload = buildCheckRunPatch(intent, annotations, false);
+  let response: Response;
+  try {
+    response = await requestGitHub(
+      token,
+      "PATCH",
+      path,
+      payload,
+      signal,
+    );
+  } catch (error) {
+    return reconcileCheckRunAnnotationAppend(
+      token,
+      repoFullName,
+      intent,
+      githubApp,
+      expectedPrefix,
+      signal,
+      error,
+    );
+  }
+
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status < 500) {
+      throw new GitHubPublicationRejectedError(
+        "check-run annotation append",
+        response.status,
+      );
+    }
+    return reconcileCheckRunAnnotationAppend(
+      token,
+      repoFullName,
+      intent,
+      githubApp,
+      expectedPrefix,
+      signal,
+      new GitHubPublicationRejectedError(
+        "check-run annotation append",
+        response.status,
+      ),
+    );
+  }
+
+  try {
+    const patched = parseExactCheckRun(
+      await readBoundedJson(response),
+      intent,
+      githubApp,
+    );
+    if (!isExactInProgressCheckRun(patched, intent)) throw malformedResponse();
+  } catch (error) {
+    return reconcileCheckRunAnnotationAppend(
+      token,
+      repoFullName,
+      intent,
+      githubApp,
+      expectedPrefix,
+      signal,
+      error,
+    );
+  }
+
+  await verifyExactCheckRunAnnotationPrefix(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    expectedPrefix,
+    signal,
+  ).catch((error) => {
+    throw new GitHubPublicationAmbiguousError(
+      "check-run annotation append verification",
+      { cause: error },
+    );
+  });
+}
+
+async function reconcileCheckRunAnnotationAppend(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  githubApp: GitHubAppIdentity,
+  expectedPrefix: readonly NormalizedCheckRunAnnotation[],
+  signal: AbortSignal | undefined,
+  cause: unknown,
+): Promise<void> {
+  try {
+    await verifyExactCheckRunAnnotationPrefix(
+      token,
+      repoFullName,
+      intent,
+      githubApp,
+      expectedPrefix,
+      signal,
+    );
+    return;
+  } catch (error) {
+    throw new GitHubPublicationAmbiguousError("check-run annotation append", {
+      cause: error ?? cause,
+    });
+  }
+}
+
+async function verifyExactCheckRunAnnotationPrefix(
+  token: string,
+  repoFullName: string,
+  intent: GitHubCheckRunCompletionIntent,
+  githubApp: GitHubAppIdentity,
+  expectedPrefix: readonly NormalizedCheckRunAnnotation[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const observed = await observeExactCheckRunCompletion(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    signal,
+  );
+  if (
+    !isExactInProgressCheckRun(observed.run, intent) ||
+    !checkRunAnnotationsEqual(observed.annotations, expectedPrefix)
+  ) {
+    throw new GitHubPublicationAmbiguousError(
+      "check-run annotation append verification",
+    );
+  }
+}
+
+function largestCheckRunAnnotationChunk(
+  intent: GitHubCheckRunCompletionIntent,
+  remaining: readonly GitHubCheckRunAnnotationIntent[],
+): readonly GitHubCheckRunAnnotationIntent[] {
+  const maximumLength = Math.min(
+    MAX_ANNOTATIONS_PER_REQUEST,
+    remaining.length > MAX_ANNOTATIONS_PER_REQUEST
+      ? remaining.length
+      : remaining.length - 1,
+  );
+  for (let length = maximumLength; length >= 1; length -= 1) {
+    const chunk = remaining.slice(0, length);
+    if (
+      serializedJsonByteLength(buildCheckRunPatch(intent, chunk, false)) <=
+      MAX_REQUEST_BYTES
+    ) {
+      return chunk;
+    }
+  }
+  throw invalidIntent();
+}
+
+function buildCheckRunPatch(
+  intent: GitHubCheckRunCompletionIntent,
+  annotations: readonly GitHubCheckRunAnnotationIntent[],
+  completed: boolean,
+): Record<string, unknown> {
+  return {
+    status: completed ? "completed" : "in_progress",
+    ...(completed ? { conclusion: intent.conclusion } : {}),
+    output: {
+      title: intent.title,
+      summary: intent.summary,
+      ...(annotations.length === 0
+        ? {}
+        : { annotations: annotations.map(githubCheckRunAnnotation) }),
+    },
+    ...(intent.detailsUrl === undefined
+      ? {}
+      : { details_url: intent.detailsUrl }),
+  };
+}
+
+function githubCheckRunAnnotation(
+  annotation: GitHubCheckRunAnnotationIntent,
+): Record<string, unknown> {
+  return {
+    path: annotation.path,
+    start_line: annotation.startLine,
+    end_line: annotation.endLine,
+    annotation_level: annotation.annotationLevel,
+    message: annotation.message,
+    ...(annotation.title === undefined ? {} : { title: annotation.title }),
+    ...(annotation.rawDetails === undefined
+      ? {}
+      : { raw_details: annotation.rawDetails }),
+    ...(annotation.startColumn === undefined
+      ? {}
+      : { start_column: annotation.startColumn }),
+    ...(annotation.endColumn === undefined
+      ? {}
+      : { end_column: annotation.endColumn }),
+  };
 }
 
 async function reconcileCheckRunCompletion(
@@ -1132,7 +1682,7 @@ async function getExactCheckRun(
   intent: GitHubCheckRunCompletionIntent,
   githubApp: GitHubAppIdentity,
   signal?: AbortSignal,
-): Promise<CheckRunResponse> {
+): Promise<CheckRunResponse & { id: number }> {
   const response = await requestGitHub(
     token,
     "GET",
@@ -1163,6 +1713,7 @@ async function getExactCheckRunAnnotations(
   signal?: AbortSignal,
 ): Promise<NormalizedCheckRunAnnotation[]> {
   const annotations: NormalizedCheckRunAnnotation[] = [];
+  const maximumAnnotations = intent.annotations?.length ?? 0;
   try {
     for (let page = 1; page <= MAX_PAGES; page += 1) {
       const response = await requestGitHub(
@@ -1181,9 +1732,14 @@ async function getExactCheckRunAnnotations(
       }
       const value = await readBoundedJson(response);
       if (!Array.isArray(value)) throw malformedResponse();
-      annotations.push(
-        ...value.map((annotation) => normalizeRemoteCheckRunAnnotation(annotation)),
-      );
+      for (const annotation of value) {
+        annotations.push(normalizeRemoteCheckRunAnnotation(annotation));
+        if (annotations.length > maximumAnnotations) {
+          throw new GitHubPublicationAmbiguousError(
+            "check-run annotation identity",
+          );
+        }
+      }
       if (!hasNextPage(response)) return annotations;
       if (page === MAX_PAGES) {
         throw new GitHubPublicationAmbiguousError("check-run annotation pagination");
@@ -1205,10 +1761,19 @@ async function verifyExactCompletedCheckRun(
   githubApp: GitHubAppIdentity,
   signal?: AbortSignal,
 ): Promise<void> {
-  const [run, annotations] = await Promise.all([
-    getExactCheckRun(token, repoFullName, intent, githubApp, signal),
-    getExactCheckRunAnnotations(token, repoFullName, intent, signal),
-  ]);
+  const run = await getExactCheckRun(
+    token,
+    repoFullName,
+    intent,
+    githubApp,
+    signal,
+  );
+  const annotations = await getExactCheckRunAnnotations(
+    token,
+    repoFullName,
+    intent,
+    signal,
+  );
   if (
     !isExactCompletedCheckRun(run, intent) ||
     !checkRunAnnotationsEqual(
@@ -1226,9 +1791,9 @@ async function getExactReview(
   pullRequestNumber: number,
   reviewId: string,
   commitId: string,
-  marker: string,
+  markers: readonly string[],
   signal?: AbortSignal,
-): Promise<{ reviewId: string; commitId: string; body: string }> {
+): Promise<GitHubReviewIdentityObservation> {
   const response = await requestGitHub(
     token,
     "GET",
@@ -1243,14 +1808,14 @@ async function getExactReview(
       response.status,
     );
   }
-  return parseReview(await readBoundedJson(response), commitId, marker);
+  return parseReview(await readBoundedJson(response), commitId, markers);
 }
 
 function parseReview(
   value: unknown,
   commitId: string,
-  marker: string,
-): { reviewId: string; commitId: string; body: string } {
+  markers: readonly string[],
+): GitHubReviewIdentityObservation {
   const review = value as ReviewResponse;
   if (
     !Number.isSafeInteger(review?.id) ||
@@ -1260,7 +1825,7 @@ function parseReview(
     typeof review.submitted_at !== "string" ||
     !Number.isFinite(Date.parse(review.submitted_at)) ||
     typeof review.body !== "string" ||
-    !review.body.includes(marker) ||
+    !includesAnyMarker(review.body, markers) ||
     !isPostilBotLogin(review.user?.login ?? undefined)
   ) {
     throw malformedResponse();
@@ -1276,7 +1841,7 @@ function parseFileComment(
   value: unknown,
   commitId: string,
   path: string,
-  marker: string,
+  markers: readonly string[],
 ): GitHubFileCommentObservation {
   const comment = value as ReviewCommentResponse;
   if (
@@ -1286,7 +1851,7 @@ function parseFileComment(
     comment.path !== path ||
     comment.subject_type !== "file" ||
     typeof comment.body !== "string" ||
-    !comment.body.includes(marker) ||
+    !includesAnyMarker(comment.body, markers) ||
     !isPostilBotLogin(comment.user?.login ?? undefined)
   ) {
     throw malformedResponse();
@@ -1310,7 +1875,7 @@ function parseReviewComment(
     comment.original_commit_id !== intent.commitId ||
     comment.path !== intent.path ||
     typeof comment.body !== "string" ||
-    !intent.expectedMarkers.some((marker) => comment.body!.includes(marker)) ||
+    !includesAnyMarker(comment.body, intent.expectedMarkers) ||
     !isPostilBotLogin(comment.user?.login ?? undefined)
   ) {
     throw malformedResponse();
@@ -1375,6 +1940,21 @@ function isExactCompletedCheckRun(
   return (
     run.status === "completed" &&
     run.conclusion === intent.conclusion &&
+    run.output?.title === intent.title &&
+    run.output?.summary === intent.summary &&
+    (intent.detailsUrl === undefined
+      ? run.details_url === undefined || run.details_url === null
+      : run.details_url === intent.detailsUrl)
+  );
+}
+
+function isExactInProgressCheckRun(
+  run: CheckRunResponse,
+  intent: GitHubCheckRunCompletionIntent,
+): boolean {
+  return (
+    run.status === "in_progress" &&
+    run.conclusion === null &&
     run.output?.title === intent.title &&
     run.output?.summary === intent.summary &&
     (intent.detailsUrl === undefined
@@ -1479,6 +2059,16 @@ function checkRunAnnotationsEqual(
   );
 }
 
+function checkRunAnnotationsArePrefix(
+  prefix: readonly NormalizedCheckRunAnnotation[],
+  complete: readonly NormalizedCheckRunAnnotation[],
+): boolean {
+  return (
+    prefix.length <= complete.length &&
+    checkRunAnnotationsEqual(prefix, complete.slice(0, prefix.length))
+  );
+}
+
 async function requestGitHub(
   token: string,
   method: "GET" | "POST" | "PUT" | "PATCH",
@@ -1487,6 +2077,9 @@ async function requestGitHub(
   signal?: AbortSignal,
 ): Promise<Response> {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const serializedBody = body === undefined
+    ? undefined
+    : serializeBoundedRequestBody(body);
   return fetch(`${apiBase()}${path}`, {
     method,
     headers: {
@@ -1496,7 +2089,7 @@ async function requestGitHub(
       "User-Agent": "postil-control-plane",
       "Content-Type": "application/json",
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: serializedBody,
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
 }
@@ -1578,8 +2171,15 @@ function reviewLinePlacementRejected(source: string): boolean {
 
 function validateReviewComment(comment: GitHubReviewCommentIntent): void {
   validatePath(comment.path);
-  validateMarker(comment.marker, "finding");
-  requireMarker(comment.body, comment.marker);
+  const markers = validateMarkerSet(
+    comment.marker,
+    comment.compatibleMarkers,
+    "finding",
+  );
+  requireAnyMarker(comment.body, markers);
+  if (comment.side !== "LEFT" && comment.side !== "RIGHT") {
+    throw invalidIntent();
+  }
   if (!Number.isSafeInteger(comment.line) || comment.line <= 0)
     throw invalidIntent();
   if (
@@ -1591,6 +2191,13 @@ function validateReviewComment(comment: GitHubReviewCommentIntent): void {
     throw invalidIntent();
   }
   if ((comment.startLine === undefined) !== (comment.startSide === undefined)) {
+    throw invalidIntent();
+  }
+  if (
+    comment.startSide !== undefined &&
+    comment.startSide !== "LEFT" &&
+    comment.startSide !== "RIGHT"
+  ) {
     throw invalidIntent();
   }
 }
@@ -1620,7 +2227,7 @@ function validateCheckRunStartIntent(intent: GitHubCheckRunStartIntent): void {
   if (
     typeof intent.externalId !== "string" ||
     intent.externalId.length === 0 ||
-    Buffer.byteLength(intent.externalId) > 1_024 ||
+    Buffer.byteLength(intent.externalId) > 500 ||
     intent.externalId.includes("\0")
   ) {
     throw invalidIntent();
@@ -1641,12 +2248,21 @@ function validateCheckRunCompletionIntent(
     throw invalidIntent();
   }
   validateCheckRunOutput(intent.title, 255);
-  validateCheckRunOutput(intent.summary, 65_535);
-  if (intent.annotations === undefined) return;
-  if (!Array.isArray(intent.annotations) || intent.annotations.length > 50) {
+  validateCheckRunOutput(intent.summary, MAX_CHECK_SUMMARY_BYTES);
+  const annotations = intent.annotations ?? [];
+  if (!Array.isArray(annotations) || annotations.length > MAX_FINDINGS) {
     throw invalidIntent();
   }
-  for (const annotation of intent.annotations) validateCheckRunAnnotation(annotation);
+  for (const annotation of annotations) validateCheckRunAnnotation(annotation);
+  validateAggregateTextBytes([
+    intent.title,
+    intent.summary,
+    ...annotations.flatMap((annotation) => [
+      annotation.title ?? "",
+      annotation.message,
+      annotation.rawDetails ?? "",
+    ]),
+  ]);
 }
 
 function validateCheckRunAnnotation(
@@ -1701,12 +2317,19 @@ function validateCheckRunOutput(value: string, maximumBytes: number): void {
 }
 
 function validateDetailsUrl(value: string): void {
-  if (typeof value !== "string" || Buffer.byteLength(value) > 2_048) {
+  if (
+    typeof value !== "string" ||
+    Buffer.byteLength(value) > MAX_DETAILS_URL_BYTES
+  ) {
     throw invalidIntent();
   }
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password) {
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password
+    ) {
       throw invalidIntent();
     }
   } catch {
@@ -1725,8 +2348,8 @@ function pullRequestPath(
 }
 
 function repositoryPath(repoFullName: string): string {
-  const [owner, repo, extra] = repoFullName.split("/");
-  if (!owner || !repo || extra) throw invalidIntent();
+  if (!isValidGitHubRepositoryFullName(repoFullName)) throw invalidIntent();
+  const [owner, repo] = repoFullName.split("/") as [string, string];
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
@@ -1737,45 +2360,139 @@ function validateMarker(marker: string, kind: "review" | "finding"): void {
   if (!pattern.test(marker)) throw invalidIntent();
 }
 
-function requireMarker(body: string, marker: string): void {
+function validateMarkerSet(
+  marker: string,
+  compatibleMarkers: readonly string[] | undefined,
+  kind: "review" | "finding",
+): readonly string[] {
+  if (compatibleMarkers !== undefined && !Array.isArray(compatibleMarkers)) {
+    throw invalidIntent();
+  }
+  const markers = [marker, ...(compatibleMarkers ?? [])];
+  validateMarkerList(markers, kind);
+  return markers;
+}
+
+function validateMarkerList(
+  markers: readonly string[],
+  kind: "review" | "finding",
+): void {
+  if (
+    !Array.isArray(markers) ||
+    markers.length === 0 ||
+    markers.length > MAX_MARKERS ||
+    new Set(markers).size !== markers.length
+  ) {
+    throw invalidIntent();
+  }
+  for (const marker of markers) validateMarker(marker, kind);
+}
+
+function validateUniqueFindingMarkerSets(
+  comments: readonly GitHubReviewCommentIntent[],
+): readonly NormalizedMarkerSet[] {
+  return validateExpectedCommentMarkerSets(comments);
+}
+
+function validateExpectedCommentMarkerSets(
+  inputs: readonly (string | GitHubFindingMarkerSet)[],
+): readonly NormalizedMarkerSet[] {
+  if (!Array.isArray(inputs) || inputs.length > MAX_FINDINGS) {
+    throw invalidIntent();
+  }
+  const claimedMarkers = new Set<string>();
+  return inputs.map((input) => {
+    const markerSet = typeof input === "string"
+      ? { marker: input, compatibleMarkers: undefined }
+      : input;
+    if (
+      markerSet === null ||
+      typeof markerSet !== "object" ||
+      Array.isArray(markerSet)
+    ) {
+      throw invalidIntent();
+    }
+    const markers = validateMarkerSet(
+      markerSet.marker,
+      markerSet.compatibleMarkers,
+      "finding",
+    );
+    for (const marker of markers) {
+      if (claimedMarkers.has(marker)) throw invalidIntent();
+      claimedMarkers.add(marker);
+    }
+    return { marker: markerSet.marker, markers };
+  });
+}
+
+function validateReviewCommentUpdateIntent(
+  intent: GitHubReviewCommentUpdateIntent,
+): void {
+  validateRemoteId(intent.commentId);
+  validateSha(intent.commitId);
+  validatePath(intent.path);
+  validateMarkerList(intent.expectedMarkers, "finding");
+  requireAnyMarker(intent.body, intent.expectedMarkers);
+  validateAggregateTextBytes([intent.body]);
+}
+
+function requireAnyMarker(body: string, markers: readonly string[]): void {
   if (
     typeof body !== "string" ||
     body.length === 0 ||
-    Buffer.byteLength(body) > 65_536 ||
-    !body.includes(marker)
+    Buffer.byteLength(body) > MAX_TEXT_BYTES ||
+    !includesAnyMarker(body, markers)
   ) {
     throw invalidIntent();
   }
 }
 
-function validateExpectedMarkers(markers: string[]): void {
-  if (markers.length === 0 || new Set(markers).size !== markers.length) {
-    throw invalidIntent();
-  }
-  for (const marker of markers) validateMarker(marker, "finding");
+function includesAnyMarker(body: string, markers: readonly string[]): boolean {
+  return markers.some((marker) => body.includes(marker));
 }
 
-function validateUniqueFindingMarkers(markers: string[]): void {
-  if (new Set(markers).size !== markers.length) throw invalidIntent();
-  for (const marker of markers) validateMarker(marker, "finding");
+function validateAggregateTextBytes(values: readonly string[]): void {
+  let bytes = 0;
+  for (const value of values) {
+    bytes += Buffer.byteLength(value, "utf8");
+    if (bytes > MAX_AGGREGATE_TEXT_BYTES) throw invalidIntent();
+  }
 }
 
-function requireAnyMarker(body: string, markers: string[]): void {
-  if (
-    typeof body !== "string" ||
-    body.length === 0 ||
-    Buffer.byteLength(body) > 65_536 ||
-    !markers.some((marker) => body.includes(marker))
-  ) {
+function serializeJson(value: unknown): string {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
     throw invalidIntent();
   }
+  if (typeof serialized !== "string") throw invalidIntent();
+  return serialized;
+}
+
+function serializedJsonByteLength(value: unknown): number {
+  return Buffer.byteLength(serializeJson(value), "utf8");
+}
+
+function requireSerializedRequestWithinLimit(value: unknown): void {
+  if (serializedJsonByteLength(value) > MAX_REQUEST_BYTES) {
+    throw invalidIntent();
+  }
+}
+
+function serializeBoundedRequestBody(value: unknown): string {
+  const serialized = serializeJson(value);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_REQUEST_BYTES) {
+    throw invalidIntent();
+  }
+  return serialized;
 }
 
 function validatePath(path: string): void {
   if (
     typeof path !== "string" ||
     path.length === 0 ||
-    Buffer.byteLength(path) > 1_024 ||
+    Buffer.byteLength(path) > MAX_PATH_BYTES ||
     path.includes("\0")
   ) {
     throw invalidIntent();

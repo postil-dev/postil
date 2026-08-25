@@ -2,11 +2,15 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { isValidGitHubRepositoryFullName } from "@/lib/github/repository-identity";
+
 const MAX_OPERATIONS = 126;
 const MAX_DEPENDENCY_EDGES = 1_024;
 const MAX_FINDINGS = 64;
 const MAX_TEXT_BYTES = 128 * 1024;
+const MAX_CHECK_SUMMARY_BYTES = 65_535;
 const MAX_AGGREGATE_TEXT_BYTES = 4 * 1024 * 1024;
+const MAX_GITHUB_REQUEST_BYTES = 4 * 1024 * 1024;
 const MAX_PLAN_BYTES = 8 * 1024 * 1024;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -28,14 +32,21 @@ const gitSha = z.string().regex(GIT_SHA);
 const marker = z.string().regex(MARKER);
 const operationKey = z.string().regex(OPERATION_KEY);
 const positiveLine = z.number().int().min(1).max(2_147_483_647);
-const httpUrl = z.string().url().max(2_048).refine((value) => {
-  const protocol = new URL(value).protocol;
-  return protocol === "https:" || protocol === "http:";
-}, "URL must use HTTP or HTTPS");
+const httpUrl = boundedString(2_048).url().refine((value) => {
+  const url = new URL(value);
+  return (
+    (url.protocol === "https:" || url.protocol === "http:") &&
+    url.username === "" &&
+    url.password === ""
+  );
+}, "URL must use HTTP or HTTPS without credentials");
 
 const repositorySchema = z.object({
   id: decimalIdentifier,
-  fullName: z.string().regex(/^[^/\s]{1,100}\/[^/\s]{1,100}$/),
+  fullName: z.string().refine(
+    isValidGitHubRepositoryFullName,
+    "repository full name is malformed",
+  ),
 }).strict();
 
 const snapshotSchema = z.object({
@@ -266,7 +277,7 @@ const operationSchema = z.discriminatedUnion("kind", [
     createdCheck: operationResultReferenceSchema,
     conclusion: z.enum(["success", "failure", "neutral"]),
     title: nonEmptyString(255),
-    summary: boundedString(),
+    summary: boundedString(MAX_CHECK_SUMMARY_BYTES),
     annotations: z.array(annotationSchema).max(MAX_FINDINGS).optional(),
     detailsUrl: httpUrl.optional(),
   }).strict(),
@@ -280,7 +291,7 @@ const gateAnalysisSchema = z.object({
   headSha: gitSha,
   analyzedConclusion: z.enum(["success", "failure", "neutral"]),
   title: nonEmptyString(255),
-  summary: boundedString(),
+  summary: boundedString(MAX_CHECK_SUMMARY_BYTES),
   detailsUrl: httpUrl.optional(),
 }).strict();
 
@@ -526,6 +537,9 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
     }
     if (operation.kind === "reviewCreate") {
       aggregateTextBytes += Buffer.byteLength(operation.payload.body, "utf8");
+      if (reviewCreateRequestBytes(operation.payload) > MAX_GITHUB_REQUEST_BYTES) {
+        reject("review creation request exceeds the GitHub request byte limit");
+      }
       if (reviewAttempts.has(operation.attempt)) reject("review attempt kind is duplicated");
       reviewAttempts.add(operation.attempt);
       if (operation.payload.commitId !== plan.reviewedSnapshot.headSha) {
@@ -703,6 +717,36 @@ function validateOperationSemantics(plan: GitHubPublicationPlan): void {
     }
   }
   validateReviewAttemptChain(plan);
+}
+
+function reviewCreateRequestBytes(
+  payload: Extract<
+    GitHubPublicationOperation,
+    { kind: "reviewCreate" }
+  >["payload"],
+): number {
+  const request = {
+    commit_id: payload.commitId,
+    event: payload.event,
+    body: payload.body,
+    ...(payload.comments === undefined
+      ? {}
+      : {
+          comments: payload.comments.map((comment) => ({
+            path: comment.path,
+            line: comment.line,
+            side: comment.side,
+            ...(comment.startLine === undefined
+              ? {}
+              : { start_line: comment.startLine }),
+            ...(comment.startSide === undefined
+              ? {}
+              : { start_side: comment.startSide }),
+            body: comment.body,
+          })),
+        }),
+  };
+  return Buffer.byteLength(JSON.stringify(request), "utf8");
 }
 
 function validateActivationGuards(

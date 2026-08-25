@@ -3,10 +3,17 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import {
   completeGitHubCheckRun,
   createGitHubCheckRun,
+  findGitHubCheckRunByExternalId,
+  findGitHubFileCommentByMarker,
+  findGitHubFileCommentByMarkers,
   findGitHubReviewByMarker,
+  findGitHubReviewByMarkers,
   GitHubPublicationAmbiguousError,
   GitHubPublicationRejectedError,
   GitHubReviewPlacementRejectedError,
+  observeGitHubCheckRunCompletion,
+  observeGitHubCompositeReviewByMarkers,
+  observeGitHubReviewComment,
   publishGitHubCompositeReview,
   publishGitHubFileComment,
   updateGitHubReviewComment,
@@ -18,6 +25,8 @@ const HEAD_SHA = "a".repeat(40);
 const REVIEW_MARKER = `<!-- postil-review:v2:${"b".repeat(64)} -->`;
 const FINDING_MARKER = `<!-- postil-finding:v2:${"c".repeat(64)} -->`;
 const SECOND_FINDING_MARKER = `<!-- postil-finding:v2:${"d".repeat(64)} -->`;
+const LEGACY_REVIEW_MARKER = `<!-- postil-review:v1:${"e".repeat(12)} -->`;
+const LEGACY_FINDING_MARKER = `<!-- postil-finding:v1:${"f".repeat(12)} -->`;
 const CHECK_EXTERNAL_ID = "postil:review-run:review";
 const CHECK_DETAILS_URL = "https://postil.dev/orgs/octo/runs/review-run";
 const TEST_GITHUB_APP_ID = 123;
@@ -143,6 +152,357 @@ function checkRunAnnotation(overrides: Record<string, unknown> = {}) {
 function isCheckRunAnnotationsRequest(input: RequestInfo | URL): boolean {
   return new URL(String(input)).pathname.endsWith("/annotations");
 }
+
+function findingMarker(index: number): string {
+  return `<!-- postil-finding:v2:${index.toString(16).padStart(64, "0")} -->`;
+}
+
+function checkAnnotationIntent(index: number) {
+  return {
+    path: `src/file-${index}.ts`,
+    startLine: index + 1,
+    endLine: index + 1,
+    annotationLevel: "warning" as const,
+    message: `Review finding ${index}`,
+  };
+}
+
+function checkAnnotationResponse(index: number) {
+  return {
+    path: `src/file-${index}.ts`,
+    start_line: index + 1,
+    end_line: index + 1,
+    annotation_level: "warning",
+    message: `Review finding ${index}`,
+  };
+}
+
+function installChunkedCheckCompletionFake(
+  initialAnnotationCount = 0,
+  uncertainFirstPatch = false,
+) {
+  const remoteAnnotations: Array<Record<string, unknown>> = Array.from(
+    { length: initialAnnotationCount },
+    (_, index) => checkAnnotationResponse(index),
+  );
+  let remoteRun = checkRun(initialAnnotationCount === 0
+    ? {}
+    : {
+        output: {
+          title: checkRunCompletionIntent.title,
+          summary: checkRunCompletionIntent.summary,
+        },
+      });
+  const patches: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input, init) => {
+    const method = init?.method ?? "GET";
+    const url = new URL(String(input));
+    if (isCheckRunAnnotationsRequest(input)) {
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const start = (page - 1) * 25;
+      const response = remoteAnnotations.slice(start, start + 25);
+      return Response.json(response, remoteAnnotations.length > start + 25
+        ? {
+            headers: {
+              Link: `<https://api.github.test/annotations?page=${page + 1}>; rel="next"`,
+            },
+          }
+        : undefined);
+    }
+    if (method === "GET") return Response.json(remoteRun);
+
+    const patch = JSON.parse(String(init?.body)) as {
+      status: string;
+      conclusion?: string;
+      details_url?: string;
+      output: {
+        title: string;
+        summary: string;
+        annotations?: Array<Record<string, unknown>>;
+      };
+    };
+    patches.push(patch);
+    remoteAnnotations.push(...(patch.output.annotations ?? []));
+    remoteRun = checkRun({
+      status: patch.status,
+      conclusion: patch.conclusion ?? null,
+      details_url: patch.details_url,
+      output: {
+        title: patch.output.title,
+        summary: patch.output.summary,
+      },
+    });
+    if (uncertainFirstPatch && patches.length === 1) {
+      throw new TypeError("connection reset after write");
+    }
+    return Response.json(remoteRun);
+  }) as typeof fetch;
+  return { patches, remoteAnnotations };
+}
+
+describe("GitHub publication observations", () => {
+  test("observes compatible review and finding markers across every page without mutation", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      methods.push(init?.method ?? "GET");
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/reviews")) {
+        return url.searchParams.get("page") === "1"
+          ? Response.json([
+              review({ body: `Review summary\n\n${LEGACY_REVIEW_MARKER}` }),
+            ], {
+              headers: {
+                Link: '<https://api.github.test/reviews?page=2>; rel="next"',
+              },
+            })
+          : Response.json([]);
+      }
+      return Response.json([
+        reviewComment({ body: `Finding body\n\n${LEGACY_FINDING_MARKER}` }),
+      ]);
+    }) as typeof fetch;
+
+    await expect(
+      observeGitHubCompositeReviewByMarkers(
+        "token",
+        "octo/repo",
+        7,
+        [REVIEW_MARKER, LEGACY_REVIEW_MARKER],
+        HEAD_SHA,
+        [{
+          marker: FINDING_MARKER,
+          compatibleMarkers: [LEGACY_FINDING_MARKER],
+        }],
+      ),
+    ).resolves.toMatchObject({
+      reviewId: "41",
+      commentIdsByMarker: { [FINDING_MARKER]: "51" },
+      missingCommentMarkers: [],
+    });
+    expect(methods).toEqual(["GET", "GET", "GET"]);
+  });
+
+  test("rejects compatible review duplicates found on later pages", async () => {
+    let requests = 0;
+    globalThis.fetch = (async (_input, _init) => {
+      requests += 1;
+      return requests === 1
+        ? Response.json([review()], {
+            headers: {
+              Link: '<https://api.github.test/reviews?page=2>; rel="next"',
+            },
+          })
+        : Response.json([
+            review({
+              id: 42,
+              body: `Review summary\n\n${LEGACY_REVIEW_MARKER}`,
+            }),
+          ]);
+    }) as typeof fetch;
+
+    await expect(
+      findGitHubReviewByMarkers(
+        "token",
+        "octo/repo",
+        7,
+        [REVIEW_MARKER, LEGACY_REVIEW_MARKER],
+        HEAD_SHA,
+      ),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(requests).toBe(2);
+  });
+
+  test("observes compatible file-comment markers and rejects later duplicates", async () => {
+    let requests = 0;
+    globalThis.fetch = (async (_input, _init) => {
+      requests += 1;
+      if (requests === 1) {
+        return Response.json([
+          reviewComment({
+            subject_type: "file",
+            body: `Finding body\n\n${LEGACY_FINDING_MARKER}`,
+          }),
+        ], {
+          headers: {
+            Link: '<https://api.github.test/comments?page=2>; rel="next"',
+          },
+        });
+      }
+      return Response.json([]);
+    }) as typeof fetch;
+
+    await expect(
+      findGitHubFileCommentByMarkers(
+        "token",
+        "octo/repo",
+        7,
+        HEAD_SHA,
+        "src/main.ts",
+        [FINDING_MARKER, LEGACY_FINDING_MARKER],
+      ),
+    ).resolves.toMatchObject({ commentId: "51" });
+    expect(requests).toBe(2);
+
+    requests = 0;
+    globalThis.fetch = (async (_input, _init) => {
+      requests += 1;
+      return requests === 1
+        ? Response.json([reviewComment({ subject_type: "file" })], {
+            headers: {
+              Link: '<https://api.github.test/comments?page=2>; rel="next"',
+            },
+          })
+        : Response.json([
+            reviewComment({
+              id: 52,
+              subject_type: "file",
+              body: `Finding body\n\n${LEGACY_FINDING_MARKER}`,
+            }),
+          ]);
+    }) as typeof fetch;
+    await expect(
+      findGitHubFileCommentByMarker("token", "octo/repo", 7, {
+        commitId: HEAD_SHA,
+        path: "src/main.ts",
+        body: `Finding body\n\n${FINDING_MARKER}`,
+        marker: FINDING_MARKER,
+        compatibleMarkers: [LEGACY_FINDING_MARKER],
+      }),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(requests).toBe(2);
+  });
+
+  test("exposes check and review-comment state through GET-only APIs", async () => {
+    const methods: string[] = [];
+    let request = 0;
+    globalThis.fetch = (async (input, init) => {
+      methods.push(init?.method ?? "GET");
+      request += 1;
+      if (request === 1) {
+        return Response.json({ check_runs: [checkRun()] });
+      }
+      if (request === 2) {
+        return Response.json(checkRun({
+          status: "completed",
+          conclusion: "success",
+          output: {
+            title: checkRunCompletionIntent.title,
+            summary: checkRunCompletionIntent.summary,
+          },
+        }));
+      }
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json([checkRunAnnotation()]);
+      }
+      return Response.json(reviewComment());
+    }) as typeof fetch;
+
+    await expect(
+      findGitHubCheckRunByExternalId(
+        "token",
+        "octo/repo",
+        checkRunStartIntent,
+      ),
+    ).resolves.toMatchObject({ checkRunId: "61", status: "in_progress" });
+    await expect(
+      observeGitHubCheckRunCompletion(
+        "token",
+        "octo/repo",
+        checkRunCompletionIntent,
+      ),
+    ).resolves.toMatchObject({ checkRunId: "61", desiredState: "applied" });
+    await expect(
+      observeGitHubReviewComment("token", "octo/repo", {
+        commentId: "51",
+        commitId: HEAD_SHA,
+        path: "src/main.ts",
+        expectedMarkers: [FINDING_MARKER, LEGACY_FINDING_MARKER],
+        body: `Updated finding\n\n${FINDING_MARKER}`,
+      }),
+    ).resolves.toMatchObject({ commentId: "51" });
+    expect(methods).toEqual(["GET", "GET", "GET", "GET"]);
+  });
+
+  test("bounds compatible marker sets and duplicate comment proof before mutation", async () => {
+    let requests = 0;
+    globalThis.fetch = (async (_input, _init) => {
+      requests += 1;
+      return requests === 1
+        ? Response.json([review()])
+        : Response.json([
+            reviewComment(),
+            reviewComment({ id: 52 }),
+            reviewComment({ id: 53 }),
+          ]);
+    }) as typeof fetch;
+    await expect(
+      observeGitHubCompositeReviewByMarkers(
+        "token",
+        "octo/repo",
+        7,
+        [REVIEW_MARKER],
+        HEAD_SHA,
+        [FINDING_MARKER],
+      ),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(requests).toBe(2);
+
+    const maximumMarkers = [
+      REVIEW_MARKER,
+      ...Array.from(
+        { length: 15 },
+        (_, index) =>
+          `<!-- postil-review:v2:${index.toString(16).padStart(64, "0")} -->`,
+      ),
+    ];
+    globalThis.fetch = Object.assign(
+      async () => Response.json([review()]),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    await expect(
+      findGitHubReviewByMarkers(
+        "token",
+        "octo/repo",
+        7,
+        maximumMarkers,
+        HEAD_SHA,
+      ),
+    ).resolves.toMatchObject({ reviewId: "41" });
+
+    globalThis.fetch = Object.assign(
+      async () => {
+        throw new Error("unexpected request");
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    const tooManyMarkers = Array.from(
+      { length: 17 },
+      (_, index) => `<!-- postil-review:v2:${index.toString(16).padStart(64, "0")} -->`,
+    );
+    await expect(
+      findGitHubReviewByMarkers(
+        "token",
+        "octo/repo",
+        7,
+        tooManyMarkers,
+        HEAD_SHA,
+      ),
+    ).rejects.toThrow("intent is invalid");
+    await expect(
+      observeGitHubCompositeReviewByMarkers(
+        "token",
+        "octo/repo",
+        7,
+        [REVIEW_MARKER],
+        HEAD_SHA,
+        [
+          { marker: FINDING_MARKER, compatibleMarkers: [LEGACY_FINDING_MARKER] },
+          { marker: SECOND_FINDING_MARKER, compatibleMarkers: [LEGACY_FINDING_MARKER] },
+        ],
+      ),
+    ).rejects.toThrow("intent is invalid");
+  });
+});
 
 describe("GitHub composite review publication", () => {
   test("publishes and observes the exact review and inline identities", async () => {
@@ -488,6 +848,87 @@ describe("GitHub composite review publication", () => {
     }
     expect(requests).toBe(0);
   });
+
+  test("accepts 64 comments, rejects 65, and caps the serialized request", async () => {
+    const comments = Array.from({ length: 65 }, (_, index) => {
+      const marker = findingMarker(index + 1);
+      return {
+        path: `src/file-${index}.ts`,
+        line: index + 1,
+        side: "RIGHT" as const,
+        body: `Finding ${index}\n\n${marker}`,
+        marker,
+      };
+    });
+    let requests = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        requests += 1;
+        return new Response(null, { status: 400 });
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    await expect(
+      publishGitHubCompositeReview("token", "octo/repo", 7, {
+        ...compositeIntent,
+        comments: comments.slice(0, 64),
+      }),
+    ).rejects.toBeInstanceOf(GitHubPublicationRejectedError);
+    expect(requests).toBe(1);
+    await expect(
+      publishGitHubCompositeReview("token", "octo/repo", 7, {
+        ...compositeIntent,
+        comments,
+      }),
+    ).rejects.toThrow("intent is invalid");
+    expect(requests).toBe(1);
+
+    const escapingComments = Array.from({ length: 31 }, (_, index) => {
+      const marker = findingMarker(index + 100);
+      return {
+        path: `src/escaped-${index}.ts`,
+        line: index + 1,
+        side: "RIGHT" as const,
+        body: marker + "\\".repeat(128 * 1024 - Buffer.byteLength(marker)),
+        marker,
+      };
+    });
+    await expect(
+      publishGitHubCompositeReview("token", "octo/repo", 7, {
+        ...compositeIntent,
+        comments: escapingComments,
+      }),
+    ).rejects.toThrow("intent is invalid");
+    expect(requests).toBe(1);
+  });
+
+  test("uses the plan's exact 128 KiB review-body boundary", async () => {
+    const exactBody = REVIEW_MARKER +
+      "x".repeat(128 * 1024 - Buffer.byteLength(REVIEW_MARKER));
+    let requests = 0;
+    globalThis.fetch = (async (_input, _init) => {
+      requests += 1;
+      return Response.json(review({ body: exactBody }));
+    }) as typeof fetch;
+
+    await expect(
+      publishGitHubCompositeReview("token", "octo/repo", 7, {
+        ...compositeIntent,
+        body: exactBody,
+        comments: [],
+      }),
+    ).resolves.toMatchObject({ body: exactBody });
+    expect(requests).toBe(1);
+    await expect(
+      publishGitHubCompositeReview("token", "octo/repo", 7, {
+        ...compositeIntent,
+        body: `${exactBody}x`,
+        comments: [],
+      }),
+    ).rejects.toThrow("intent is invalid");
+    expect(requests).toBe(1);
+  });
 });
 
 describe("GitHub review finalization", () => {
@@ -518,6 +959,37 @@ describe("GitHub review finalization", () => {
       ),
     ).resolves.toMatchObject({ body: finalBody });
     expect(methods).toEqual(["GET", "PUT", "GET"]);
+  });
+
+  test("cancels an unused successful summary response body", async () => {
+    let request = 0;
+    let canceled = false;
+    const finalBody = `Final summary\n\n${REVIEW_MARKER}`;
+    globalThis.fetch = (async (_input, _init) => {
+      request += 1;
+      if (request === 1) return Response.json(review());
+      if (request === 2) {
+        return new Response(new ReadableStream({
+          cancel() {
+            canceled = true;
+          },
+        }));
+      }
+      return Response.json(review({ body: finalBody }));
+    }) as typeof fetch;
+
+    await expect(
+      updateGitHubReviewSummary(
+        "token",
+        "octo/repo",
+        7,
+        "41",
+        HEAD_SHA,
+        REVIEW_MARKER,
+        finalBody,
+      ),
+    ).resolves.toMatchObject({ body: finalBody });
+    expect(canceled).toBe(true);
   });
 
   test("never updates a review with mismatched commit or marker ownership", async () => {
@@ -590,6 +1062,32 @@ describe("GitHub file-level review comments", () => {
       path: "src/main.ts",
       subject_type: "file",
     });
+  });
+
+  test("uses the plan's exact 4096-byte path boundary", async () => {
+    const exactPath = "a".repeat(4_096);
+    let requests = 0;
+    globalThis.fetch = (async (_input, _init) => {
+      requests += 1;
+      return Response.json(reviewComment({
+        path: exactPath,
+        subject_type: "file",
+      }), { status: 201 });
+    }) as typeof fetch;
+
+    await expect(
+      publishGitHubFileComment("token", "octo/repo", 7, {
+        ...intent,
+        path: exactPath,
+      }),
+    ).resolves.toMatchObject({ path: exactPath });
+    await expect(
+      publishGitHubFileComment("token", "octo/repo", 7, {
+        ...intent,
+        path: `${exactPath}a`,
+      }),
+    ).rejects.toThrow("intent is invalid");
+    expect(requests).toBe(1);
   });
 
   test("reconciles an uncertain write and rejects forged marker ownership", async () => {
@@ -765,12 +1263,12 @@ describe("GitHub owned check-run creation", () => {
     }) as typeof fetch;
 
     await expect(
-      createGitHubCheckRun("token", "octo space/repo space", checkRunStartIntent),
+      createGitHubCheckRun("token", "octo_emu/repo.name-1", checkRunStartIntent),
     ).resolves.toBe("61");
     expect(requests).toEqual([
       {
         method: "POST",
-        url: expect.stringContaining("/repos/octo%20space/repo%20space/check-runs"),
+        url: expect.stringContaining("/repos/octo_emu/repo.name-1/check-runs"),
         body: {
           name: "postil/review",
           head_sha: HEAD_SHA,
@@ -780,6 +1278,66 @@ describe("GitHub owned check-run creation", () => {
         },
       },
     ]);
+  });
+
+  test("accepts HTTP details URLs at 2048 bytes and rejects credentials", async () => {
+    const prefix = "http://example.test/";
+    const exactUrl = prefix +
+      "x".repeat(2_048 - Buffer.byteLength(prefix));
+    let requests = 0;
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      requests += 1;
+      body = JSON.parse(String(init?.body));
+      return Response.json(checkRun());
+    }) as typeof fetch;
+
+    await expect(
+      createGitHubCheckRun("token", "octo/repo", {
+        ...checkRunStartIntent,
+        detailsUrl: exactUrl,
+      }),
+    ).resolves.toBe("61");
+    expect(body?.details_url).toBe(exactUrl);
+    for (const detailsUrl of [
+      `${exactUrl}x`,
+      "https://user@example.test/run",
+      "https://user:password@example.test/run",
+    ]) {
+      await expect(
+        createGitHubCheckRun("token", "octo/repo", {
+          ...checkRunStartIntent,
+          detailsUrl,
+        }),
+      ).rejects.toThrow("intent is invalid");
+    }
+    expect(requests).toBe(1);
+  });
+
+  test("rejects repository traversal and malformed GitHub names before fetch", async () => {
+    let requests = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        requests += 1;
+        return Response.json(checkRun());
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    for (const repository of [
+      "../repo",
+      "octo/.",
+      "octo/..",
+      "octo/repo/name",
+      "octo/%2e%2e",
+      "octo space/repo",
+      "octo/repo space",
+    ]) {
+      await expect(
+        createGitHubCheckRun("token", repository, checkRunStartIntent),
+      ).rejects.toThrow("intent is invalid");
+    }
+    expect(requests).toBe(0);
   });
 
   test("reconciles one uncertain create across every linked page", async () => {
@@ -1019,6 +1577,141 @@ describe("GitHub owned check-run completion", () => {
         ],
       },
     });
+  });
+
+  test("completes 64 annotations through bounded append and terminal patches", async () => {
+    const intent = {
+      ...checkRunCompletionIntent,
+      annotations: Array.from({ length: 64 }, (_, index) =>
+        checkAnnotationIntent(index)),
+    };
+    const state = installChunkedCheckCompletionFake();
+
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", intent),
+    ).resolves.toBeUndefined();
+    expect(state.patches.map((patch) => patch.status)).toEqual([
+      "in_progress",
+      "completed",
+    ]);
+    expect(state.patches.map((patch) =>
+      (patch.output as { annotations?: unknown[] }).annotations?.length ?? 0
+    )).toEqual([50, 14]);
+    expect(state.patches.every((patch) =>
+      Buffer.byteLength(JSON.stringify(patch)) <= 4 * 1024 * 1024
+    )).toBe(true);
+    expect(state.remoteAnnotations).toHaveLength(64);
+  });
+
+  test("resumes an exact 50-annotation prefix without duplicating it", async () => {
+    const intent = {
+      ...checkRunCompletionIntent,
+      annotations: Array.from({ length: 64 }, (_, index) =>
+        checkAnnotationIntent(index)),
+    };
+    const state = installChunkedCheckCompletionFake(50);
+
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", intent),
+    ).resolves.toBeUndefined();
+    expect(state.patches).toHaveLength(1);
+    expect(state.patches[0]?.status).toBe("completed");
+    expect(
+      (state.patches[0]?.output as { annotations?: unknown[] }).annotations,
+    ).toHaveLength(14);
+    expect(state.remoteAnnotations).toHaveLength(64);
+  });
+
+  test("reconciles an uncertain annotation append by its exact remote prefix", async () => {
+    const intent = {
+      ...checkRunCompletionIntent,
+      annotations: Array.from({ length: 64 }, (_, index) =>
+        checkAnnotationIntent(index)),
+    };
+    const state = installChunkedCheckCompletionFake(0, true);
+
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", intent),
+    ).resolves.toBeUndefined();
+    expect(state.patches.map((patch) => patch.status)).toEqual([
+      "in_progress",
+      "completed",
+    ]);
+    expect(state.remoteAnnotations).toHaveLength(64);
+  });
+
+  test("rejects a nonterminal non-prefix and desired-count overflow before patching", async () => {
+    const intent = {
+      ...checkRunCompletionIntent,
+      annotations: Array.from({ length: 64 }, (_, index) =>
+        checkAnnotationIntent(index)),
+    };
+    let requests = 0;
+    globalThis.fetch = (async (input, init) => {
+      requests += 1;
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json([
+          checkAnnotationResponse(1),
+        ]);
+      }
+      if (init?.method === "PATCH") throw new Error("unexpected patch");
+      return Response.json(checkRun());
+    }) as typeof fetch;
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", intent),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(requests).toBe(2);
+
+    requests = 0;
+    globalThis.fetch = (async (input, init) => {
+      requests += 1;
+      if (isCheckRunAnnotationsRequest(input)) {
+        return Response.json(Array.from(
+          { length: 65 },
+          (_, index) => checkAnnotationResponse(index),
+        ));
+      }
+      if (init?.method === "PATCH") throw new Error("unexpected patch");
+      return Response.json(checkRun());
+    }) as typeof fetch;
+    await expect(
+      completeGitHubCheckRun("token", "octo/repo", intent),
+    ).rejects.toBeInstanceOf(GitHubPublicationAmbiguousError);
+    expect(requests).toBe(2);
+  });
+
+  test("uses GitHub's exact 65,535-byte check-summary boundary", async () => {
+    const exactSummary = "s".repeat(65_535);
+    const intent = {
+      ...checkRunCompletionIntent,
+      summary: exactSummary,
+      annotations: [],
+    };
+    let requests = 0;
+    globalThis.fetch = (async (input) => {
+      requests += 1;
+      if (isCheckRunAnnotationsRequest(input)) return Response.json([]);
+      return Response.json(checkRun({
+        status: "completed",
+        conclusion: "success",
+        output: {
+          title: intent.title,
+          summary: exactSummary,
+        },
+      }));
+    }) as typeof fetch;
+    await expect(
+      observeGitHubCheckRunCompletion("token", "octo/repo", intent),
+    ).resolves.toMatchObject({ desiredState: "applied" });
+    expect(requests).toBe(2);
+
+    await expect(
+      observeGitHubCheckRunCompletion("token", "octo/repo", {
+        ...intent,
+        summary: `${exactSummary}s`,
+      }),
+    ).rejects.toThrow("intent is invalid");
+    expect(requests).toBe(2);
   });
 
   test("does not patch an already exact terminal check run", async () => {
@@ -1291,7 +1984,7 @@ describe("GitHub owned check-run completion", () => {
 
   test("validates annotations and aborts before a completion write", async () => {
     const invalidIntents = [
-      { annotations: Array.from({ length: 51 }, () => checkRunCompletionIntent.annotations[0]!) },
+      { annotations: Array.from({ length: 65 }, () => checkRunCompletionIntent.annotations[0]!) },
       { annotations: [{ ...checkRunCompletionIntent.annotations[0]!, path: "bad\0path" }] },
       { annotations: [{ ...checkRunCompletionIntent.annotations[0]!, startLine: 0 }] },
       { annotations: [{ ...checkRunCompletionIntent.annotations[0]!, endLine: 11 }] },

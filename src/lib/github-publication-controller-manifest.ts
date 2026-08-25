@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 
+import { isValidGitHubRepositoryFullName } from "@/lib/github/repository-identity";
+
 const MAX_OPERATIONS = 128;
 const MAX_DEPENDENCY_EDGES = 1_024;
 const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 const MAX_TITLE_BYTES = 255;
-const MAX_SUMMARY_BYTES = 128 * 1024;
+const MAX_SUMMARY_BYTES = 65_535;
 const MAX_URL_BYTES = 2_048;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -669,7 +671,9 @@ function requireGitSha(value: unknown, name: string): string {
 
 function requireRepositoryFullName(value: unknown): string {
   const fullName = requireString(value, "repository full name");
-  if (!/^[^/\s]{1,100}\/[^/\s]{1,100}$/.test(fullName)) reject("repository full name is malformed");
+  if (!isValidGitHubRepositoryFullName(fullName)) {
+    reject("repository full name is malformed");
+  }
   return fullName;
 }
 
@@ -683,9 +687,15 @@ function requireHttpUrl(value: unknown, name: string): string {
   const url = requireBoundedString(value, name, MAX_URL_BYTES);
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("unsupported protocol");
+    if (
+      (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) {
+      throw new Error("unsupported URL");
+    }
   } catch {
-    reject(`${name} is not an HTTP URL`);
+    reject(`${name} is not an HTTP URL without credentials`);
   }
   return url;
 }
