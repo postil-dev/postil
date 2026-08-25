@@ -137,6 +137,7 @@ async function handleJob(
         await dispatchWebhookDelivery(delivery.event, delivery.payload, {
           deliveryId: delivery.deliveryId,
           triggerFollowupDrain: processGroup === "web",
+          attempt: job.attempts,
         });
       } catch (error) {
         // A single 404 can be an installation-token propagation blip right

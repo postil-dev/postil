@@ -38,6 +38,7 @@ let webhookDeliveryToLoad:
   | { deliveryId: string; event: string; action: string | null; payload: unknown }
   | undefined;
 let webhookDispatchError: Error | undefined;
+let webhookDispatchOptions: Record<string, unknown> | undefined;
 const webhookDeliveriesCompleted: string[] = [];
 let reviewTiming:
   | { queuedAt: Date; startedAt: Date; lease?: ClaimedJob }
@@ -174,7 +175,12 @@ mock.module("@/worker/watchdog", () => ({
 }));
 
 mock.module("@/lib/github/webhook-handler", () => ({
-  dispatchWebhookDelivery: async () => {
+  dispatchWebhookDelivery: async (
+    _event: string,
+    _payload: unknown,
+    options: Record<string, unknown>,
+  ) => {
+    webhookDispatchOptions = options;
     if (webhookDispatchError) throw webhookDispatchError;
   },
 }));
@@ -307,6 +313,7 @@ beforeEach(() => {
   webhookDeliveryLoadError = undefined;
   webhookDeliveryToLoad = undefined;
   webhookDispatchError = undefined;
+  webhookDispatchOptions = undefined;
   webhookDeliveriesCompleted.length = 0;
   reviewTiming = undefined;
   reviewProcessGroup = undefined;
@@ -612,6 +619,31 @@ describe("drainQueueOnce", () => {
     ]);
     expect(failed).toEqual([]);
     expect(operationalWarnings).toEqual(["job_retrying"]);
+  });
+
+  test("passes the claimed attempt into webhook state evaluation", async () => {
+    const job = reviewJob(24);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-24" };
+    job.attempts = 3;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-24",
+      event: "pull_request",
+      action: "reopened",
+      payload: {},
+    };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDispatchOptions).toEqual({
+      deliveryId: "delivery-24",
+      triggerFollowupDrain: false,
+      attempt: 3,
+    });
+    expect(webhookDeliveriesCompleted).toEqual(["delivery-24"]);
+    expect(completed).toEqual([24]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(failed).toEqual([]);
   });
 
   test("completes a webhook delivery whose forge target stays gone", async () => {

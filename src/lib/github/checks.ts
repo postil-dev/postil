@@ -663,8 +663,44 @@ export interface PullRequestReviewContext {
   open: boolean;
   merged: boolean;
   draft: boolean;
+  updatedAt?: string;
   authorGithubId?: number;
   authorLogin?: string;
+}
+
+export type PullRequestUpdatedAt =
+  | { kind: "valid"; seconds: number }
+  | { kind: "missing" }
+  | { kind: "malformed" };
+
+/** Classify a GitHub pull-request update timestamp at whole-second precision. */
+export function parsePullRequestUpdatedAt(value: unknown): PullRequestUpdatedAt {
+  if (value === undefined) return { kind: "missing" };
+  if (typeof value !== "string") return { kind: "malformed" };
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return { kind: "malformed" };
+  return { kind: "valid", seconds: Math.trunc(milliseconds / 1_000) };
+}
+
+export type PullRequestSnapshotOrder =
+  | "event_newer"
+  | "live_newer"
+  | "equal"
+  | "unknown";
+
+/** Compare signed-event and live pull-request timestamps when state disagrees. */
+export function comparePullRequestSnapshotTimes(
+  eventUpdatedAt: unknown,
+  liveUpdatedAt: unknown,
+): PullRequestSnapshotOrder {
+  const eventTimestamp = parsePullRequestUpdatedAt(eventUpdatedAt);
+  const liveTimestamp = parsePullRequestUpdatedAt(liveUpdatedAt);
+  if (eventTimestamp.kind !== "valid" || liveTimestamp.kind !== "valid") {
+    return "unknown";
+  }
+  if (eventTimestamp.seconds > liveTimestamp.seconds) return "event_newer";
+  if (liveTimestamp.seconds > eventTimestamp.seconds) return "live_newer";
+  return "equal";
 }
 
 /** Load the immutable refs required by the existing review-job payload. */
@@ -687,6 +723,7 @@ export async function getPullRequestReviewContext(
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    updated_at?: unknown;
     user?: { id?: number; login?: string };
   };
   const headSha = data.head?.sha;
@@ -699,12 +736,14 @@ export async function getPullRequestReviewContext(
   const authorGithubId = data.user?.id;
   const authorLogin =
     typeof data.user?.login === "string" ? data.user.login.trim() : undefined;
+  const updatedAt = parsePullRequestUpdatedAt(data.updated_at);
   return {
     headSha,
     baseSha,
     open: data.state === "open",
     merged: data.merged === true,
     draft: data.draft === true,
+    ...(updatedAt.kind === "valid" ? { updatedAt: data.updated_at as string } : {}),
     ...(typeof authorGithubId === "number" &&
     Number.isSafeInteger(authorGithubId) &&
     authorGithubId > 0

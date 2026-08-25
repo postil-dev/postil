@@ -14,6 +14,7 @@ import { getInstallationToken } from "@/lib/github/app-auth";
 import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
 import {
   ADVISORY_CHECK_NAME,
+  comparePullRequestSnapshotTimes,
   GATE_CHECK_NAME,
   getPullRequestReviewComment,
   getPullRequestHeadSha,
@@ -121,6 +122,7 @@ interface PullRequestEventPayload {
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    updated_at?: unknown;
     user?: GithubUser;
   };
 }
@@ -132,6 +134,27 @@ const REVIEWABLE_PR_ACTIONS = new Set([
   "ready_for_review",
   "edited",
 ]);
+
+const PULL_REQUEST_AMBIGUITY_MAX_EVALUATIONS = 3;
+
+function ignoreOrRetryContradictoryPullRequestSnapshot(
+  repoFullName: string,
+  prNumber: number,
+  action: string,
+  eventUpdatedAt: unknown,
+  liveUpdatedAt: unknown,
+  evaluation: number,
+): void {
+  const order = comparePullRequestSnapshotTimes(eventUpdatedAt, liveUpdatedAt);
+  if (
+    order === "event_newer" ||
+    (order === "equal" && evaluation < PULL_REQUEST_AMBIGUITY_MAX_EVALUATIONS)
+  ) {
+    throw new Error(
+      `GitHub pull request ${repoFullName}#${prNumber} has not converged for ${action}`,
+    );
+  }
+}
 
 /**
  * The subset of a check_run/check_suite `pull_requests[]` entry we need to
@@ -279,9 +302,10 @@ export async function POST(request: Request): Promise<NextResponse> {
 export async function dispatchWebhookDelivery(
   event: string,
   payload: unknown,
-  options: { deliveryId: string; triggerFollowupDrain?: boolean },
+  options: { deliveryId: string; triggerFollowupDrain?: boolean; attempt?: number },
 ): Promise<void> {
   const triggerFollowupDrain = options.triggerFollowupDrain ?? true;
+  const attempt = options.attempt ?? 1;
   switch (event) {
     case "installation":
       await handleInstallation(payload as InstallationEventPayload, options.deliveryId);
@@ -294,6 +318,7 @@ export async function dispatchWebhookDelivery(
         payload as PullRequestEventPayload,
         options.deliveryId,
         triggerFollowupDrain,
+        attempt,
       );
       break;
     case "check_run":
@@ -586,6 +611,7 @@ async function handlePullRequest(
   payload: PullRequestEventPayload,
   sourceDeliveryId: string,
   triggerFollowupDrain: boolean,
+  evaluation: number,
 ): Promise<void> {
   const action = payload.action ?? "";
   if (!REVIEWABLE_PR_ACTIONS.has(action) && action !== "closed") return;
@@ -598,11 +624,39 @@ async function handlePullRequest(
   const headSha = pr.head?.sha;
   const baseSha = pr.base?.sha;
   if (action === "closed") {
-    if (live.open && !live.merged) return;
+    if (live.open && !live.merged) {
+      ignoreOrRetryContradictoryPullRequestSnapshot(
+        repo.full_name,
+        pr.number,
+        action,
+        pr.updated_at,
+        live.updatedAt,
+        evaluation,
+      );
+      return;
+    }
   } else if (!live.open || live.merged || live.draft) {
+    ignoreOrRetryContradictoryPullRequestSnapshot(
+      repo.full_name,
+      pr.number,
+      action,
+      pr.updated_at,
+      live.updatedAt,
+      evaluation,
+    );
     return;
   }
-  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) return;
+  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) {
+    ignoreOrRetryContradictoryPullRequestSnapshot(
+      repo.full_name,
+      pr.number,
+      action,
+      pr.updated_at,
+      live.updatedAt,
+      evaluation,
+    );
+    return;
+  }
 
   const db = getDb();
   const installation = (
