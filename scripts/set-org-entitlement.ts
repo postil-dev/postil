@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 
-import { closeDb, getDb, schema } from "@/lib/db";
 import { centsToMicros } from "@/lib/billing-credits";
+import { closeDb, getDb, schema } from "@/lib/db";
 import { HOSTED_REVIEW_RESERVATION_MICROS } from "@/lib/hosted-usage-reservations";
 
 export interface EntitlementOptions {
@@ -45,11 +45,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       periodEndsAt: options.periodEndsAt,
       includedUsageCents: options.includedUsageCents,
       overageHardCapCents: options.overageHardCapCents,
-      includedUsageMicros: centsToMicros(options.includedUsageCents),
+      includedUsageMicros: BigInt(options.includedUsageCents) * 10_000n,
       overageHardCapMicros:
         options.overageHardCapCents === null
           ? null
-          : centsToMicros(options.overageHardCapCents),
+          : BigInt(options.overageHardCapCents) * 10_000n,
       promotionalEligible: options.promotionalEligible,
       promotionalEndsAt: options.promotionalEndsAt,
       updatedBy: options.actor,

@@ -19,8 +19,8 @@ function entitlement(
     pastDueGraceEndsAt: null,
     periodStartsAt: new Date("2026-07-01T00:00:00.000Z"),
     periodEndsAt: new Date("2026-08-01T00:00:00.000Z"),
-    includedUsageMicros: 1_000_000,
-    overageHardCapMicros: 500_000,
+    includedUsageMicros: 1_000_000n,
+    overageHardCapMicros: 500_000n,
     promotionalEligible: false,
     promotionalEndsAt: null,
     billingContactEmail: null,
@@ -31,7 +31,7 @@ function entitlement(
 
 describe("repository inference entitlement matrix", () => {
   test("public BYOK remains eligible without billing state while hosted does not", () => {
-    const access = evaluateRepositoryInferenceAccess(false, null, 0, now);
+    const access = evaluateRepositoryInferenceAccess(false, null, 0n, now);
     expect(access).toMatchObject({
       allowed: true,
       reason: "public_repository",
@@ -44,13 +44,13 @@ describe("repository inference entitlement matrix", () => {
     const active = evaluateRepositoryInferenceAccess(
       false,
       entitlement({ status: "trialing", trialEndsAt: new Date(now.getTime() + 1) }),
-      0,
+      0n,
       now,
     );
     const expired = evaluateRepositoryInferenceAccess(
       false,
       entitlement({ status: "trialing", trialEndsAt: now }),
-      0,
+      0n,
       now,
     );
     expect(providerModeMatchesRepositoryAccess(false, active, false)).toBe(true);
@@ -64,7 +64,7 @@ describe("repository inference entitlement matrix", () => {
         evaluateRepositoryInferenceAccess(
           true,
           entitlement({ subscriptionMode }),
-          100,
+          100n,
           now,
         ),
       ).toMatchObject({ allowed: true, reason: "active_subscription" });
@@ -72,18 +72,18 @@ describe("repository inference entitlement matrix", () => {
   );
 
   test("a provider key has no path into the entitlement decision", () => {
-    expect(evaluateRepositoryInferenceAccess(true, null, 0, now)).toMatchObject({
+    expect(evaluateRepositoryInferenceAccess(true, null, 0n, now)).toMatchObject({
       allowed: false,
       reason: "no_entitlement",
     });
   });
 
   test("private inference must match the billed provider mode", () => {
-    const hosted = evaluateRepositoryInferenceAccess(true, entitlement(), 0, now);
+    const hosted = evaluateRepositoryInferenceAccess(true, entitlement(), 0n, now);
     const byok = evaluateRepositoryInferenceAccess(
       true,
       entitlement({ subscriptionMode: "byok" }),
-      0,
+      0n,
       now,
     );
     expect(providerModeMatchesRepositoryAccess(true, hosted, false)).toBe(true);
@@ -104,8 +104,8 @@ describe("repository inference entitlement matrix", () => {
       trialEndsAt: new Date(now.getTime() + 1),
     });
     const boundary = entitlement({ status: "trialing", trialEndsAt: now });
-    expect(evaluateRepositoryInferenceAccess(true, before, 0, now).reason).toBe("active_trial");
-    expect(evaluateRepositoryInferenceAccess(true, boundary, 0, now)).toMatchObject({
+    expect(evaluateRepositoryInferenceAccess(true, before, 0n, now).reason).toBe("active_trial");
+    expect(evaluateRepositoryInferenceAccess(true, boundary, 0n, now)).toMatchObject({
       allowed: false,
       reason: "inactive",
     });
@@ -117,10 +117,10 @@ describe("repository inference entitlement matrix", () => {
       pastDueGraceEndsAt: new Date(now.getTime() + 1),
     });
     const boundary = entitlement({ status: "past_due", pastDueGraceEndsAt: now });
-    expect(evaluateRepositoryInferenceAccess(true, before, 0, now).reason).toBe(
+    expect(evaluateRepositoryInferenceAccess(true, before, 0n, now).reason).toBe(
       "past_due_grace",
     );
-    expect(evaluateRepositoryInferenceAccess(true, boundary, 0, now).allowed).toBe(false);
+    expect(evaluateRepositoryInferenceAccess(true, boundary, 0n, now).allowed).toBe(false);
   });
 
   test("suspension overrides trials, grace, and promotions", () => {
@@ -130,7 +130,7 @@ describe("repository inference entitlement matrix", () => {
       pastDueGraceEndsAt: new Date(now.getTime() + 60_000),
       promotionalEligible: true,
     });
-    expect(evaluateRepositoryInferenceAccess(true, suspended, 0, now)).toMatchObject({
+    expect(evaluateRepositoryInferenceAccess(true, suspended, 0n, now)).toMatchObject({
       allowed: false,
       reason: "suspended",
     });
@@ -147,41 +147,71 @@ describe("repository inference entitlement matrix", () => {
       promotionalEligible: true,
       promotionalEndsAt: now,
     });
-    expect(evaluateRepositoryInferenceAccess(true, active, 0, now).reason).toBe(
+    expect(evaluateRepositoryInferenceAccess(true, active, 0n, now).reason).toBe(
       "operator_promotion",
     );
-    expect(evaluateRepositoryInferenceAccess(true, expired, 0, now).allowed).toBe(false);
+    expect(evaluateRepositoryInferenceAccess(true, expired, 0n, now).allowed).toBe(false);
   });
 
   test("the included-plus-overage hard cap blocks at the exact limit", () => {
-    const state = entitlement({ includedUsageMicros: 1_000_000, overageHardCapMicros: 500_000 });
-    expect(evaluateRepositoryInferenceAccess(true, state, 1_499_999, now).allowed).toBe(true);
-    expect(evaluateRepositoryInferenceAccess(true, state, 1_500_000, now)).toMatchObject({
+    const state = entitlement({ includedUsageMicros: 1_000_000n, overageHardCapMicros: 500_000n });
+    expect(evaluateRepositoryInferenceAccess(true, state, 1_499_999n, now).allowed).toBe(true);
+    expect(evaluateRepositoryInferenceAccess(true, state, 1_500_000n, now)).toMatchObject({
       allowed: false,
       reason: "usage_cap_reached",
-      usageLimitMicros: 1_500_000,
+      usageLimitMicros: 1_500_000n,
     });
   });
 
   test("hosted null cap fails safe to zero overage while BYOK null remains uncapped", () => {
     const hosted = entitlement({
       subscriptionMode: "hosted",
-      includedUsageMicros: 1_000_000,
+      includedUsageMicros: 1_000_000n,
       overageHardCapMicros: null,
     });
     const byok = entitlement({
       subscriptionMode: "byok",
-      includedUsageMicros: 0,
+      includedUsageMicros: 0n,
       overageHardCapMicros: null,
     });
-    expect(evaluateRepositoryInferenceAccess(true, hosted, 999_999, now).allowed).toBe(true);
-    expect(evaluateRepositoryInferenceAccess(true, hosted, 1_000_000, now)).toMatchObject({
+    expect(evaluateRepositoryInferenceAccess(true, hosted, 999_999n, now).allowed).toBe(true);
+    expect(evaluateRepositoryInferenceAccess(true, hosted, 1_000_000n, now)).toMatchObject({
       allowed: false,
-      usageLimitMicros: 1_000_000,
+      usageLimitMicros: 1_000_000n,
     });
-    expect(evaluateRepositoryInferenceAccess(true, byok, 1_000_000, now)).toMatchObject({
+    expect(evaluateRepositoryInferenceAccess(true, byok, 1_000_000n, now)).toMatchObject({
       allowed: true,
       usageLimitMicros: null,
+    });
+  });
+
+  test("keeps entitlement arithmetic exact beyond Number.MAX_SAFE_INTEGER", () => {
+    const includedUsageMicros = 9_007_199_254_740_993n;
+    const overageHardCapMicros = 17n;
+    const state = entitlement({ includedUsageMicros, overageHardCapMicros });
+
+    expect(
+      evaluateRepositoryInferenceAccess(
+        true,
+        state,
+        includedUsageMicros + overageHardCapMicros - 1n,
+        now,
+      ),
+    ).toMatchObject({
+      allowed: true,
+      usageLimitMicros: 9_007_199_254_741_010n,
+    });
+    expect(
+      evaluateRepositoryInferenceAccess(
+        true,
+        state,
+        includedUsageMicros + overageHardCapMicros,
+        now,
+      ),
+    ).toMatchObject({
+      allowed: false,
+      reason: "usage_cap_reached",
+      usageLimitMicros: 9_007_199_254_741_010n,
     });
   });
 });

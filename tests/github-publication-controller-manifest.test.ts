@@ -166,6 +166,20 @@ describe("GitHub publication controller manifest", () => {
     resignPlan(malformedDecimal);
     expectRejected(malformedDecimal, "repository id");
 
+    for (const fullName of [
+      "../repo",
+      "acme/.",
+      "acme/..",
+      "acme/repo/name",
+      "acme/%2e%2e",
+      "acme space/repo",
+    ]) {
+      const malformedRepository = validPlan();
+      malformedRepository.repository.fullName = fullName;
+      resignPlan(malformedRepository);
+      expectRejected(malformedRepository, "repository full name");
+    }
+
     const malformedSha = validPlan();
     malformedSha.reviewedSnapshot.headSha = "A".repeat(40);
     resignPlan(malformedSha);
@@ -252,6 +266,34 @@ describe("GitHub publication controller manifest", () => {
     })).toThrow("absent from the accepted plan");
     expect(() => build(plan, { ...gateOutput, conclusion: "cancelled" as never })).toThrow("conclusion");
     expect(() => build(plan, { ...gateOutput, detailsUrl: "javascript:alert(1)" })).toThrow("HTTP URL");
+  });
+
+  test("accepts bounded HTTP gate URLs and rejects embedded credentials", () => {
+    const prefix = "http://example.test/";
+    const exactUrl = prefix + "x".repeat(2_048 - Buffer.byteLength(prefix));
+    expect(build(validPlan(), { ...gateOutput, detailsUrl: exactUrl }).value)
+      .toBeDefined();
+
+    expect(() => build(validPlan(), {
+      ...gateOutput,
+      detailsUrl: `${exactUrl}x`,
+    })).toThrow("byte limit");
+    for (const detailsUrl of [
+      "https://user@example.test/run",
+      "https://user:password@example.test/run",
+    ]) {
+      expect(() => build(validPlan(), { ...gateOutput, detailsUrl }))
+        .toThrow("HTTP URL without credentials");
+    }
+
+    expect(build(validPlan(), {
+      ...gateOutput,
+      summary: "s".repeat(65_535),
+    }).value).toBeDefined();
+    expect(() => build(validPlan(), {
+      ...gateOutput,
+      summary: "s".repeat(65_536),
+    })).toThrow("byte limit");
   });
 });
 

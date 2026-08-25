@@ -23,16 +23,16 @@ export interface HostedUsageReservationDecision {
   allowed: boolean;
   reservationId: string | null;
   reason: "not_hosted" | "reserved" | "usage_cap_reached" | "inactive";
-  committedMicros: number;
-  activeReservedMicros: number;
-  usageLimitMicros: number | null;
+  committedMicros: bigint;
+  activeReservedMicros: bigint;
+  usageLimitMicros: bigint | null;
 }
 
 export function hasHostedReservationCapacity(input: {
-  committedMicros: number;
-  activeReservedMicros: number;
-  requestedMicros: number;
-  usageLimitMicros: number;
+  committedMicros: bigint;
+  activeReservedMicros: bigint;
+  requestedMicros: bigint;
+  usageLimitMicros: bigint;
 }): boolean {
   return (
     input.committedMicros + input.activeReservedMicros + input.requestedMicros <=
@@ -137,7 +137,7 @@ async function reserveHostedSpend(
     }
     if (entitlement.subscriptionMode !== "hosted") return emptyDecision("inactive");
 
-    const access = evaluateRepositoryInferenceAccess(true, entitlement, 0, now);
+    const access = evaluateRepositoryInferenceAccess(true, entitlement, 0n, now);
     if (!access.allowed || access.usageLimitMicros === null) {
       return {
         ...emptyDecision(access.reason === "usage_cap_reached" ? "usage_cap_reached" : "inactive"),
@@ -169,7 +169,7 @@ async function reserveHostedSpend(
     const committed = (
       await tx
         .select({
-          micros: sql<number>`COALESCE(SUM(${schema.usageEvents.costMicros}), 0)::bigint`,
+          micros: sql<string>`COALESCE(SUM(${schema.usageEvents.costMicros}), 0)::bigint`,
           unpriced: sql<number>`COUNT(*) FILTER (WHERE ${schema.usageEvents.costMicros} IS NULL)::int`,
         })
         .from(schema.usageEvents)
@@ -178,7 +178,7 @@ async function reserveHostedSpend(
     const activeReserved = (
       await tx
         .select({
-          micros: sql<number>`COALESCE(SUM(${schema.hostedUsageReservations.reservedMicros}), 0)::bigint`,
+          micros: sql<string>`COALESCE(SUM(${schema.hostedUsageReservations.reservedMicros}), 0)::bigint`,
         })
         .from(schema.hostedUsageReservations)
         .where(
@@ -188,16 +188,16 @@ async function reserveHostedSpend(
             gt(schema.hostedUsageReservations.expiresAt, now),
           ),
         )
-    )[0]?.micros ?? 0;
+    )[0]?.micros ?? "0";
     const committedMicros = committed.unpriced > 0
       ? access.usageLimitMicros
-      : Number(committed.micros);
-    const activeReservedMicros = Number(activeReserved);
+      : BigInt(committed.micros);
+    const activeReservedMicros = BigInt(activeReserved);
     if (
       !hasHostedReservationCapacity({
         committedMicros,
         activeReservedMicros,
-        requestedMicros: input.requestedMicros,
+        requestedMicros: BigInt(input.requestedMicros),
         usageLimitMicros: access.usageLimitMicros,
       })
     ) {
@@ -652,8 +652,8 @@ function emptyDecision(
     allowed: reason === "not_hosted",
     reservationId: null,
     reason,
-    committedMicros: 0,
-    activeReservedMicros: 0,
+    committedMicros: 0n,
+    activeReservedMicros: 0n,
     usageLimitMicros: null,
   };
 }
