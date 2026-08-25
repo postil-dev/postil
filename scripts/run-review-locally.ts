@@ -119,6 +119,12 @@ interface DatabaseHandle {
   cleanup(): Promise<void>;
 }
 
+export interface DisposableDatabaseCleanupPlan {
+  dropDatabase: boolean;
+  stopContainer: boolean;
+  retainContainer: boolean;
+}
+
 interface RunResult {
   reviewId: number;
   jobStatus: string;
@@ -700,6 +706,38 @@ function repositoryPathFromMarker(marker: string | undefined): string | undefine
 const DISPOSABLE_POSTGRES_IMAGE = "postgres:17.2-alpine";
 const CONTAINER_RUNTIMES = ["docker", "podman"] as const;
 
+export function disposablePostgresRunArgs(
+  containerName: string,
+  port: number,
+  keepDatabase: boolean,
+): string[] {
+  return [
+    "run",
+    "-d",
+    ...(keepDatabase
+      ? ["--label", "dev.postil.local-review-retained=true"]
+      : ["--rm"]),
+    "--name",
+    containerName,
+    "-e",
+    "POSTGRES_HOST_AUTH_METHOD=trust",
+    "-p",
+    `127.0.0.1:${port}:5432`,
+    DISPOSABLE_POSTGRES_IMAGE,
+  ];
+}
+
+export function disposableDatabaseCleanupPlan(
+  keepDatabase: boolean,
+  selfStartedContainer: boolean,
+): DisposableDatabaseCleanupPlan {
+  return {
+    dropDatabase: !keepDatabase,
+    stopContainer: selfStartedContainer && !keepDatabase,
+    retainContainer: selfStartedContainer && keepDatabase,
+  };
+}
+
 /**
  * Start the disposable Postgres container under whichever runtime can create
  * it, and name that runtime so the caller can stop what it started. Reporting a
@@ -711,15 +749,14 @@ const CONTAINER_RUNTIMES = ["docker", "podman"] as const;
 async function startDisposablePostgres(
   containerName: string,
   port: number,
+  keepDatabase: boolean,
 ): Promise<string> {
   const failures: string[] = [];
   for (const runtime of CONTAINER_RUNTIMES) {
     try {
       await run([
-        runtime, "run", "-d", "--rm", "--name", containerName,
-        "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
-        "-p", `127.0.0.1:${port}:5432`,
-        DISPOSABLE_POSTGRES_IMAGE,
+        runtime,
+        ...disposablePostgresRunArgs(containerName, port, keepDatabase),
       ]);
       return runtime;
     } catch (error) {
@@ -741,7 +778,11 @@ async function createDisposableDatabase(
   if (!adminUrl) {
     const port = await freePort();
     containerName = `postil-local-review-${process.pid}-${randomBytes(3).toString("hex")}`;
-    containerRuntime = await startDisposablePostgres(containerName, port);
+    containerRuntime = await startDisposablePostgres(
+      containerName,
+      port,
+      keepDatabase,
+    );
     adminUrl = `postgresql://postgres@127.0.0.1:${port}/postgres`;
   }
   assertLocalDatabase(adminUrl);
@@ -761,7 +802,11 @@ async function createDisposableDatabase(
   return {
     databaseUrl: databaseUrl.toString(),
     async cleanup() {
-      if (!keepDatabase) {
+      const plan = disposableDatabaseCleanupPlan(
+        keepDatabase,
+        Boolean(containerName && containerRuntime),
+      );
+      if (plan.dropDatabase) {
         const cleanupClient = new Client({ connectionString: adminUrl });
         await cleanupClient.connect().catch(() => undefined);
         await cleanupClient
@@ -771,8 +816,13 @@ async function createDisposableDatabase(
       } else {
         console.log(`local review database retained: ${databaseName}`);
       }
-      if (containerName && containerRuntime) {
+      if (plan.stopContainer && containerName && containerRuntime) {
         await run([containerRuntime, "stop", containerName]).catch(() => undefined);
+      }
+      if (plan.retainContainer && containerName && containerRuntime) {
+        console.log(
+          `local review Postgres retained: runtime=${containerRuntime} container=${containerName}`,
+        );
       }
     },
   };
@@ -1062,7 +1112,7 @@ Options:
   --repo-path PATH    Git repository containing the local diff. Defaults to cwd.
   --repo OWNER/NAME   Synthetic repository slug exposed by the local fake GitHub API.
   --pr NUMBER         Synthetic pull request number. Defaults to 1.
-  --keep-database     Keep the disposable database for inspection.
+  --keep-database     Keep the database for inspection. A self-started Postgres container remains running.
   --require-clean     Exit 1 when any surviving finding would be posted.
 `);
 }
