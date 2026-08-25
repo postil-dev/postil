@@ -207,6 +207,17 @@ export default function SecurityPage() {
               key is provided via environment configuration and is never written
               to the database or to logs.
             </p>
+            <p>
+              PostgreSQL stores only SHA-256 digests of CLI access and refresh
+              tokens. The CLI stores the raw bearer credentials in an owner-only
+              local credentials file. Initial issuance has a 60-second
+              response-recovery window that reconstructs the same pair from
+              server-held key material and immutable identifiers without storing
+              plaintext credentials or creating another token family. Consumed
+              refresh-token digests and revoked access-token digests remain as
+              audit evidence, so a stale refresh credential can revoke its
+              complete session family.
+            </p>
           </div>
           <div className="card p-6">
             <p className="eyebrow">Credential lifetimes</p>
@@ -238,13 +249,13 @@ export default function SecurityPage() {
               <div className="flex justify-between gap-4">
                 <dt>CLI access token</dt>
                 <dd className="text-right font-mono text-xs">
-                  hashed at rest, 12 hours
+                  SHA-256 digest in PostgreSQL, 12 hours
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
                 <dt>CLI refresh token</dt>
                 <dd className="text-right font-mono text-xs">
-                  hashed at rest, rotates, 180-day inactivity
+                  SHA-256 digest in PostgreSQL, 180-day inactivity
                 </dd>
               </div>
               <div className="flex justify-between gap-4">

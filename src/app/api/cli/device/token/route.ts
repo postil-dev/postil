@@ -11,13 +11,24 @@ export const dynamic = "force-dynamic";
 
 /** Poll a `postil login` device authorization for its outcome. No session required. */
 export async function POST(request: Request): Promise<NextResponse> {
-  const deviceCode = await readDeviceCode(request);
-  if (!deviceCode) {
+  const parsed = await readDeviceCode(request);
+  if (!parsed.ok) {
+    return NextResponse.json(
+      { status: "invalid_request" },
+      { status: parsed.status },
+    );
+  }
+  if (!parsed.deviceCode) {
     return NextResponse.json({ status: "expired" }, { status: 410 });
   }
 
   const db = getDb();
-  const result = await claimDeviceAuthorizationToken(db, deviceCode);
+  const issuer = publicOrigin(request);
+  const result = await claimDeviceAuthorizationToken(
+    db,
+    parsed.deviceCode,
+    issuer,
+  );
 
   if (result.status === "pending") {
     return NextResponse.json({ status: "pending" }, { status: 428 });
@@ -54,7 +65,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       expiresAt: result.expiresAt.toISOString(),
       refreshToken: result.refreshToken,
       refreshExpiresAt: result.refreshExpiresAt.toISOString(),
-      apiBase: new URL("/api/inference/v1", publicOrigin(request)).toString(),
+      apiBase: new URL("/api/inference/v1", issuer).toString(),
       org: { slug: org.slug, name: org.name },
       model: model ?? "",
     },
@@ -62,13 +73,23 @@ export async function POST(request: Request): Promise<NextResponse> {
   );
 }
 
-async function readDeviceCode(request: Request): Promise<string | null> {
+async function readDeviceCode(
+  request: Request,
+): Promise<
+  { ok: true; deviceCode: string | null } | { ok: false; status: 400 | 413 }
+> {
   const parsed = await readCliJsonBody(request);
-  if (!parsed.ok) return null;
+  if (!parsed.ok) return parsed;
   const { body } = parsed;
-  if (typeof body !== "object" || body === null) return null;
+  if (typeof body !== "object" || body === null) {
+    return { ok: true, deviceCode: null };
+  }
   const deviceCode = (body as Record<string, unknown>).deviceCode;
-  return typeof deviceCode === "string" && deviceCode.length > 0
-    ? deviceCode
-    : null;
+  return {
+    ok: true,
+    deviceCode:
+      typeof deviceCode === "string" && deviceCode.length > 0
+        ? deviceCode
+        : null,
+  };
 }

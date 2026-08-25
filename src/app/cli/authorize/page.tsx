@@ -72,7 +72,7 @@ export default async function CliAuthorizePage({
       />
     );
   }
-  if (row.expiresAt <= new Date()) {
+  if (row.status === "expired") {
     return (
       <StatusCard
         title="Code expired"

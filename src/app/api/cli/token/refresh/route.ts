@@ -45,6 +45,23 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const result = await refreshCliSession(getDb(), refreshToken);
+  if (result.status === "rate_limited") {
+    return NextResponse.json(
+      {
+        error: {
+          message: "CLI session refresh is not available yet",
+          type: "rate_limited",
+        },
+      },
+      {
+        status: 429,
+        headers: {
+          "cache-control": "private, no-store",
+          "retry-after": String(result.retryAfterSeconds),
+        },
+      },
+    );
+  }
   if (result.status !== "approved") {
     return NextResponse.json(
       { error: { message: "postil login required", type: "invalid_token" } },

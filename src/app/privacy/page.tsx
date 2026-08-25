@@ -112,9 +112,17 @@ export default function PrivacyPage() {
           logs.
         </p>
         <p>
-          CLI access tokens expire after 12 hours. CLI refresh tokens are stored
-          only as digests, rotate on use, and keep a CLI session active for 180
-          days after each successful refresh.
+          PostgreSQL stores only SHA-256 digests of CLI access and refresh
+          tokens. The CLI stores the raw bearer credentials in an owner-only
+          local credentials file. Access tokens expire after 12 hours. Refresh
+          tokens rotate on use and keep a CLI session active for 180 days after
+          each successful refresh. If the initial credential response is lost,
+          the same pair can be reconstructed from the server secret and
+          immutable issuance identifiers for 60 seconds. The recovery does not
+          store plaintext tokens, extend expiry, or create another session.
+          Consumed refresh-token digests and revoked access-token digests remain
+          in PostgreSQL as security evidence and allow a stale refresh
+          credential to revoke its complete session family.
         </p>
 
         <h2>Subprocessors</h2>

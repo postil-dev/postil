@@ -440,6 +440,10 @@ describe("migration lint", () => {
     expect(migration).toContain(
       'CREATE UNIQUE INDEX "cli_refresh_tokens_token_sha256_idx"',
     );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "cli_refresh_tokens_current_session_idx"',
+    );
+    expect(migration).toContain('WHERE "consumed_at" IS NULL');
     expect(migration).not.toContain("DELETE FROM");
     expect(migration).not.toContain("DROP TABLE");
     expect(migration).not.toContain(

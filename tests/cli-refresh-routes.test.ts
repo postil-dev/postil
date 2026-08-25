@@ -11,6 +11,7 @@ const REFRESH_EXPIRES_AT = new Date("2030-06-30T12:00:00.000Z");
 
 let refreshResult:
   | { status: "invalid" }
+  | { status: "rate_limited"; retryAfterSeconds: number }
   | {
       status: "approved";
       token: string;
@@ -22,6 +23,7 @@ let refreshInputs: string[] = [];
 let revokedCredentials: Array<{ accessToken?: string; refreshToken?: string }> =
   [];
 let deviceCodeInputs: string[] = [];
+let deviceIssuerInputs: string[] = [];
 
 mock.module("@/lib/db", () => ({
   schema: databaseSchema,
@@ -48,6 +50,9 @@ mock.module("@/lib/cli-auth", () => ({
     typeof value === "string" && /^pclr_[A-Za-z0-9_-]{43}$/.test(value),
   readCliJsonBody: async (request: Request) => {
     const text = await request.text();
+    if (new TextEncoder().encode(text).byteLength > 4 * 1_024) {
+      return { ok: false as const, status: 413 as const };
+    }
     if (!text) return { ok: true as const, body: null };
     try {
       return { ok: true as const, body: JSON.parse(text) };
@@ -55,8 +60,13 @@ mock.module("@/lib/cli-auth", () => ({
       return { ok: false as const, status: 400 as const };
     }
   },
-  claimDeviceAuthorizationToken: async (_db: unknown, deviceCode: string) => {
+  claimDeviceAuthorizationToken: async (
+    _db: unknown,
+    deviceCode: string,
+    issuer: string,
+  ) => {
     deviceCodeInputs.push(deviceCode);
+    deviceIssuerInputs.push(issuer);
     return {
       status: "approved" as const,
       token: ACCESS_TOKEN,
@@ -100,6 +110,7 @@ describe("CLI refresh routes", () => {
     refreshInputs = [];
     revokedCredentials = [];
     deviceCodeInputs = [];
+    deviceIssuerInputs = [];
   });
 
   test("returns a replacement credential pair with no-store caching", async () => {
@@ -124,6 +135,21 @@ describe("CLI refresh routes", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toEqual({
       error: { message: "postil login required", type: "invalid_token" },
+    });
+  });
+
+  test("returns the governed family cadence as a retryable rate limit", async () => {
+    refreshResult = { status: "rate_limited", retryAfterSeconds: 3_527 };
+    const response = await refreshPost(refreshRequest(REFRESH_TOKEN));
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("retry-after")).toBe("3527");
+    expect(await response.json()).toEqual({
+      error: {
+        message: "CLI session refresh is not available yet",
+        type: "rate_limited",
+      },
     });
   });
 
@@ -214,6 +240,26 @@ describe("CLI refresh routes", () => {
       model: "z-ai/glm-5.2",
     });
     expect(deviceCodeInputs).toEqual(["device-code"]);
+    expect(deviceIssuerInputs).toEqual(["https://postil.dev"]);
+  });
+
+  test("device token polling preserves malformed and oversized body statuses", async () => {
+    const malformed = await deviceTokenPost(
+      new Request("https://postil.dev/api/cli/device/token", {
+        method: "POST",
+        body: "{",
+      }),
+    );
+    const oversized = await deviceTokenPost(
+      new Request("https://postil.dev/api/cli/device/token", {
+        method: "POST",
+        body: JSON.stringify({ deviceCode: "x".repeat(4 * 1_024) }),
+      }),
+    );
+
+    expect(malformed.status).toBe(400);
+    expect(oversized.status).toBe(413);
+    expect(deviceCodeInputs).toEqual([]);
   });
 });
 

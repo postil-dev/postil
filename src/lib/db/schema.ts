@@ -2010,6 +2010,9 @@ export const cliRefreshTokens = pgTable(
   },
   (t) => [
     uniqueIndex("cli_refresh_tokens_token_sha256_idx").on(t.tokenSha256),
+    uniqueIndex("cli_refresh_tokens_current_session_idx")
+      .on(t.sessionId)
+      .where(sql`${t.consumedAt} IS NULL`),
     index("cli_refresh_tokens_session_idx").on(t.sessionId),
     check(
       "cli_refresh_tokens_expiry_check",
