@@ -10,6 +10,12 @@ const OLD_ENV = { ...process.env };
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
+const finiteRetrySchedules: Array<{
+  id: number;
+  attempts: number;
+  maxAttempts: number;
+  delayMs: number;
+}> = [];
 const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
 const retriedIndefinitely: Array<{ id: number; error: string }> = [];
@@ -151,9 +157,24 @@ mock.module("@/lib/queue", () => ({
     if (options?.failureFollowup) {
       failureFollowups.push(options.failureFollowup.payload);
     }
-    return job.kind === "webhook-dispatch" && error.includes("has not converged")
-      ? "retried"
-      : "failed";
+    if (
+      job.kind === "webhook-dispatch" &&
+      webhookDispatchError instanceof MockBoundedJobRetryError &&
+      !options?.permanent &&
+      job.attempts < job.maxAttempts
+    ) {
+      finiteRetrySchedules.push({
+        id: job.id,
+        attempts: job.attempts,
+        maxAttempts: job.maxAttempts,
+        delayMs: Math.min(
+          30_000 * 2 ** Math.max(job.attempts - 1, 0),
+          15 * 60_000,
+        ),
+      });
+      return "retried";
+    }
+    return "failed";
   },
   retryJobIndefinitely: async (
     _pool: unknown,
@@ -295,6 +316,7 @@ beforeEach(() => {
   jobs.length = 0;
   completed.length = 0;
   failed.length = 0;
+  finiteRetrySchedules.length = 0;
   failureFollowups.length = 0;
   permanentFailures.length = 0;
   retriedIndefinitely.length = 0;
@@ -652,20 +674,23 @@ describe("drainQueueOnce", () => {
   });
 
   test("uses finite queue backoff for equal-second webhook ambiguity", async () => {
-    const job = reviewJob(25);
-    job.kind = "webhook-dispatch";
-    job.payload = { deliveryId: "delivery-25" };
-    webhookDeliveryToLoad = {
-      deliveryId: "delivery-25",
-      event: "pull_request",
-      action: "closed",
-      payload: {},
-    };
     webhookDispatchError = new MockBoundedJobRetryError(
       "GitHub pull request octo/repo#7 has not converged for closed",
     );
 
-    await runClaimedJob(job, "worker 0", "worker");
+    for (const attempts of [1, 2]) {
+      const job = reviewJob(24 + attempts);
+      job.kind = "webhook-dispatch";
+      job.payload = { deliveryId: `delivery-${24 + attempts}` };
+      job.attempts = attempts;
+      webhookDeliveryToLoad = {
+        deliveryId: `delivery-${24 + attempts}`,
+        event: "pull_request",
+        action: "closed",
+        payload: {},
+      };
+      await runClaimedJob(job, "worker 0", "worker");
+    }
 
     expect(webhookDeliveriesCompleted).toEqual([]);
     expect(failed).toEqual([
@@ -673,9 +698,17 @@ describe("drainQueueOnce", () => {
         id: 25,
         error: "GitHub pull request octo/repo#7 has not converged for closed",
       },
+      {
+        id: 26,
+        error: "GitHub pull request octo/repo#7 has not converged for closed",
+      },
+    ]);
+    expect(finiteRetrySchedules).toEqual([
+      { id: 25, attempts: 1, maxAttempts: 3, delayMs: 30_000 },
+      { id: 26, attempts: 2, maxAttempts: 3, delayMs: 60_000 },
     ]);
     expect(retriedIndefinitely).toEqual([]);
-    expect(operationalWarnings).toEqual(["job_retrying"]);
+    expect(operationalWarnings).toEqual(["job_retrying", "job_retrying"]);
   });
 
   test("completes a webhook delivery whose forge target stays gone", async () => {

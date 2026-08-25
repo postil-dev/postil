@@ -229,7 +229,7 @@ describeDb("webhook delivery dedupe durability", () => {
     expect(durable.rows[0]).toEqual({ completed: false, payload_retained: true });
   });
 
-  test("equal-timestamp convergence keeps duplicate delivery enqueue idempotent", async () => {
+  test("duplicate delivery enqueue remains idempotent after successful dispatch", async () => {
     const first = await POST(prRequest());
     expect(first.status).toBe(200);
     expect(((await first.json()) as { queued?: boolean }).queued).toBe(true);
@@ -360,7 +360,7 @@ describeDb("webhook delivery dedupe durability", () => {
     });
   });
 
-  test("equal-timestamp convergence survives a crash without a second review enqueue", async () => {
+  test("dispatch recovery after a crash does not enqueue a second review", async () => {
     expect((await POST(prRequest())).status).toBe(200);
     const delivery = await loadWebhookDelivery(pool, DELIVERY_ID);
     expect(delivery).not.toBeNull();

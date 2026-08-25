@@ -673,12 +673,30 @@ export type PullRequestUpdatedAt =
   | { kind: "missing" }
   | { kind: "malformed" };
 
+const GITHUB_TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+
 /** Classify a GitHub pull-request update timestamp at whole-second precision. */
 export function parsePullRequestUpdatedAt(value: unknown): PullRequestUpdatedAt {
   if (value === undefined) return { kind: "missing" };
   if (typeof value !== "string") return { kind: "malformed" };
+  const components = GITHUB_TIMESTAMP_PATTERN.exec(value);
+  if (!components) return { kind: "malformed" };
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds)) return { kind: "malformed" };
+  const parsed = new Date(milliseconds);
+  const expected = components.slice(1, 7).map(Number);
+  const actual = [
+    parsed.getUTCFullYear(),
+    parsed.getUTCMonth() + 1,
+    parsed.getUTCDate(),
+    parsed.getUTCHours(),
+    parsed.getUTCMinutes(),
+    parsed.getUTCSeconds(),
+  ];
+  if (actual.some((component, index) => component !== expected[index])) {
+    return { kind: "malformed" };
+  }
   return { kind: "valid", seconds: Math.trunc(milliseconds / 1_000) };
 }
 

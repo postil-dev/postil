@@ -206,6 +206,16 @@ describe("pull-request review context", () => {
     expect(parsePullRequestUpdatedAt("not-a-timestamp")).toEqual({
       kind: "malformed",
     });
+    for (const looseDate of ["08/24/2026", "2026-08-24", "0"]) {
+      expect(parsePullRequestUpdatedAt(looseDate)).toEqual({ kind: "malformed" });
+    }
+    expect(parsePullRequestUpdatedAt("2026-02-29T12:34:56Z")).toEqual({
+      kind: "malformed",
+    });
+    expect(parsePullRequestUpdatedAt("2024-02-29T12:34:56Z")).toEqual({
+      kind: "valid",
+      seconds: 1_709_210_096,
+    });
     expect(parsePullRequestUpdatedAt("2026-08-24T12:34:56.999Z")).toEqual(
       parsePullRequestUpdatedAt("2026-08-24T12:34:56Z"),
     );
@@ -235,6 +245,12 @@ describe("pull-request review context", () => {
     );
     expect(
       comparePullRequestSnapshotTimes("not-a-timestamp", "2026-08-24T12:34:56Z"),
+    ).toBe("unknown");
+    expect(
+      comparePullRequestSnapshotTimes("08/24/2026", "2026-08-24T12:34:56Z"),
+    ).toBe("unknown");
+    expect(
+      comparePullRequestSnapshotTimes("2026-08-24T12:34:56Z", "2026-08-24"),
     ).toBe("unknown");
   });
 

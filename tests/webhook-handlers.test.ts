@@ -1345,7 +1345,7 @@ describeDb("webhook handler behaviour", () => {
     expect(completedCheckRuns).toEqual([]);
   });
 
-  test("equal timestamps do not delay an already converged event", async () => {
+  test("a newer event timestamp does not delay an already converged event", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 255);
     await seedRepo(inst, 7883, "octo/converged");
@@ -1370,7 +1370,7 @@ describeDb("webhook handler behaviour", () => {
               number: 12,
               head: { sha: "same-head" },
               base: { sha: "base" },
-              updated_at: "2026-08-24T12:34:56Z",
+              updated_at: "2026-08-24T12:34:57Z",
             },
           },
           "delivery-converged",
@@ -1436,6 +1436,106 @@ describeDb("webhook handler behaviour", () => {
         WHERE kind = 'review'`,
     );
     expect(jobs.rows).toEqual([{ headSha: "new-head" }]);
+  });
+
+  test("non-newer contradictory refs fail closed with bounded equal-time retries", async () => {
+    const orgId = await seedOrg();
+    const cases = [
+      {
+        name: "live-newer",
+        installationId: 258,
+        githubRepoId: 7886,
+        eventUpdatedAt: "2026-08-24T12:34:55Z",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+        expectedAttempts: 1,
+      },
+      {
+        name: "unknown",
+        installationId: 259,
+        githubRepoId: 7887,
+        eventUpdatedAt: "2026-08-24",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+        expectedAttempts: 1,
+      },
+      {
+        name: "equal",
+        installationId: 260,
+        githubRepoId: 7888,
+        eventUpdatedAt: "2026-08-24T12:34:56.900Z",
+        liveUpdatedAt: "2026-08-24T12:34:56.100Z",
+        expectedAttempts: 3,
+      },
+    ];
+
+    for (const item of cases) {
+      const installation = await seedInstallation(orgId, item.installationId);
+      await seedRepo(
+        installation,
+        item.githubRepoId,
+        `octo/ref-${item.name}`,
+      );
+      pullRequestReviewContext = {
+        open: true,
+        merged: false,
+        headSha: "live-head",
+        baseSha: "base",
+        draft: false,
+        updatedAt: item.liveUpdatedAt,
+      };
+      const deliveryId = `delivery-ref-${item.name}`;
+      expect(
+        (
+          await post(
+            "pull_request",
+            {
+              action: "synchronize",
+              installation: { id: item.installationId },
+              repository: {
+                id: item.githubRepoId,
+                full_name: `octo/ref-${item.name}`,
+                private: false,
+              },
+              pull_request: {
+                number: 15,
+                head: { sha: "event-head" },
+                base: { sha: "base" },
+                updated_at: item.eventUpdatedAt,
+              },
+            },
+            deliveryId,
+          )
+        ).status,
+      ).toBe(200);
+
+      if (item.name === "equal") {
+        await runPendingWebhookDispatch(deliveryId, "webhook-ref-equal-second");
+        await runPendingWebhookDispatch(deliveryId, "webhook-ref-equal-terminal");
+      }
+
+      const state = await pool.query<{
+        status: string;
+        attempts: number;
+        completed: boolean;
+      }>(
+        `SELECT dispatch.status, dispatch.attempts,
+                delivery.completed_at IS NOT NULL AS completed
+           FROM jobs dispatch
+           JOIN webhook_deliveries delivery
+             ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+          WHERE dispatch.kind = 'webhook-dispatch'
+            AND delivery.delivery_id = $1`,
+        [deliveryId],
+      );
+      expect(state.rows[0]).toEqual({
+        status: "done",
+        attempts: item.expectedAttempts,
+        completed: true,
+      });
+    }
+
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'review'")).rowCount).toBe(
+      0,
+    );
   });
 
   test("unknown timestamp ordering keeps contradictory events ignored", async () => {
