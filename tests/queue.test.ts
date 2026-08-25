@@ -6,6 +6,7 @@ import type { Pool, PoolClient } from "pg";
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import {
   backoffMs,
+  BoundedJobRetryError,
   claimJob as claimJobWithCapabilities,
   claimNextJob,
   completeJob,
@@ -14,6 +15,7 @@ import {
   enqueueRespondJobWithinHourlyCap,
   enqueueReviewJobOnce,
   failJob,
+  isBoundedJobRetryError,
   nextClaimPollDelay,
   queueDepth,
   requeueJobsOwnedBy,
@@ -89,6 +91,18 @@ describe("claim poll pacing", () => {
       sleepMs: 8_000,
       idleDelayMs: 8_000,
     });
+  });
+});
+
+describe("bounded job retry classification", () => {
+  test("recognizes class instances and structural markers", () => {
+    expect(isBoundedJobRetryError(new BoundedJobRetryError("retry"))).toBe(true);
+    expect(
+      isBoundedJobRetryError({
+        [Symbol.for("postil.bounded-job-retry")]: true,
+      }),
+    ).toBe(true);
+    expect(isBoundedJobRetryError(new Error("retry"))).toBe(false);
   });
 });
 

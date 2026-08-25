@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 
 import release from "@/data/public-cli-release.json";
 import {
+  disposableDatabaseCleanupPlan,
+  disposablePostgresRunArgs,
   downloadHostedPostilExecutable,
   paginateLocalPullFiles,
   pullFilesFromDiff,
@@ -80,6 +82,40 @@ test("paginates the local GitHub file manifest at the requested page size", () =
   expect(paginateLocalPullFiles(pullFiles, "invalid", "invalid")).toEqual(
     pullFiles.slice(0, 30),
   );
+});
+
+test("retains a self-started Postgres container with its database", () => {
+  const retainedArgs = disposablePostgresRunArgs("postil-retained", 55432, true);
+  expect(retainedArgs).not.toContain("--rm");
+  expect(retainedArgs).toContain("dev.postil.local-review-retained=true");
+  expect(disposableDatabaseCleanupPlan(true, true)).toEqual({
+    dropDatabase: false,
+    stopContainer: false,
+    retainContainer: true,
+  });
+});
+
+test("removes a disposable database and self-started container by default", () => {
+  const disposableArgs = disposablePostgresRunArgs(
+    "postil-disposable",
+    55432,
+    false,
+  );
+  expect(disposableArgs).toContain("--rm");
+  expect(disposableArgs).not.toContain("dev.postil.local-review-retained=true");
+  expect(disposableDatabaseCleanupPlan(false, true)).toEqual({
+    dropDatabase: true,
+    stopContainer: true,
+    retainContainer: false,
+  });
+});
+
+test("retains only the database when Postgres is externally managed", () => {
+  expect(disposableDatabaseCleanupPlan(true, false)).toEqual({
+    dropDatabase: false,
+    stopContainer: false,
+    retainContainer: false,
+  });
 });
 
 test("downloads, verifies, and cleans up the authoritative local-review CLI", async () => {
@@ -150,6 +186,8 @@ const canRunHarness =
   (await commandSucceeds(["docker", "--version"])) ||
   (await commandSucceeds(["podman", "--version"]));
 const describeHarness = canRunHarness ? describe : describe.skip;
+const testRetentionLifecycle =
+  process.env.POSTIL_RUN_RETENTION_E2E === "1" ? test : test.skip;
 
 describeHarness("scripts/run-review-locally.ts", () => {
   let dir: string;
@@ -239,6 +277,51 @@ console.log("fixture-key");
       planTokenPresent: true,
     });
   }, 120_000);
+
+  testRetentionLifecycle(
+    "keeps a self-started database and container reachable after harness exit",
+    async () => {
+      const repo = await createFixtureRepo("retained-database");
+      const result = await runLocalReview(repo, "0", 0, {
+        args: ["--keep-database"],
+        env: { POSTIL_TEST_DATABASE_URL: "" },
+      });
+      const databaseName = result.stdout.match(
+        /local review database retained: ([a-zA-Z0-9_]+)/,
+      )?.[1];
+      const retained = result.stdout.match(
+        /local review Postgres retained: runtime=(docker|podman) container=([a-zA-Z0-9_.-]+)/,
+      );
+      expect(databaseName).toBeTruthy();
+      expect(retained).toBeTruthy();
+      const runtime = retained?.[1];
+      const containerName = retained?.[2];
+      expect(
+        await runCapture([
+          runtime!,
+          "inspect",
+          "--format",
+          "{{.State.Running}}",
+          containerName!,
+        ]),
+      ).toBe("true");
+      expect(
+        await runCapture([
+          runtime!,
+          "exec",
+          containerName!,
+          "psql",
+          "-U",
+          "postgres",
+          "-d",
+          databaseName!,
+          "-tAc",
+          "SELECT count(*) FROM organizations WHERE slug = 'local'",
+        ]),
+      ).toBe("1");
+    },
+    120_000,
+  );
 
   test("accepts an explicit local-review model override", async () => {
     const repo = await createFixtureRepo("model-override");
