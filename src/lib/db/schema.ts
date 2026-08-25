@@ -503,15 +503,19 @@ export const findingPublications = pgTable(
     ),
     check(
       "finding_publications_initial_state_check",
-      sql`${t.initialState} IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
+      sql`${t.initialState} IN ('inline', 'fileComment', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
     ),
     check(
       "finding_publications_current_state_check",
-      sql`${t.currentState} IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
+      sql`${t.currentState} IN ('inline', 'fileComment', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
     ),
     check(
       "finding_publications_github_comment_id_check",
       sql`${t.githubCommentId} IS NULL OR ${t.githubCommentId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+    check(
+      "finding_publications_file_comment_identity_check",
+      sql`(${t.initialState} <> 'fileComment' AND ${t.currentState} <> 'fileComment') OR ${t.githubCommentId} IS NOT NULL`,
     ),
   ],
 );

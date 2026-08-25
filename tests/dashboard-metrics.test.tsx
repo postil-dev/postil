@@ -58,6 +58,7 @@ describe("dashboard metric details", () => {
     expect(source).toContain("Suppressed findings ({envelope.counts.suppressed})");
     expect(source).toContain("This review predates retained suppression details");
     expect(source).toContain("Record a commit-scoped override");
+    expect(source).toContain('fileComment: "file comment"');
   });
 
   test("exposes dismissal and revocation actions with their visible state", () => {
