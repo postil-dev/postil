@@ -282,6 +282,7 @@ describe("GitHub publication CLI planner", () => {
     }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
       "different publication input identity",
     );
+    await expectNoControllerArtifacts(workingDirectory);
   });
 
   test("rejects replacement of the private envelope inode", async () => {

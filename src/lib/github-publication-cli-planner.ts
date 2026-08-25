@@ -293,27 +293,12 @@ export async function runGitHubPublicationCliPlanning(
   request: GitHubPublicationCliPlanningRequest,
   dependencies: GitHubPublicationCliPlanningDependencies = {},
 ): Promise<GitHubPublicationCliPlanningResult> {
-  const artifactDirectory = await mkdtemp(
-    join(request.workingDirectory, ARTIFACT_DIRECTORY_PREFIX),
-  );
-  const directoryStat = await lstat(artifactDirectory, { bigint: true });
-  if (
-    !directoryStat.isDirectory() ||
-    directoryStat.isSymbolicLink() ||
-    (directoryStat.mode & 0o077n) !== 0n
-  ) {
-    reject("private artifact directory is not owner-only");
-  }
-  const directoryIdentity = { dev: directoryStat.dev, ino: directoryStat.ino };
-  const envelopePath = join(artifactDirectory, ENVELOPE_ARTIFACT_NAME);
-  const handle = await open(envelopePath, "wx", 0o600);
-  let artifactIdentity: { dev: bigint; ino: bigint };
-  try {
-    const stat = await handle.stat({ bigint: true });
-    artifactIdentity = { dev: stat.dev, ino: stat.ino };
-  } finally {
-    await handle.close();
-  }
+  const {
+    artifactDirectory,
+    directoryIdentity,
+    envelopePath,
+    artifactIdentity,
+  } = await createPrivateArtifact(request.workingDirectory);
   try {
     const expected = request.expected;
     const inputIdentity = buildGitHubPublicationInputIdentity(request.inputIdentity);
@@ -403,6 +388,61 @@ export async function runGitHubPublicationCliPlanning(
   } finally {
     await unlinkOwnedPrivateArtifact(envelopePath, artifactIdentity);
     await rmdirOwnedPrivateDirectory(artifactDirectory, directoryIdentity);
+  }
+}
+
+async function createPrivateArtifact(workingDirectory: string): Promise<{
+  artifactDirectory: string;
+  directoryIdentity: { dev: bigint; ino: bigint };
+  envelopePath: string;
+  artifactIdentity: { dev: bigint; ino: bigint };
+}> {
+  const artifactDirectory = await mkdtemp(
+    join(workingDirectory, ARTIFACT_DIRECTORY_PREFIX),
+  );
+  const envelopePath = join(artifactDirectory, ENVELOPE_ARTIFACT_NAME);
+  let directoryIdentity: { dev: bigint; ino: bigint } | undefined;
+  let artifactIdentity: { dev: bigint; ino: bigint } | undefined;
+  try {
+    const directoryStat = await lstat(artifactDirectory, { bigint: true });
+    directoryIdentity = { dev: directoryStat.dev, ino: directoryStat.ino };
+    const processUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (
+      !directoryStat.isDirectory() ||
+      directoryStat.isSymbolicLink() ||
+      (directoryStat.mode & 0o077n) !== 0n ||
+      (processUid !== undefined && directoryStat.uid !== BigInt(processUid))
+    ) {
+      reject("private artifact directory is not owner-only");
+    }
+
+    const handle = await open(envelopePath, "wx", 0o600);
+    try {
+      const stat = await handle.stat({ bigint: true });
+      artifactIdentity = { dev: stat.dev, ino: stat.ino };
+    } finally {
+      await handle.close();
+    }
+    return {
+      artifactDirectory,
+      directoryIdentity,
+      envelopePath,
+      artifactIdentity,
+    };
+  } catch (error) {
+    try {
+      if (artifactIdentity !== undefined) {
+        await unlinkOwnedPrivateArtifact(envelopePath, artifactIdentity);
+      }
+      if (directoryIdentity !== undefined) {
+        await rmdirOwnedPrivateDirectory(artifactDirectory, directoryIdentity);
+      } else {
+        await rmdir(artifactDirectory);
+      }
+    } catch {
+      reject("private artifact initialization cleanup failed");
+    }
+    throw error;
   }
 }
 
@@ -623,12 +663,14 @@ async function rmdirOwnedPrivateDirectory(
   identity: { dev: bigint; ino: bigint },
 ): Promise<void> {
   const current = await lstat(path, { bigint: true });
+  const processUid = typeof process.getuid === "function" ? process.getuid() : undefined;
   if (
     !current.isDirectory() ||
     current.isSymbolicLink() ||
     current.dev !== identity.dev ||
     current.ino !== identity.ino ||
-    (current.mode & 0o077n) !== 0n
+    (current.mode & 0o077n) !== 0n ||
+    (processUid !== undefined && current.uid !== BigInt(processUid))
   ) {
     reject("private artifact directory identity changed before cleanup");
   }
