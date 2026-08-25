@@ -1,4 +1,11 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -35,7 +42,9 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     await adminClient.query(`CREATE DATABASE "${databaseName}"`);
     const databaseUrl = new URL(TEST_URL!);
     databaseUrl.pathname = `/${databaseName}`;
-    const migrationClient = new Client({ connectionString: databaseUrl.toString() });
+    const migrationClient = new Client({
+      connectionString: databaseUrl.toString(),
+    });
     await migrationClient.connect();
     const migrationsDir = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDir))
@@ -65,7 +74,11 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
   afterAll(async () => {
     await pool?.end();
     if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+      if (process.env.POSTIL_KEEP_TEST_DATABASE !== "1") {
+        await adminClient.query(
+          `DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`,
+        );
+      }
       await adminClient.end();
     }
     for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
@@ -87,6 +100,10 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     );
     const orgId = Number(org.rows[0]?.id);
     await pool!.query(
+      `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'admin')`,
+      [orgId, userId],
+    );
+    await pool!.query(
       `INSERT INTO organization_entitlements (
          org_id, subscription_mode, status, included_usage_micros,
          overage_hard_cap_micros, included_usage_cents, overage_hard_cap_cents, updated_by
@@ -103,7 +120,12 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       `INSERT INTO organizations (slug, name) VALUES ($1, $1) RETURNING id`,
       [slug],
     );
-    return Number(org.rows[0]?.id);
+    const orgId = Number(org.rows[0]?.id);
+    await pool!.query(
+      `INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'admin')`,
+      [orgId, userId],
+    );
+    return orgId;
   }
 
   async function issueCliToken(
@@ -111,17 +133,26 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     opts: { revoked?: boolean; expiresAt?: Date } = {},
   ): Promise<string> {
     const token = `pcli_${Buffer.from(`fixture-${orgId}-${Math.random()}`).toString("base64url").padEnd(43, "a").slice(0, 43)}`;
-    const expiresAt = opts.expiresAt ?? new Date(Date.now() + 12 * 60 * 60 * 1_000);
+    const expiresAt =
+      opts.expiresAt ?? new Date(Date.now() + 12 * 60 * 60 * 1_000);
     await pool!.query(
       `INSERT INTO cli_tokens (token_sha256, user_id, org_id, scope, expires_at, revoked_at)
        VALUES ($1, $2, $3, 'inference', $4, $5)`,
-      [sha256(token), userId, orgId, expiresAt, opts.revoked ? new Date() : null],
+      [
+        sha256(token),
+        userId,
+        orgId,
+        expiresAt,
+        opts.revoked ? new Date() : null,
+      ],
     );
     return token;
   }
 
   function chatRequest(token: string | undefined, body: unknown): Request {
-    const headers: Record<string, string> = { "content-type": "application/json" };
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+    };
     if (token !== undefined) headers.authorization = `Bearer ${token}`;
     return new Request("https://postil.dev/api/inference/v1/chat/completions", {
       method: "POST",
@@ -131,27 +162,44 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
   }
 
   function mockUpstreamSuccess(promptTokens = 100, completionTokens = 20) {
-    globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    globalThis.fetch = (async (
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) =>
       new Response(
         JSON.stringify({
           id: "chatcmpl-fixture",
           object: "chat.completion",
-          choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
-          usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens },
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "ok" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       )) as typeof fetch;
   }
 
   test("rejects an unknown, revoked, or expired token with 401", async () => {
-    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
     const revokedToken = await issueCliToken(orgId, { revoked: true });
     const expiredToken = await issueCliToken(orgId, {
       expiresAt: new Date(Date.now() - 60_000),
     });
 
-    for (const token of ["pcli_" + "a".repeat(43), revokedToken, expiredToken]) {
+    for (const token of [
+      "pcli_" + "a".repeat(43),
+      revokedToken,
+      expiredToken,
+    ]) {
       const response = await POST(chatRequest(token, { messages: [] }));
       expect(response.status).toBe(401);
       expect(await response.json()).toEqual({
@@ -164,20 +212,26 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
   });
 
   test("returns 402 when the entitlement denies", async () => {
-    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithoutEntitlement();
     const token = await issueCliToken(orgId);
 
-    const response = await POST(chatRequest(token, { messages: [{ role: "user", content: "hi" }] }));
+    const response = await POST(
+      chatRequest(token, { messages: [{ role: "user", content: "hi" }] }),
+    );
     expect(response.status).toBe(402);
-    const body = (await response.json()) as { error: { message: string; type: string } };
+    const body = (await response.json()) as {
+      error: { message: string; type: string };
+    };
     expect(body.error.type).toBe("entitlement");
     expect(body.error.message).toBe("no_entitlement");
   });
 
   test("rejects a model outside the hosted roster with 400", async () => {
     mockUpstreamSuccess();
-    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
     const token = await issueCliToken(orgId);
 
@@ -207,23 +261,31 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       },
       { preconnect: ORIGINAL_FETCH.preconnect },
     ) as typeof fetch;
-    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
     const token = await issueCliToken(orgId);
 
     const response = await POST(
-      chatRequest(token, { stream: true, messages: [{ role: "user", content: "hi" }] }),
+      chatRequest(token, {
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: { message: "streaming is not supported by the CLI gateway", type: "unsupported" },
+      error: {
+        message: "streaming is not supported by the CLI gateway",
+        type: "unsupported",
+      },
     });
     expect(upstreamCalled).toBe(false);
   });
 
   test("a successful call records a private_hosted usage_events row and reconciles the reservation", async () => {
     mockUpstreamSuccess(120, 30);
-    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
     const token = await issueCliToken(orgId);
 
@@ -231,7 +293,9 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       chatRequest(token, { messages: [{ role: "user", content: "hi" }] }),
     );
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { usage: { prompt_tokens: number } };
+    const body = (await response.json()) as {
+      usage: { prompt_tokens: number };
+    };
     expect(body.usage.prompt_tokens).toBe(120);
 
     const usage = await pool!.query<{
@@ -257,11 +321,16 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       },
     ]);
 
-    const reservations = await pool!.query<{ status: string; operation: string }>(
+    const reservations = await pool!.query<{
+      status: string;
+      operation: string;
+    }>(
       `SELECT status, operation FROM hosted_usage_reservations WHERE org_id = $1`,
       [orgId],
     );
-    expect(reservations.rows).toEqual([{ status: "reconciled", operation: "cli_gateway" }]);
+    expect(reservations.rows).toEqual([
+      { status: "reconciled", operation: "cli_gateway" },
+    ]);
   });
 
   test("an upstream failure releases the reservation instead of charging", async () => {
@@ -271,7 +340,8 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       },
       { preconnect: ORIGINAL_FETCH.preconnect },
     ) as typeof fetch;
-    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
     const token = await issueCliToken(orgId);
 
@@ -287,21 +357,29 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       [orgId],
     );
     expect(reservations.rows).toEqual([{ status: "released" }]);
-    const usage = await pool!.query(`SELECT 1 FROM usage_events WHERE org_id = $1`, [orgId]);
+    const usage = await pool!.query(
+      `SELECT 1 FROM usage_events WHERE org_id = $1`,
+      [orgId],
+    );
     expect(usage.rows).toHaveLength(0);
   });
 
   test("returns 429 with retry-after once the per-org hourly cap is reached", async () => {
     process.env.POSTIL_CLI_GATEWAY_HOURLY_CAP = "1";
     mockUpstreamSuccess();
-    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
     const token = await issueCliToken(orgId);
 
-    const first = await POST(chatRequest(token, { messages: [{ role: "user", content: "hi" }] }));
+    const first = await POST(
+      chatRequest(token, { messages: [{ role: "user", content: "hi" }] }),
+    );
     expect(first.status).toBe(200);
 
-    const second = await POST(chatRequest(token, { messages: [{ role: "user", content: "hi" }] }));
+    const second = await POST(
+      chatRequest(token, { messages: [{ role: "user", content: "hi" }] }),
+    );
     expect(second.status).toBe(429);
     expect(second.headers.get("retry-after")).toBeTruthy();
     const body = (await second.json()) as { error: { type: string } };

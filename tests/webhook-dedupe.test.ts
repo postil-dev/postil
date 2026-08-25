@@ -26,6 +26,7 @@ mock.module("@/lib/github/checks", () => ({
     draft: false,
     headSha: "headsha",
     baseSha: "basesha",
+    updatedAt: "2026-08-24T12:34:56Z",
     authorGithubId: 100,
     authorLogin: "octocat",
   }),
@@ -105,7 +106,12 @@ describeDb("webhook delivery dedupe durability", () => {
       number: 7,
       installation: { id: 42 },
       repository: { id: 7777, full_name: "octo/repo", private: false },
-      pull_request: { number: 7, head: { sha: "headsha" }, base: { sha: "basesha" } },
+      pull_request: {
+        number: 7,
+        head: { sha: "headsha" },
+        base: { sha: "basesha" },
+        updated_at: "2026-08-24T12:34:56Z",
+      },
     });
   }
 
@@ -223,7 +229,7 @@ describeDb("webhook delivery dedupe durability", () => {
     expect(durable.rows[0]).toEqual({ completed: false, payload_retained: true });
   });
 
-  test("a genuine duplicate delivery is still skipped (happy-path dedupe intact)", async () => {
+  test("duplicate delivery enqueue remains idempotent after successful dispatch", async () => {
     const first = await POST(prRequest());
     expect(first.status).toBe(200);
     expect(((await first.json()) as { queued?: boolean }).queued).toBe(true);
@@ -354,7 +360,7 @@ describeDb("webhook delivery dedupe durability", () => {
     });
   });
 
-  test("a crash after review enqueue does not enqueue the delivery twice", async () => {
+  test("dispatch recovery after a crash does not enqueue a second review", async () => {
     expect((await POST(prRequest())).status).toBe(200);
     const delivery = await loadWebhookDelivery(pool, DELIVERY_ID);
     expect(delivery).not.toBeNull();
@@ -364,6 +370,7 @@ describeDb("webhook delivery dedupe durability", () => {
     await dispatchWebhookDelivery(delivery!.event, delivery!.payload, {
       deliveryId: DELIVERY_ID,
       triggerFollowupDrain: false,
+      attempt: 1,
     });
     expect(await drainWebhookDispatch(DELIVERY_ID, "review-crash-retry")).toBe(true);
 
