@@ -838,12 +838,12 @@ export const organizationEntitlements = pgTable(
     periodStartsAt: timestamp("period_starts_at", { withTimezone: true }),
     periodEndsAt: timestamp("period_ends_at", { withTimezone: true }),
     /** Allowance and cap use USD micros so sub-cent model calls remain exact. */
-    includedUsageMicros: bigint("included_usage_micros", { mode: "number" })
+    includedUsageMicros: bigint("included_usage_micros", { mode: "bigint" })
       .notNull()
-      .default(0),
+      .default(sql`0`),
     overageHardCapMicros: bigint("overage_hard_cap_micros", {
-      mode: "number",
-    }).default(0),
+      mode: "bigint",
+    }).default(sql`0`),
     /** Rolling-deploy compatibility; new entitlement checks read the micros fields. */
     includedUsageCents: integer("included_usage_cents").notNull().default(0),
     overageHardCapCents: integer("overage_hard_cap_cents").default(0),
@@ -912,6 +912,220 @@ export const organizationEntitlements = pgTable(
     check(
       "organization_entitlements_updated_by_nonempty",
       sql`length(btrim(${t.updatedBy})) > 0`,
+    ),
+  ],
+);
+
+/** Durable dark lifecycle state for entitlement-bound hosted provider keys. */
+export const hostedProviderKeys = pgTable(
+  "hosted_provider_keys",
+  {
+    createIntentId: uuid("create_intent_id").primaryKey(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    state: text("state").notNull(),
+    providerKeyName: text("provider_key_name").notNull().unique(),
+    providerKeyHash: text("provider_key_hash"),
+    conflictingProviderKeyHash: text("conflicting_provider_key_hash"),
+    sealedRuntimeKey: bytea("sealed_runtime_key"),
+    entitlementPeriodStartsAt: timestamp("entitlement_period_starts_at", {
+      withTimezone: true,
+    }).notNull(),
+    entitlementPeriodEndsAt: timestamp("entitlement_period_ends_at", {
+      withTimezone: true,
+    }).notNull(),
+    entitlementUpdatedAt: timestamp("entitlement_updated_at", {
+      withTimezone: true,
+    }).notNull(),
+    limitMicros: bigint("limit_micros", { mode: "bigint" }).notNull(),
+    createAttemptedAt: timestamp("create_attempted_at", {
+      withTimezone: true,
+    }),
+    createOutcome: text("create_outcome"),
+    revocationRequestedAt: timestamp("revocation_requested_at", {
+      withTimezone: true,
+    }),
+    revokeAttemptedAt: timestamp("revoke_attempted_at", {
+      withTimezone: true,
+    }),
+    revokeOutcome: text("revoke_outcome"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    reconciliationRequiredAt: timestamp("reconciliation_required_at", {
+      withTimezone: true,
+    }),
+    leaseId: uuid("lease_id"),
+    leaseKind: text("lease_kind"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (t) => [
+    uniqueIndex("hosted_provider_keys_provider_key_hash_unique")
+      .on(t.providerKeyHash)
+      .where(sql`${t.providerKeyHash} IS NOT NULL`),
+    uniqueIndex("hosted_provider_keys_entitlement_binding_unique").on(
+      t.orgId,
+      t.entitlementPeriodStartsAt,
+      t.entitlementPeriodEndsAt,
+      t.limitMicros,
+    ),
+    uniqueIndex("hosted_provider_keys_active_org_unique")
+      .on(t.orgId)
+      .where(sql`${t.state} = 'active'`),
+    uniqueIndex("hosted_provider_keys_runtime_org_unique")
+      .on(t.orgId)
+      .where(sql`${t.sealedRuntimeKey} IS NOT NULL`),
+    index("hosted_provider_keys_reconciliation_idx").on(
+      t.state,
+      t.reconciliationRequiredAt,
+    ),
+    check(
+      "hosted_provider_keys_state_check",
+      sql`${t.state} IN ('provisioning', 'activating', 'active', 'rejected', 'orphaned', 'revocation_pending', 'revoked', 'cancelled')`,
+    ),
+    check(
+      "hosted_provider_keys_provider_key_name_nonempty",
+      sql`length(btrim(${t.providerKeyName})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_provider_key_hash_nonempty",
+      sql`${t.providerKeyHash} IS NULL OR length(btrim(${t.providerKeyHash})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_conflicting_hash_nonempty",
+      sql`${t.conflictingProviderKeyHash} IS NULL OR length(btrim(${t.conflictingProviderKeyHash})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_entitlement_period_check",
+      sql`${t.entitlementPeriodEndsAt} > ${t.entitlementPeriodStartsAt}`,
+    ),
+    check(
+      "hosted_provider_keys_limit_exact_range",
+      sql`${t.limitMicros} > 0 AND ${t.limitMicros} <= 2251799813685247`,
+    ),
+    check(
+      "hosted_provider_keys_create_outcome_check",
+      sql`${t.createOutcome} IS NULL OR ${t.createOutcome} IN ('created', 'rejected', 'ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')`,
+    ),
+    check(
+      "hosted_provider_keys_revoke_outcome_check",
+      sql`${t.revokeOutcome} IS NULL OR ${t.revokeOutcome} IN ('ambiguous', 'rejected', 'disabled', 'absent')`,
+    ),
+    check(
+      "hosted_provider_keys_lease_shape",
+      sql`(
+        ${t.leaseId} IS NULL
+        AND ${t.leaseKind} IS NULL
+        AND ${t.leaseExpiresAt} IS NULL
+      ) OR (
+        ${t.leaseId} IS NOT NULL
+        AND ${t.leaseKind} IN ('create', 'revoke')
+        AND ${t.leaseExpiresAt} IS NOT NULL
+      )`,
+    ),
+    check(
+      "hosted_provider_keys_lease_state",
+      sql`${t.leaseId} IS NULL OR (
+        (${t.leaseKind} = 'create' AND ${t.state} IN ('provisioning', 'activating', 'orphaned'))
+        OR (${t.leaseKind} = 'revoke' AND ${t.state} = 'revocation_pending')
+      )`,
+    ),
+    check(
+      "hosted_provider_keys_lifecycle_shape",
+      sql`(
+        ${t.state} = 'provisioning'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createOutcome} IS NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'activating'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} = 'created'
+        AND ${t.reconciliationRequiredAt} IS NOT NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'active'
+        AND ${t.sealedRuntimeKey} IS NOT NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} = 'created'
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'rejected'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} = 'rejected'
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'orphaned'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.createOutcome} IN ('ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')
+        AND ${t.reconciliationRequiredAt} IS NOT NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+        AND (
+          (${t.createOutcome} = 'ownership_conflict' AND ${t.providerKeyHash} IS NULL AND ${t.conflictingProviderKeyHash} IS NOT NULL)
+          OR (${t.createOutcome} <> 'ownership_conflict' AND ${t.conflictingProviderKeyHash} IS NULL)
+        )
+      ) OR (
+        ${t.state} = 'revocation_pending'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} IN ('created', 'ambiguous', 'credential_persistence_failed')
+        AND ${t.revocationRequestedAt} IS NOT NULL
+        AND ${t.reconciliationRequiredAt} IS NOT NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'revoked'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} IN ('created', 'ambiguous', 'credential_persistence_failed')
+        AND ${t.revocationRequestedAt} IS NOT NULL
+        AND ${t.revokeOutcome} IN ('disabled', 'absent')
+        AND ${t.revokedAt} IS NOT NULL
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.leaseId} IS NULL
+      ) OR (
+        ${t.state} = 'cancelled'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NULL
+        AND ${t.createOutcome} IS NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.leaseId} IS NULL
+      )`,
     ),
   ],
 );
