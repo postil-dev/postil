@@ -17,6 +17,7 @@ const CARRIED_MARKER = "[carried from previous review]";
 
 export const PUBLICATION_STATES = [
   "inline",
+  "fileComment",
   "checkAnnotation",
   "summaryOnly",
   "carried",
@@ -36,6 +37,7 @@ const receiptFindingSchema = z
     stableIdentity: z.boolean().default(true),
     initialOutcome: z.enum([
       "inline",
+      "fileComment",
       "checkAnnotation",
       "summaryOnly",
       "carried",
@@ -96,6 +98,13 @@ const publicationReceiptSchema = z
           message: "version 1 receipts cannot report check annotations",
         });
       }
+      if (receipt.version === 1 && finding.initialOutcome === "fileComment") {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "version 1 receipts cannot report file-level comments",
+        });
+      }
       if (
         receipt.channel === "reviewComments" &&
         finding.initialOutcome === "checkAnnotation"
@@ -108,12 +117,13 @@ const publicationReceiptSchema = z
       }
       if (
         receipt.channel === "checkAnnotations" &&
-        finding.initialOutcome === "inline"
+        (finding.initialOutcome === "inline" ||
+          finding.initialOutcome === "fileComment")
       ) {
         context.addIssue({
           code: "custom",
           path: ["findings", index, "initialOutcome"],
-          message: "check annotation receipts cannot report inline comments",
+          message: "check annotation receipts cannot report review comments",
         });
       }
       if (finding.inlineRejected && finding.initialOutcome !== "summaryOnly") {
@@ -123,6 +133,13 @@ const publicationReceiptSchema = z
           message: "rejected inline placement must use summaryOnly outcome",
         });
       }
+      if (finding.initialOutcome === "fileComment" && !finding.commentId) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "commentId"],
+          message: "file-level comments require a comment identity",
+        });
+      }
       // A carried finding is one an earlier review already published, so it
       // names that review's comment rather than one this run created. The
       // identity is what the lifecycle pass observes the thread by, so
@@ -130,6 +147,7 @@ const publicationReceiptSchema = z
       if (
         finding.commentId &&
         finding.initialOutcome !== "inline" &&
+        finding.initialOutcome !== "fileComment" &&
         finding.initialOutcome !== "carried"
       ) {
         context.addIssue({
@@ -395,6 +413,7 @@ export async function getPullRequestPublicationCommentIds(
 
 export interface PublicationCounts {
   inline: number;
+  fileComment: number;
   checkAnnotation: number;
   summaryOnly: number;
   carried: number;

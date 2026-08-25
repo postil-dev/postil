@@ -10,7 +10,10 @@ import { ReviewTimeDistribution } from "@/components/review-time-distribution";
 import { getPool, schema } from "@/lib/db";
 import { hostedInferenceAvailable } from "@/lib/env";
 import { requireOrgMembership } from "@/lib/org-access";
-import { getOrgReviewRows } from "@/lib/org-reviews";
+import {
+  getOrgReviewRows,
+  shippedPublicationStateSql,
+} from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
 import {
   canProcessPrivateRepository,
@@ -129,7 +132,7 @@ export default async function OrgDashboardPage({
           SELECT 1 FROM finding_publications publication
           WHERE publication.review_id = ${schema.reviews.id}
             AND publication.finding_id = finding ->> 'id'
-            AND publication.initial_state IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'inlineRejected')
+            AND ${shippedPublicationStateSql(sql.raw("publication.initial_state"))}
         )
       )`,
       durationMs: sql<number | null>`(${schema.reviews.envelope} ->> 'durationMs')::int`,
@@ -202,7 +205,7 @@ export default async function OrgDashboardPage({
             INNER JOIN installations published_installation ON published_installation.id = published_repository.installation_id
             WHERE published_installation.org_id = ${org.id}
               AND published_review.status = 'completed'
-              AND publication.initial_state IN ('inline', 'checkAnnotation', 'summaryOnly', 'carried', 'inlineRejected')
+              AND ${shippedPublicationStateSql(sql.raw("publication.initial_state"))}
           ), 0)::int
         `,
       })
