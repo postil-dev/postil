@@ -5,6 +5,28 @@ import {
   verifyHostedProvider,
 } from "../scripts/verify-hosted-provider";
 
+const base = {
+  apiBase: "https://provider.example/v1",
+  model: "provider/model",
+  apiKey: "test-key",
+  providerName: "Fireworks",
+  maxPromptPrice: 1.4,
+  maxCompletionPrice: 4.4,
+};
+
+const validResponse = {
+  model: "provider/model",
+  provider: "Fireworks",
+  choices: [{ finish_reason: "stop", message: { content: "ready" } }],
+  usage: {
+    prompt_tokens: 8,
+    completion_tokens: 1,
+    total_tokens: 9,
+    cost: 0.00001,
+    cost_details: { upstream_inference_cost: 0.000009 },
+  },
+};
+
 describe("hosted provider preflight", () => {
   test("uses the review worker's provider credential precedence", () => {
     const previous = {
@@ -94,6 +116,160 @@ describe("hosted provider preflight", () => {
         fetchImpl: async () => Response.json({ choices: [] }),
       }),
     ).rejects.toThrow("no text choice");
+  });
+
+  test("retries one rate limit and accepts a valid response", async () => {
+    for (const retryAfter of [undefined, "not-a-date", "1.5"]) {
+      let requests = 0;
+      const delays: number[] = [];
+      await verifyHostedProvider({
+        ...base,
+        fetchImpl: async () => {
+          requests += 1;
+          return requests === 1
+            ? new Response("rate limited", {
+              status: 429,
+              headers: retryAfter === undefined ? undefined : { "retry-after": retryAfter },
+            })
+            : Response.json(validResponse);
+        },
+        sleepImpl: async (milliseconds) => {
+          delays.push(milliseconds);
+        },
+      });
+      expect(requests).toBe(2);
+      expect(delays).toEqual([500]);
+    }
+  });
+
+  test("stops after three rate-limit responses", async () => {
+    let requests = 0;
+    const delays: number[] = [];
+    await expect(
+      verifyHostedProvider({
+        ...base,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response("rate limited", { status: 429 });
+        },
+        sleepImpl: async (milliseconds) => {
+          delays.push(milliseconds);
+        },
+      }),
+    ).rejects.toThrow("status 429");
+    expect(requests).toBe(3);
+    expect(delays).toEqual([500, 1_000]);
+  });
+
+  test("does not retry non-rate-limit failures", async () => {
+    let requests = 0;
+    await expect(
+      verifyHostedProvider({
+        ...base,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response("unavailable", { status: 503 });
+        },
+        sleepImpl: async () => {
+          throw new Error("unexpected sleep");
+        },
+      }),
+    ).rejects.toThrow("status 503");
+    expect(requests).toBe(1);
+
+    let networkRequests = 0;
+    await expect(
+      verifyHostedProvider({
+        ...base,
+        fetchImpl: async () => {
+          networkRequests += 1;
+          throw new Error("network unavailable");
+        },
+        sleepImpl: async () => {
+          throw new Error("unexpected sleep");
+        },
+      }),
+    ).rejects.toThrow("network unavailable");
+    expect(networkRequests).toBe(1);
+  });
+
+  test("honors bounded numeric and HTTP-date retry delays", async () => {
+    for (const [retryAfter, expectedDelay] of [
+      ["2", 2_000],
+      ["Tue, 25 Aug 2026 12:00:03 GMT", 3_000],
+    ] as const) {
+      let requests = 0;
+      const delays: number[] = [];
+      await verifyHostedProvider({
+        ...base,
+        fetchImpl: async () => {
+          requests += 1;
+          return requests === 1
+            ? new Response("rate limited", {
+              status: 429,
+              headers: { "retry-after": retryAfter },
+            })
+            : Response.json(validResponse);
+        },
+        sleepImpl: async (milliseconds) => {
+          delays.push(milliseconds);
+        },
+        nowMs: () => Date.parse("Tue, 25 Aug 2026 12:00:00 GMT"),
+      });
+      expect(requests).toBe(2);
+      expect(delays).toEqual([expectedDelay]);
+    }
+  });
+
+  test("fails rather than retrying before an excessive Retry-After", async () => {
+    for (const retryAfter of [
+      "11",
+      "Tue, 25 Aug 2026 12:00:11 GMT",
+    ]) {
+      let requests = 0;
+      await expect(
+        verifyHostedProvider({
+          ...base,
+          fetchImpl: async () => {
+            requests += 1;
+            return new Response("rate limited", {
+              status: 429,
+              headers: { "retry-after": retryAfter },
+            });
+          },
+          sleepImpl: async () => {
+            throw new Error("unexpected sleep");
+          },
+          nowMs: () => Date.parse("Tue, 25 Aug 2026 12:00:00 GMT"),
+        }),
+      ).rejects.toThrow("status 429");
+      expect(requests).toBe(1);
+    }
+  });
+
+  test("enforces the retry window across attempts", async () => {
+    let requests = 0;
+    let currentTimeMs = Date.parse("Tue, 25 Aug 2026 12:00:00 GMT");
+    const delays: number[] = [];
+    await expect(
+      verifyHostedProvider({
+        ...base,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response("rate limited", {
+            status: 429,
+            headers: { "retry-after": "6" },
+          });
+        },
+        sleepImpl: async (milliseconds) => {
+          delays.push(milliseconds);
+          currentTimeMs += milliseconds;
+        },
+        nowMs: () => currentTimeMs,
+      }),
+    ).rejects.toThrow("status 429");
+    expect(requests).toBe(2);
+    expect(delays).toEqual([6_000]);
   });
 
   test("rejects mismatched provider, model, usage, or cost identity", async () => {
