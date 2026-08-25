@@ -134,6 +134,13 @@ const publicationReceiptSchema = z
           message: "check annotation receipts cannot report review comments",
         });
       }
+      if (receipt.channel === "checkAnnotations" && finding.commentId !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "commentId"],
+          message: "check annotation receipts cannot carry comment identities",
+        });
+      }
       if (finding.inlineRejected && finding.initialOutcome !== "summaryOnly") {
         context.addIssue({
           code: "custom",

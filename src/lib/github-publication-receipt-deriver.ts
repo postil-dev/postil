@@ -660,6 +660,16 @@ function validateRequiredTerminalEvidence(
   if (snapshot.reconciliations.length > MAX_CURRENT_RECONCILIATIONS) {
     reject("current reconciliation evidence exceeds its bound");
   }
+  for (const attempt of snapshot.attempts) {
+    if (!validDate(attempt.observedAt)) {
+      reject("current attempt timestamp is invalid");
+    }
+  }
+  for (const reconciliation of snapshot.reconciliations) {
+    if (!validDate(reconciliation.observedAt)) {
+      reject("current reconciliation timestamp is invalid");
+    }
+  }
   let aggregateEvidenceBytes = 0;
   for (const evidence of [
     ...snapshot.attempts.map((entry) => entry.evidencePayload),
@@ -1655,15 +1665,11 @@ function materializeReceipt(
     (operation) => operation.kind === "advisoryCheckComplete",
   )!;
   const advisoryTerminal = terminals.get(advisoryCompletion.operationKey)!;
-  const annotationCount = advisoryCompletion.annotations?.length ?? 0;
-  const plannedAnnotationCount = lifecycle.findings.filter(
-    (finding) => finding.initialOutcome === "checkAnnotation",
-  ).length;
-  if (
-    lifecycle.channel === "checkAnnotations" &&
-    annotationCount !== plannedAnnotationCount
-  ) {
-    reject("check annotation evidence does not match the sealed finding classification");
+  if (lifecycle.channel === "checkAnnotations") {
+    validateCheckAnnotationBindings(
+      lifecycle.findings,
+      advisoryCompletion.annotations ?? [],
+    );
   }
   if (
     lifecycle.channel === "checkAnnotations" &&
@@ -1775,6 +1781,38 @@ function materializeReceipt(
       : {}),
     findings,
   });
+}
+
+function validateCheckAnnotationBindings(
+  lifecycleFindings: GitHubPublicationPlan["lifecycleReceipt"]["findings"],
+  annotations: readonly ObservedCheckAnnotation[],
+): void {
+  const annotationFindings = lifecycleFindings.filter(
+    (finding) => finding.initialOutcome === "checkAnnotation",
+  );
+  if (annotations.length !== annotationFindings.length) {
+    reject("check annotation evidence does not exactly bind the sealed findings");
+  }
+
+  const annotationIdentities = new Set<string>();
+  for (const [index, finding] of annotationFindings.entries()) {
+    const annotation = annotations[index];
+    if (
+      annotation === undefined ||
+      annotation.path !== finding.path ||
+      annotation.startLine !== finding.line ||
+      annotation.endLine !== (finding.endLine ?? finding.line) ||
+      annotation.message !== finding.desiredBody ||
+      !annotation.message.includes(finding.marker)
+    ) {
+      reject("check annotation evidence does not exactly bind the sealed findings");
+    }
+    const identity = canonicalJson(annotation);
+    if (annotationIdentities.has(identity)) {
+      reject("check annotation evidence does not exactly bind the sealed findings");
+    }
+    annotationIdentities.add(identity);
+  }
 }
 
 function reviewSummaryCarrier(

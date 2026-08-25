@@ -183,6 +183,19 @@ describe("publication receipt contract", () => {
     ]);
   });
 
+  test("rejects a carried comment identity on the check-annotation channel", () => {
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "checkAnnotations",
+      receiptId: "github-review-v2:carried-comment",
+      findings: [{
+        findingId: "carried-id",
+        initialOutcome: "carried",
+        commentId: "8008",
+      }],
+    })).toThrow("publication receipt is invalid");
+  });
+
   test("accepts a version 2 file-level review comment with its GitHub identity", async () => {
     const receipt = await readPublicationReceipt(
       await receiptFile({

@@ -237,6 +237,33 @@ describe("GitHub publication receipt derivation", () => {
     expect(receipt.reviewId).toBeUndefined();
   });
 
+  test("derives multiple check annotations in stable finding order", () => {
+    const receipt = deriveGitHubPublicationReceipt(
+      checkFixture("17", true, "exactMultiple").snapshot,
+    );
+
+    expect(receipt.findings.filter(
+      (finding) => finding.initialOutcome === "checkAnnotation",
+    ).map((finding) => finding.findingId)).toEqual([
+      "annotation-1",
+      "annotation-2",
+    ]);
+  });
+
+  test.each([
+    ["unrelated", "unrelated"],
+    ["duplicate", "duplicate"],
+    ["reordered", "reordered"],
+    ["missing", "missing"],
+  ] as const)(
+    "rejects %s check annotations that do not bind the sealed findings",
+    (_name, variant) => {
+      expect(() =>
+        deriveGitHubPublicationReceipt(checkFixture("17", true, variant).snapshot)
+      ).toThrow("check annotation evidence does not exactly bind the sealed findings");
+    },
+  );
+
   test("requires typed observed check content", () => {
     const fixture = checkFixture();
     const complete = operation(fixture, fixture.operationKeys.advisoryComplete!);
@@ -348,6 +375,63 @@ describe("GitHub publication receipt derivation", () => {
     );
 
     expect(deriveGitHubPublicationReceipt(fixture.snapshot).reviewId).toBe("901");
+  });
+
+  test("rejects an invalid reconciliation timestamp before chronology checks", () => {
+    const fixture = reviewFixture();
+    const review = operation(fixture, fixture.operationKeys.review!);
+    reconcileApplied(
+      fixture,
+      review,
+      "partialObserved",
+      {
+        reviewId: "901",
+        commentIdsByMarker: { [fixture.markers.inline!]: "1001" },
+        missingCommentMarkers: [fixture.markers.file!],
+      },
+      "901",
+    );
+    fixture.snapshot.reconciliations.find(
+      (entry) => entry.operationKey === review.operationKey,
+    )!.observedAt = new Date(Number.NaN);
+
+    expect(() => deriveGitHubPublicationReceipt(fixture.snapshot)).toThrow(
+      "current reconciliation timestamp is invalid",
+    );
+  });
+
+  test("rejects invalid timestamps on service-owned evidence", () => {
+    const invalidAttempt = reviewFixture();
+    const serviceOperation = invalidAttempt.snapshot.operations.find(
+      (entry) => entry.operationSource === "service",
+    )!;
+    invalidAttempt.snapshot.attempts.push({
+      ...claimedAttempt(serviceOperation, serviceOperation.kind),
+      observedAt: new Date(Number.NaN),
+    });
+    expect(() => deriveGitHubPublicationReceipt(invalidAttempt.snapshot)).toThrow(
+      "current attempt timestamp is invalid",
+    );
+
+    const invalidReconciliation = reviewFixture();
+    const reconciliationOperation = invalidReconciliation.snapshot.operations.find(
+      (entry) => entry.operationSource === "service",
+    )!;
+    invalidReconciliation.snapshot.reconciliations.push({
+      operationKey: reconciliationOperation.operationKey,
+      attemptNumber: 1,
+      leaseGeneration: "1",
+      phase: "terminal",
+      selectedVariant: reconciliationOperation.kind,
+      outcome: "applied",
+      evidencePayload: {},
+      remoteIdentity: null,
+      remoteOperationId: null,
+      observedAt: new Date(Number.NaN),
+    });
+    expect(() => deriveGitHubPublicationReceipt(invalidReconciliation.snapshot)).toThrow(
+      "current reconciliation timestamp is invalid",
+    );
   });
 
   test("carries a partial fallback's review identity without treating it as a comment", () => {
@@ -706,6 +790,28 @@ describe("GitHub publication receipt derivation", () => {
       message: "lacks a preceding claimed phase",
     },
     {
+      name: "invalid claimed timestamp",
+      mutate: (fixture: Fixture) => {
+        fixture.snapshot.attempts.find(
+          (entry) =>
+            entry.operationKey === fixture.operationKeys.review &&
+            entry.phase === "claimed",
+        )!.observedAt = new Date(Number.NaN);
+      },
+      message: "current attempt timestamp is invalid",
+    },
+    {
+      name: "invalid dispatched timestamp",
+      mutate: (fixture: Fixture) => {
+        fixture.snapshot.attempts.find(
+          (entry) =>
+            entry.operationKey === fixture.operationKeys.review &&
+            entry.phase === "dispatched",
+        )!.observedAt = new Date(Number.NaN);
+      },
+      message: "current attempt timestamp is invalid",
+    },
+    {
       name: "request digest drift",
       mutate: (fixture: Fixture) => {
         fixture.snapshot.attempts.find(
@@ -937,29 +1043,75 @@ function reviewFixture(
   return fixture;
 }
 
-function checkFixture(generation = "17", includeSummaryMarker = true): Fixture {
+function checkFixture(
+  generation = "17",
+  includeSummaryMarker = true,
+  annotationVariant:
+    | "exact"
+    | "exactMultiple"
+    | "unrelated"
+    | "duplicate"
+    | "reordered"
+    | "missing" = "exact",
+): Fixture {
   const expected = expectedPlan(`check-${generation}`, generation);
   const markers = {
-    annotation: marker("finding", "annotation-1"),
+    annotation1: marker("finding", "annotation-1"),
+    annotation2: marker("finding", "annotation-2"),
     resolved: marker("finding", "resolved-check"),
     summary: marker("finding", "summary-check"),
     suppressed: marker("finding", "suppressed-check"),
   };
+  const annotationIds = annotationVariant === "exact" || annotationVariant === "unrelated"
+    ? ["annotation-1"]
+    : ["annotation-1", "annotation-2"];
+  const annotationFindings = annotationIds.map((findingId, index) => {
+    const entry = finding(
+      findingId,
+      index === 0 ? markers.annotation1 : markers.annotation2,
+      "checkAnnotation",
+    );
+    return {
+      ...entry,
+      line: 4 + index,
+    };
+  });
   const findings = [
-    finding("annotation-1", markers.annotation, "checkAnnotation"),
+    ...annotationFindings,
     finding("resolved-1", markers.resolved, "resolved"),
     finding("summary-1", markers.summary, "summaryOnly"),
     finding("suppressed-1", markers.suppressed, "suppressed"),
   ];
+  const annotationFor = (findingId: string) => {
+    const lifecycleFinding = annotationFindings.find((entry) => entry.findingId === findingId)!;
+    return {
+      path: lifecycleFinding.path,
+      startLine: lifecycleFinding.line,
+      endLine: lifecycleFinding.line,
+      annotationLevel: "warning",
+      title: `Annotation for ${findingId}`,
+      message: lifecycleFinding.desiredBody,
+    };
+  };
+  const annotations = annotationVariant === "unrelated"
+    ? [{
+        ...annotationFor("annotation-1"),
+        message: "Unrelated annotation content.",
+      }]
+    : annotationVariant === "duplicate"
+      ? [annotationFor("annotation-1"), annotationFor("annotation-1")]
+      : annotationVariant === "reordered"
+        ? [annotationFor("annotation-2"), annotationFor("annotation-1")]
+        : annotationVariant === "missing"
+          ? [annotationFor("annotation-1")]
+          : annotationIds.map(annotationFor);
   const create = advisoryCreateOperation(expected);
-  const complete = advisoryCompleteOperation(expected, [create], [{
-    path: "src/annotation.ts",
-    startLine: 4,
-    endLine: 4,
-    annotationLevel: "warning",
-    title: "Annotation finding",
-    message: "Exact annotation evidence.",
-  }], includeSummaryMarker ? [markers.summary] : []);
+  const complete = advisoryCompleteOperation(
+    expected,
+    [create],
+    annotations,
+    includeSummaryMarker ? [markers.summary] : [],
+  );
   const fixture = buildFixture(
     expected,
     "checkAnnotations",
