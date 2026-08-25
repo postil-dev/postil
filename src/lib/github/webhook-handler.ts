@@ -50,6 +50,10 @@ import {
   resolveDismissibleFindingId,
   updateStoredEffectiveGate,
 } from "@/lib/finding-approvals";
+import {
+  findPublishedFindingForGithubReply,
+  insertGithubFindingFeedbackReply,
+} from "@/lib/finding-feedback";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { reviewDetailsUrl } from "@/lib/oauth";
 import {
@@ -185,6 +189,7 @@ interface CommentEventPayload {
     id?: number;
     html_url?: string;
     body?: string;
+    created_at?: string;
     user?: GithubUser;
     author_association?: string;
     // Present on pull_request_review_comment: the thread's anchor.
@@ -193,7 +198,7 @@ interface CommentEventPayload {
     in_reply_to_id?: number;
   };
   issue?: { number: number; body?: string; pull_request?: unknown };
-  pull_request?: { number: number };
+  pull_request?: { number: number; user?: GithubUser };
 }
 
 interface IssuesEventPayload {
@@ -978,6 +983,56 @@ async function enqueueConversationReaction(
   });
 }
 
+/** Record a non-command, non-conversation reply without authorizing a decision. */
+async function recordFindingFeedbackReply(
+  findingPublicationId: number,
+  payload: CommentEventPayload,
+  body: string,
+  sourceDeliveryId: string,
+): Promise<void> {
+  const comment = payload.comment;
+  const actor = comment?.user;
+  const author = payload.pull_request?.user;
+  const githubCommentId = comment?.id;
+  const observedAt = typeof comment?.created_at === "string"
+    ? new Date(comment.created_at)
+    : null;
+  if (
+    !Number.isSafeInteger(githubCommentId) ||
+    githubCommentId === undefined ||
+    githubCommentId <= 0 ||
+    !Number.isSafeInteger(actor?.id) ||
+    actor?.id === undefined ||
+    actor.id <= 0 ||
+    typeof actor.login !== "string" ||
+    actor.login.trim().length === 0 ||
+    actor.login.length > 100 ||
+    !Number.isSafeInteger(author?.id) ||
+    author?.id === undefined ||
+    author.id <= 0 ||
+    typeof author.login !== "string" ||
+    author.login.trim().length === 0 ||
+    author.login.length > 100 ||
+    observedAt === null ||
+    Number.isNaN(observedAt.getTime()) ||
+    body.trim().length === 0 ||
+    body.length > 65_535 ||
+    sourceDeliveryId.trim().length === 0 ||
+    sourceDeliveryId.length > 200
+  ) return;
+  await insertGithubFindingFeedbackReply(getDb(), {
+    findingPublicationId,
+    githubCommentId,
+    body,
+    actorGithubId: actor.id,
+    actorLogin: actor.login,
+    prAuthorGithubId: author.id,
+    prAuthorLogin: author.login,
+    observedAt,
+    sourceDeliveryId,
+  });
+}
+
 async function handleIssueComment(
   payload: CommentEventPayload,
   sourceDeliveryId: string,
@@ -1090,8 +1145,9 @@ async function handleReviewComment(
       triggerFollowupDrain,
     )
   ) return;
-  if (typeof body !== "string" || !isAcceptableConversationRequest(body)) return;
+  if (typeof body !== "string") return;
   const explicitMention = mentionsPostil(body);
+  if (explicitMention && !isAcceptableConversationRequest(body)) return;
   const inReplyToId = payload.comment?.in_reply_to_id;
   if (
     (!explicitMention &&
@@ -1099,10 +1155,22 @@ async function handleReviewComment(
     isBot(payload.comment?.user) ||
     isBot(payload.sender)
   ) return;
-  if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
-  const authority = await enabledRepoForMention(payload.installation?.id, payload.repository);
+  const mayRespond = mayTriggerRespond(payload.comment?.author_association);
+  const authority = await enabledRepoForMention(
+    payload.installation?.id,
+    payload.repository,
+    false,
+  );
   if (!authority) return;
+  if (explicitMention && !mayRespond) return;
+  const inferenceAllowed = async (): Promise<boolean> => (
+    await canProcessRepositoryInference(getDb(), {
+      orgId: authority.sourceOrgId,
+      repositoryPrivate: payload.repository!.private,
+    })
+  ).allowed;
+  if (explicitMention && !(await inferenceAllowed())) return;
   if (explicitMention && isPostilReviewCommand(body)) {
     await enqueueMentionReview(
       payload,
@@ -1123,6 +1191,8 @@ async function handleReviewComment(
     );
     if (!isPostilBotLogin(root.userLogin)) return;
     if (isGratitudeOnly(body!)) {
+      if (!mayRespond) return;
+      if (!(await inferenceAllowed())) return;
       await enqueueConversationReaction(
         payload,
         sourceDeliveryId,
@@ -1133,9 +1203,36 @@ async function handleReviewComment(
       if (triggerFollowupDrain) triggerQueueDrain("conversation-gratitude");
       return;
     }
-    if (!isClarificationRequest(body!)) return;
-    threadContext = boundedThreadContext(root.body);
+    if (isClarificationRequest(body!)) {
+      if (!mayRespond) return;
+      if (!(await inferenceAllowed())) return;
+      threadContext = boundedThreadContext(root.body);
+    } else {
+      const actorGithubId = payload.comment?.user?.id;
+      const prAuthorGithubId = payload.pull_request.user?.id;
+      const actorIsPrAuthor = Number.isSafeInteger(actorGithubId) &&
+        actorGithubId !== undefined &&
+        actorGithubId > 0 &&
+        actorGithubId === prAuthorGithubId;
+      if (!mayRespond && !actorIsPrAuthor) return;
+      const findingPublicationId = await findPublishedFindingForGithubReply(getDb(), {
+        githubInstallationId: payload.installation!.id,
+        githubRepoId: payload.repository.id,
+        prNumber: payload.pull_request.number,
+        githubCommentId: root.inReplyToId ?? root.id,
+      });
+      if (findingPublicationId === null) return;
+      await recordFindingFeedbackReply(
+        findingPublicationId,
+        payload,
+        body,
+        sourceDeliveryId,
+      );
+      return;
+    }
   } else if (isGratitudeOnly(body!)) {
+    if (!mayRespond) return;
+    if (!(await inferenceAllowed())) return;
     await enqueueConversationReaction(
       payload,
       sourceDeliveryId,
@@ -1146,6 +1243,8 @@ async function handleReviewComment(
     if (triggerFollowupDrain) triggerQueueDrain("conversation-gratitude");
     return;
   }
+  if (!mayRespond) return;
+  if (!isAcceptableConversationRequest(body)) return;
   // Review comments anchor to a file/line; without it the bot answers blind
   // to which code the question is about.
   const anchor =

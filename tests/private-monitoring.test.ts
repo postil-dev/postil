@@ -8,6 +8,7 @@ import type {
   OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 import { runOpenRouterCapMonitoringChecks } from "@/lib/openrouter-cap-monitoring";
+import { NON_OPERATIONAL_REVIEW_FAILURE_MESSAGES } from "@/lib/review-outcome";
 import {
   acquirePrivateMonitorLease,
   claimPrivateMonitoringNotifications,
@@ -951,11 +952,15 @@ describeDb("private monitoring durability", () => {
   });
 
   test("requires a delivered operator alert for every trial grant", async () => {
+    // The alert event key carries the organization's GitHub id, which differs
+    // from the initiating user's id for real (non-personal) organizations.
     const githubActorId = 998877;
-    const eventKey = `trial-started:${githubActorId}`;
+    const githubOrgId = 556677;
+    const eventKey = `trial-started:${githubOrgId}`;
     const organization = await pool.query<{ id: string }>(
-      `INSERT INTO organizations (slug, name)
-       VALUES ('monitor-trial-alert', 'Monitor Trial Alert') RETURNING id`,
+      `INSERT INTO organizations (slug, name, github_org_id)
+       VALUES ('monitor-trial-alert', 'Monitor Trial Alert', $1) RETURNING id`,
+      [githubOrgId],
     );
     const orgId = organization.rows[0]!.id;
     try {
@@ -1079,6 +1084,109 @@ describeDb("private monitoring durability", () => {
     } finally {
       await pool.query(
         "DELETE FROM installations WHERE github_installation_id = 900035",
+      );
+    }
+  });
+
+  test("counts a review failure only when the service is at fault", async () => {
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, suspended)
+       VALUES (900036, 'monitor-outcome', 'Organization', false) RETURNING id`,
+    );
+    const repository = await pool.query<{ id: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       VALUES ($1, 900036001, 'monitor-outcome/service', true) RETURNING id`,
+      [installation.rows[0]!.id],
+    );
+    const repositoryId = repository.rows[0]!.id;
+    const insertFailure = async (prNumber: number, message: string) => {
+      await pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+            error_message, queued_at, finished_at)
+         VALUES ($1, $2, $3, $4, 'failed', 'unknown', $5,
+                 now() - interval '5 minutes', now() - interval '5 minutes')`,
+        [repositoryId, prNumber, "a".repeat(40), "b".repeat(40), message],
+      );
+    };
+    const operationalCheck = async () =>
+      (await runDatabaseMonitoringChecks(pool)).find(
+        (check) => check.key === "review-operational-failures",
+      );
+    // Spelled out rather than mapped over the exported list: a fixture derived
+    // from the value under test passes whatever that value becomes.
+    const benign = [
+      "Hosted inference allowance is unavailable or fully reserved.",
+      "Hosted review service is temporarily unavailable.",
+      "pull request is no longer eligible for publication",
+    ];
+    try {
+      expect([...NON_OPERATIONAL_REVIEW_FAILURE_MESSAGES] as string[]).toEqual(benign);
+      for (const [index, message] of benign.entries()) {
+        await insertFailure(700 + index, message);
+      }
+      expect(await operationalCheck()).toMatchObject({ healthy: true });
+
+      // An unattributed failure is exactly the kind worth waking someone for.
+      await insertFailure(799, "");
+      expect(await operationalCheck()).toMatchObject({ healthy: false });
+    } finally {
+      await pool.query(
+        "DELETE FROM installations WHERE github_installation_id = 900036",
+      );
+    }
+  });
+
+  test("pages for invalid model output only when the run could not recover", async () => {
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, suspended)
+       VALUES (900037, 'monitor-incident', 'Organization', false) RETURNING id`,
+    );
+    const repository = await pool.query<{ id: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       VALUES ($1, 900037001, 'monitor-incident/service', true) RETURNING id`,
+      [installation.rows[0]!.id],
+    );
+    const insertCompleted = async (prNumber: number, incident: unknown) => {
+      await pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+            envelope, queued_at, finished_at)
+         VALUES ($1, $2, $3, $4, 'completed', 'unknown', $5,
+                 now() - interval '5 minutes', now() - interval '5 minutes')`,
+        [
+          repository.rows[0]!.id,
+          prNumber,
+          "c".repeat(40),
+          "d".repeat(40),
+          JSON.stringify({ modelIncidents: [incident] }),
+        ],
+      );
+    };
+    const invalidOutputCheck = async () =>
+      (await runDatabaseMonitoringChecks(pool)).find(
+        (check) => check.key === "invalid-model-output",
+      );
+    try {
+      await insertCompleted(800, {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: true,
+        recovery: "repair",
+      });
+      expect(await invalidOutputCheck()).toMatchObject({ healthy: true });
+
+      await insertCompleted(801, {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: false,
+      });
+      expect(await invalidOutputCheck()).toMatchObject({ healthy: false });
+    } finally {
+      await pool.query(
+        "DELETE FROM installations WHERE github_installation_id = 900037",
       );
     }
   });

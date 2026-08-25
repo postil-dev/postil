@@ -1910,6 +1910,265 @@ describeDb("webhook handler behaviour", () => {
     expect(jobs.rows[0]!.count).toBe(0);
   });
 
+  async function seedPublishedFinding(
+    repoId: number,
+    findingId = "feedback-finding",
+    envelope: Record<string, unknown> = approvalEnvelope(),
+  ): Promise<number> {
+    const reviewId = await seedCompletedApprovalReview(repoId, envelope);
+    const publication = await pool.query<{ id: string }>(
+      `INSERT INTO finding_publications
+         (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+       VALUES ($1, $2, true, 'inline', 'inline', '8800')
+       RETURNING id`,
+      [reviewId, findingId],
+    );
+    return Number(publication.rows[0]!.id);
+  }
+
+  function feedbackReply(
+    deliveryId: string,
+    commentId: number,
+    body: string,
+    overrides: Record<string, unknown> = {},
+  ): Promise<Response> {
+    return post(
+      "pull_request_review_comment",
+      {
+        action: "created",
+        installation: { id: 710 },
+        repository: { id: 7010, full_name: "octo/finding-feedback", private: false },
+        sender: { id: 510, login: "reviewer", type: "User" },
+        comment: {
+          id: commentId,
+          in_reply_to_id: 8800,
+          body,
+          created_at: "2026-08-24T12:34:56Z",
+          user: { id: 510, login: "reviewer", type: "User" },
+          author_association: "MEMBER",
+        },
+        pull_request: {
+          number: 9,
+          user: { id: 511, login: "pull-request-author", type: "User" },
+        },
+        ...overrides,
+      },
+      deliveryId,
+    );
+  }
+
+  test("persists eligible finding feedback without changing approvals or the gate", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+
+    expect((await feedbackReply("finding-feedback-wrong", 9101, "This finding is wrong.")).status)
+      .toBe(200);
+    expect((await feedbackReply("finding-feedback-risk", 9102, "We accept this risk.")).status)
+      .toBe(200);
+    expect((await feedbackReply("finding-feedback-scope", 9103, "This is outside the scope of this pull request.")).status)
+      .toBe(200);
+    expect((await feedbackReply("finding-feedback-author", 9104, "This is unhelpful.", {
+      sender: { id: 511, login: "pull-request-author", type: "User" },
+      comment: {
+        id: 9104,
+        in_reply_to_id: 8800,
+        body: "This is unhelpful.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 511, login: "pull-request-author", type: "User" },
+        author_association: "NONE",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("finding-feedback-first-time-author", 9105, "This is still unhelpful.", {
+      sender: { id: 511, login: "pull-request-author", type: "User" },
+      comment: {
+        id: 9105,
+        in_reply_to_id: 8800,
+        body: "This is still unhelpful.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 511, login: "pull-request-author", type: "User" },
+        author_association: "FIRST_TIME_CONTRIBUTOR",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("finding-feedback-replay", 9101, "This finding is wrong.")).status)
+      .toBe(200);
+
+    const feedback = await pool.query<{
+      finding_publication_id: string;
+      source: string;
+      source_github_comment_id: string | null;
+      actor_github_id: string;
+      actor_login_snapshot: string;
+      pr_author_github_id: string;
+      pr_author_login_snapshot: string;
+      actor_is_pr_author: boolean;
+      body: string | null;
+      observed_at: Date;
+      source_delivery_id: string | null;
+      suggested_reason_tag: string | null;
+    }>(`
+      SELECT finding_publication_id, source, source_github_comment_id,
+             actor_github_id, actor_login_snapshot,
+             pr_author_github_id, pr_author_login_snapshot, actor_is_pr_author,
+             body, observed_at, source_delivery_id, suggested_reason_tag
+        FROM finding_feedback
+       ORDER BY source_github_comment_id
+    `);
+    expect(feedback.rows).toEqual([
+      {
+        finding_publication_id: String(publicationId),
+        source: "reply",
+        source_github_comment_id: "9101",
+        actor_github_id: "510",
+        actor_login_snapshot: "reviewer",
+        pr_author_github_id: "511",
+        pr_author_login_snapshot: "pull-request-author",
+        actor_is_pr_author: false,
+        body: "This finding is wrong.",
+        observed_at: new Date("2026-08-24T12:34:56Z"),
+        source_delivery_id: "finding-feedback-wrong",
+        suggested_reason_tag: "false-positive",
+      },
+      expect.objectContaining({
+        source_github_comment_id: "9102",
+        suggested_reason_tag: "accepted-risk",
+      }),
+      expect.objectContaining({
+        source_github_comment_id: "9103",
+        suggested_reason_tag: "out-of-scope",
+      }),
+      expect.objectContaining({
+        source_github_comment_id: "9104",
+        actor_is_pr_author: true,
+        suggested_reason_tag: null,
+      }),
+      expect.objectContaining({
+        source_github_comment_id: "9105",
+        actor_is_pr_author: true,
+        suggested_reason_tag: null,
+      }),
+    ]);
+
+    const state = await pool.query<{ gate_failing: boolean; approval_count: number }>(`
+      SELECT review.gate_failing,
+             (SELECT count(*)::int FROM finding_approvals WHERE review_id = review.id) AS approval_count
+        FROM reviews review
+       WHERE review.id = (
+         SELECT review_id FROM finding_publications WHERE id = $1
+       )
+    `, [publicationId]);
+    expect(state.rows).toEqual([{ gate_failing: true, approval_count: 0 }]);
+  });
+
+  test("keeps operational-sentinel feedback separate from gate decisions", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(
+      repoId,
+      "operational-feedback",
+      approvalEnvelope({
+        findings: [{
+          id: "operational-feedback",
+          path: ".postil/operational",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: "Model provider unavailable",
+          body: "Provider returned an invalid response.",
+        }],
+        counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      }),
+    );
+
+    expect((await feedbackReply("operational-feedback", 9104, "This is a false positive.")).status)
+      .toBe(200);
+
+    const state = await pool.query<{ feedback_count: number; approval_count: number; gate_failing: boolean }>(`
+      SELECT
+        (SELECT count(*)::int FROM finding_feedback WHERE finding_publication_id = $1) AS feedback_count,
+        (SELECT count(*)::int FROM finding_approvals WHERE review_id = publication.review_id) AS approval_count,
+        review.gate_failing
+      FROM finding_publications publication
+      JOIN reviews review ON review.id = publication.review_id
+      WHERE publication.id = $1
+    `, [publicationId]);
+    expect(state.rows).toEqual([{ feedback_count: 1, approval_count: 0, gate_failing: true }]);
+  });
+
+  test("records historical private-repository feedback without inference entitlement", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 711);
+    const repoId = await seedRepo(inst, 7011, "octo/private-feedback", true);
+    const publicationId = await seedPublishedFinding(repoId);
+
+    expect((await feedbackReply("private-finding-feedback", 9150, "This is unhelpful.", {
+      installation: { id: 711 },
+      repository: {
+        id: 7011,
+        full_name: "octo/private-feedback",
+        private: true,
+      },
+    })).status).toBe(200);
+
+    const feedback = await pool.query<{ finding_publication_id: string; body: string }>(
+      `SELECT finding_publication_id, body
+         FROM finding_feedback
+        WHERE source_github_comment_id = '9150'`,
+    );
+    expect(feedback.rows).toEqual([{
+      finding_publication_id: String(publicationId),
+      body: "This is unhelpful.",
+    }]);
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'respond'")).rowCount).toBe(0);
+  });
+
+  test("does not capture commands, questions, gratitude, unrelated roots, or ineligible replies", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    await seedPublishedFinding(repoId);
+
+    expect((await feedbackReply("feedback-question", 9201, "Why is this finding here?")).status).toBe(200);
+    expect((await feedbackReply("feedback-gratitude", 9202, "Thanks again!")).status).toBe(200);
+    expect((await feedbackReply("feedback-command", 9203, "@postil review current head")).status).toBe(200);
+
+    reviewCommentRoot = { ...reviewCommentRoot, userLogin: "another-reviewer" };
+    expect((await feedbackReply("feedback-unrelated", 9204, "This finding is wrong.")).status).toBe(200);
+    reviewCommentRoot = { ...reviewCommentRoot, userLogin: "postil-dev[bot]" };
+
+    expect((await feedbackReply("feedback-unauthorized", 9205, "This finding is wrong.", {
+      comment: {
+        id: 9205,
+        in_reply_to_id: 8800,
+        body: "This finding is wrong.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 510, login: "reviewer", type: "User" },
+        author_association: "NONE",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("feedback-first-time-unauthorized", 9207, "This finding is wrong.", {
+      comment: {
+        id: 9207,
+        in_reply_to_id: 8800,
+        body: "This finding is wrong.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 510, login: "reviewer", type: "User" },
+        author_association: "FIRST_TIME_CONTRIBUTOR",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("feedback-bot", 9206, "This finding is wrong.", {
+      sender: { id: 510, login: "reviewer[bot]", type: "Bot" },
+    })).status).toBe(200);
+
+    const feedback = await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM finding_feedback",
+    );
+    expect(feedback.rows[0]!.count).toBe(0);
+  });
+
   test("does not acknowledge an exact command from an unauthorized commenter", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 703);

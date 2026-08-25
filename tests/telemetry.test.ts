@@ -116,6 +116,7 @@ describe("public telemetry sanitization", () => {
       $cookieless_mode: true,
       $process_person_profile: false,
       $session_id: SESSION_ID,
+      $raw_user_agent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/139.0.0.0",
       $current_url: "https://postil.dev/docs",
       $host: "postil.dev",
       $pathname: "/docs",
@@ -316,8 +317,78 @@ describe("public telemetry sanitization", () => {
       expect(sanitized.$browser).toBe("Chrome");
       expect(sanitized.$browser_version).toBe(139);
       expect(sanitized.$os).toBe("Linux");
-      expect(sanitized.$raw_user_agent).toBeUndefined();
+      expect(sanitized.$raw_user_agent).toBe("Mozilla/5.0 (X11; Linux x86_64)");
       expect(sanitized.$prev_pageview_pathname).toBeUndefined();
+    }
+  });
+
+  test("reports the user agent cookieless identity hashing requires", () => {
+    // Cookieless events without $raw_user_agent are discarded on arrival, so
+    // every browser event type has to carry it or none of them are recorded.
+    const userAgent =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+    for (const event of ["$pageview", "$pageleave"] as const) {
+      const properties: Record<string, unknown> = {
+        $current_url: "https://postil.dev/pricing",
+        $raw_user_agent: userAgent,
+      };
+      expect(
+        sanitizePostHogEventProperties(
+          event,
+          properties,
+          "https://postil.dev",
+          "phc_test",
+          SESSION_ID,
+        ),
+      ).toBe(true);
+      expect(properties.$raw_user_agent).toBe(userAgent);
+    }
+
+    const vitals: Record<string, unknown> = {
+      $current_url: "https://postil.dev/pricing",
+      $raw_user_agent: userAgent,
+      $web_vitals_CLS_event: {
+        name: "CLS",
+        value: 0.02,
+        $current_url: "https://postil.dev/pricing",
+      },
+    };
+    expect(
+      sanitizePostHogEventProperties(
+        "$web_vitals",
+        vitals,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      ),
+    ).toBe(true);
+    expect(vitals.$raw_user_agent).toBe(userAgent);
+  });
+
+  test("rejects user agents outside the expected shape", () => {
+    for (const value of [
+      "",
+      "x".repeat(1_025),
+      "Mozilla/5.0\nX-Injected: header",
+      "Mozilla/5.0\t(X11; Linux x86_64)",
+      "Mozilla/5.0 (X11; Linux x86_64) é",
+      42,
+      { toString: () => "Mozilla/5.0" },
+    ]) {
+      const properties: Record<string, unknown> = {
+        $current_url: "https://postil.dev/pricing",
+        $raw_user_agent: value,
+      };
+      expect(
+        sanitizePostHogEventProperties(
+          "$pageview",
+          properties,
+          "https://postil.dev",
+          "phc_test",
+          SESSION_ID,
+        ),
+      ).toBe(true);
+      expect(properties.$raw_user_agent).toBeUndefined();
     }
   });
 
@@ -327,7 +398,10 @@ describe("public telemetry sanitization", () => {
       $pathname: "/pricing",
       $prev_pageview_duration: 500,
       $prev_pageview_max_scroll_percentage: 74,
+      $prev_pageview_max_content_percentage: 62,
+      $prev_pageview_max_content: 1840,
       $prev_pageview_last_scroll_percentage: 101,
+      $prev_pageview_last_content_percentage: 101,
       $prev_pageview_max_scroll: Number.POSITIVE_INFINITY,
       arbitrary: "drop",
     };
@@ -348,6 +422,8 @@ describe("public telemetry sanitization", () => {
       $pathname: "/pricing",
       $prev_pageview_duration: 500,
       $prev_pageview_max_scroll_percentage: 74,
+      $prev_pageview_max_content_percentage: 62,
+      $prev_pageview_max_content: 1840,
     });
   });
 

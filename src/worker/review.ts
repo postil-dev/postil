@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 
 import { validateApiBase } from "@/lib/api-base";
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
@@ -44,6 +44,7 @@ import {
   createCheckRun,
   findCheckRunByExternalId,
   getPullRequestReviewContext,
+  incrementalBaselineUsable,
   verifyCompletedCheckRun,
   type ExpectedCheckRunIdentity,
 } from "@/lib/github/checks";
@@ -100,7 +101,11 @@ import {
   getOrganizationGateEnabled,
 } from "@/lib/gate-mode";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
-import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
+import {
+  HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE,
+  HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+  PUBLICATION_INELIGIBLE_MESSAGE,
+} from "@/lib/review-outcome";
 import { HostedInferenceReleaseDarkError } from "@/lib/release-job-rollout";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
@@ -864,6 +869,41 @@ async function resumeStagedReviewCompletion(input: {
 }
 
 /**
+ * Baseline for an incremental re-review: the newest completed review of the
+ * pull request that issued a verdict. A review whose envelope carries an
+ * operational sentinel reviewed nothing, so anchoring the next incremental
+ * diff on its head would skip every change that failed review never read.
+ */
+export async function loadIncrementalReviewBaseline(
+  db: Database,
+  repositoryId: number,
+  prNumber: number,
+): Promise<typeof schema.reviews.$inferSelect | undefined> {
+  return (
+    await db
+      .select()
+      .from(schema.reviews)
+      .where(
+        and(
+          eq(schema.reviews.repositoryId, repositoryId),
+          eq(schema.reviews.prNumber, prNumber),
+          eq(schema.reviews.status, "completed"),
+          isNotNull(schema.reviews.envelope),
+          sql`NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(
+              CASE WHEN jsonb_typeof(${schema.reviews.envelope} -> 'findings') = 'array'
+                THEN ${schema.reviews.envelope} -> 'findings' ELSE '[]'::jsonb END
+            ) AS finding
+            WHERE finding ->> 'path' IN ('.postil/provider', '.postil/model-output', '.postil/operational')
+          )`,
+        ),
+      )
+      .orderBy(desc(schema.reviews.finishedAt))
+      .limit(1)
+  )[0];
+}
+
+/**
  * Run one hosted review end to end.
  *
  * The worker's job is deliberately small: mint a token, create the two
@@ -1085,33 +1125,54 @@ export async function runReviewJob(
     authorLogin = context.authorLogin;
   }
 
-  // Incremental re-review: baseline = last completed review of this PR.
-  const baseline = (
-    await db
-      .select()
-      .from(schema.reviews)
-      .where(
-        and(
-          eq(schema.reviews.repositoryId, repository.id),
-          eq(schema.reviews.prNumber, payload.prNumber),
-          eq(schema.reviews.status, "completed"),
-          isNotNull(schema.reviews.envelope),
-        ),
-      )
-      .orderBy(desc(schema.reviews.finishedAt))
-      .limit(1)
-  )[0];
+  const baseline = await loadIncrementalReviewBaseline(
+    db,
+    repository.id,
+    payload.prNumber,
+  );
   const preventionHint = await shouldSendPreventionHint(
     db,
     repository.id,
     payload.prNumber,
   );
   const trigger = normalizeReviewTriggerContext(payload.trigger);
-  const forceFullReview = reviewRequiresFullDiff({
+  let forceFullReview = reviewRequiresFullDiff({
     requested: payload.forceFullReview === true,
     baselineBaseSha: baseline?.baseSha,
     currentBaseSha: payload.baseSha,
   });
+  if (!forceFullReview && baseline) {
+    // A rebase or force-push can replace the reviewed commits while keeping
+    // the same base, which no payload field reveals. The CLI refuses an
+    // incremental diff whose baseline is no longer an ancestor and the review
+    // ends with no verdict, so ask the forge up front and fall back to a full
+    // review. A compare failure falls back too: a full review is always
+    // complete, just costlier.
+    try {
+      const usable = await translateWorkerAbort(
+        incrementalBaselineUsable(
+          token,
+          payload.repoFullName,
+          baseline.headSha,
+          payload.headSha,
+          signal,
+        ),
+        signal,
+      );
+      if (!usable) {
+        forceFullReview = true;
+        console.log(
+          `review for ${payload.repoFullName}#${payload.prNumber}: baseline ${baseline.headSha.slice(0, 12)} is no longer an ancestor of ${payload.headSha.slice(0, 12)}; running a full review`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof WorkerShutdownError) throw error;
+      forceFullReview = true;
+      console.log(
+        `review for ${payload.repoFullName}#${payload.prNumber}: baseline ancestry check failed (${redactSecrets(error)}); running a full review`,
+      );
+    }
+  }
   const reviewValues = {
     repositoryId: repository.id,
     sourceOrgId: payload.sourceOrgId,
@@ -1238,7 +1299,7 @@ export async function runReviewJob(
     reviewLog.setSensitiveValues(sensitiveValues);
     if (!(await publicationAuthorized())) {
       reviewLog.line("publication cancelled before forge writes");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+      throw new TerminalReviewError(PUBLICATION_INELIGIBLE_MESSAGE);
     }
     onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
@@ -1464,8 +1525,7 @@ export async function runReviewJob(
           usesByok: llm.byok,
         });
         if (spendReservation && !spendReservation.allowed) {
-          const message =
-            "Hosted inference allowance is unavailable or fully reserved.";
+          const message = HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE;
           const settled = await db.transaction(async (tx) => {
             const failedRows = await tx
               .update(schema.reviews)
@@ -1579,7 +1639,7 @@ export async function runReviewJob(
 
     if (!(await publicationAuthorized())) {
       reviewLog.line("publication cancelled before CLI start");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+      throw new TerminalReviewError(PUBLICATION_INELIGIBLE_MESSAGE);
     }
     reviewLog.line("postil CLI spawned");
     cliStarted = true;

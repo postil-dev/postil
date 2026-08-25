@@ -49,7 +49,11 @@ class MemoryAttemptStore implements LargeReviewAttemptStore {
   async bindRun(identity: LargeReviewRunIdentity, context: LargeReviewRunContext) {
     const key = largeReviewRunKey(identity);
     if (context.expectedRunKey && context.expectedRunKey !== key) {
-      throw new Error("large-review plan changed across retry");
+      // A replanned retry retires the run the previous attempt registered.
+      this.runs.delete(context.expectedRunKey);
+      for (const [attemptKey, attempt] of this.attempts) {
+        if (attempt.runKey === context.expectedRunKey) this.attempts.delete(attemptKey);
+      }
     }
     this.runs.set(key, identity);
     return key;

@@ -34,6 +34,11 @@ const customerNotificationEmailFailures: Array<{
 let gateStateSyncRun: (() => Promise<void>) | undefined;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
+let webhookDeliveryToLoad:
+  | { deliveryId: string; event: string; action: string | null; payload: unknown }
+  | undefined;
+let webhookDispatchError: Error | undefined;
+const webhookDeliveriesCompleted: string[] = [];
 let reviewTiming:
   | { queuedAt: Date; startedAt: Date; lease?: ClaimedJob }
   | undefined;
@@ -49,6 +54,15 @@ class MockPermanentJobError extends Error {
   permanent = true;
 }
 class MockWebhookDeliveryStateError extends Error {}
+class MockGitHubHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GitHubHttpError";
+  }
+}
 
 mock.module("@/lib/server-observability", () => ({
   reportOperationalFailure: (_processGroup: string, failureClass: string) => {
@@ -112,10 +126,12 @@ mock.module("@/lib/queue", () => ({
     completed.push(job.id);
   },
   continueClaimedJob: async () => undefined,
-  completeWebhookDelivery: async () => undefined,
+  completeWebhookDelivery: async (_pool: unknown, deliveryId: string) => {
+    webhookDeliveriesCompleted.push(deliveryId);
+  },
   loadWebhookDelivery: async () => {
     if (webhookDeliveryLoadError) throw webhookDeliveryLoadError;
-    return null;
+    return webhookDeliveryToLoad ?? null;
   },
   failJob: async (
     _pool: unknown,
@@ -155,6 +171,12 @@ mock.module("@/lib/queue", () => ({
 
 mock.module("@/worker/watchdog", () => ({
   watchdogPass: async () => undefined,
+}));
+
+mock.module("@/lib/github/webhook-handler", () => ({
+  dispatchWebhookDelivery: async () => {
+    if (webhookDispatchError) throw webhookDispatchError;
+  },
 }));
 
 mock.module("@/worker/review", () => ({
@@ -283,6 +305,9 @@ beforeEach(() => {
   gateStateSyncRun = async () => undefined;
   cleanupRun = async () => undefined;
   webhookDeliveryLoadError = undefined;
+  webhookDeliveryToLoad = undefined;
+  webhookDispatchError = undefined;
+  webhookDeliveriesCompleted.length = 0;
   reviewTiming = undefined;
   reviewProcessGroup = undefined;
   reviewSignal = undefined;
@@ -586,6 +611,78 @@ describe("drainQueueOnce", () => {
     ]);
     expect(failed).toEqual([]);
     expect(operationalWarnings).toEqual(["job_retrying"]);
+  });
+
+  test("completes a webhook delivery whose forge target stays gone", async () => {
+    const job = reviewJob(21);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-21" };
+    job.attempts = 2;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-21",
+      event: "pull_request",
+      action: "opened",
+      payload: {},
+    };
+    webhookDispatchError = new MockGitHubHttpError(
+      404,
+      "GitHub GET /repos/acme/deleted/pulls/1 failed: HTTP 404",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual(["delivery-21"]);
+    expect(failed).toEqual([]);
+    expect(retriedIndefinitely).toEqual([]);
+  });
+
+  test("retries a first-attempt 404 before treating the target as gone", async () => {
+    const job = reviewJob(23);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-23" };
+    job.attempts = 1;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-23",
+      event: "pull_request",
+      action: "opened",
+      payload: {},
+    };
+    webhookDispatchError = new MockGitHubHttpError(
+      404,
+      "GitHub GET /repos/acme/fresh/pulls/1 failed: HTTP 404",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(retriedIndefinitely).toEqual([
+      { id: 23, error: "GitHub GET /repos/acme/fresh/pulls/1 failed: HTTP 404" },
+    ]);
+    expect(failed).toEqual([]);
+  });
+
+  test("keeps retrying a webhook dispatch on a transient forge error", async () => {
+    const job = reviewJob(22);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-22" };
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-22",
+      event: "pull_request",
+      action: "opened",
+      payload: {},
+    };
+    webhookDispatchError = new MockGitHubHttpError(
+      503,
+      "GitHub GET /repos/acme/live/pulls/1 failed: HTTP 503",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(retriedIndefinitely).toEqual([
+      { id: 22, error: "GitHub GET /repos/acme/live/pulls/1 failed: HTTP 503" },
+    ]);
+    expect(failed).toEqual([]);
   });
 
   test("fails an orphaned webhook dispatch instead of retrying forever", async () => {

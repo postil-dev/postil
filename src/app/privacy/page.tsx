@@ -67,6 +67,15 @@ export default function PrivacyPage() {
             event names, response status, and bounded redelivery outcomes, kept
             for 30 days. Recovery scans do not fetch webhook request payloads.
           </li>
+          <li>
+            <strong>Finding feedback</strong>: eligible non-command replies to
+            Postil finding threads, including the reply text, GitHub comment
+            ID, commenter and pull-request author IDs and login snapshots,
+            whether the commenter is the pull-request author, the reply time,
+            and a suggested feedback category when the wording matches one.
+            Feedback is used to evaluate finding quality. It never approves or
+            dismisses a finding and never changes the merge gate.
+          </li>
         </ul>
 
         <h2>Retention, export, and deletion</h2>
@@ -75,8 +84,10 @@ export default function PrivacyPage() {
           because they power the dashboard and because incremental re-review
           uses the previous envelope as its baseline. Uninstalling the GitHub
           App revokes repository access and stops future processing. It does not
-          delete review history. A verified organization administrator can
-          request an export or deletion of organization data by emailing{" "}
+          delete review history. Finding feedback is retained with its
+          associated review history and is removed when that history is
+          deleted. A verified organization administrator can request an export
+          or deletion of organization data by emailing{" "}
           <a href="mailto:hello@postil.dev">hello@postil.dev</a>. Billing
           records required for accounting, tax, fraud prevention, or disputes
           are retained only for those purposes.
@@ -171,8 +182,8 @@ export default function PrivacyPage() {
           write no local or session storage; daily anonymous aggregation is not
           linked to an account or retained as a durable browser identity.
           PostHog forms that rotating daily identifier from the project,
-          hostname, IP address, and user agent, then discards the raw IP
-          address. DNT and Global Privacy
+          hostname, IP address, and the browser user agent each event reports,
+          then discards the raw IP address. DNT and Global Privacy
           Control disable browser and request analytics. Session replay, person
           profiles, surveys, heatmaps, and autocaptured clicks are disabled.
           Browser event payloads discard query strings and persistent device or
