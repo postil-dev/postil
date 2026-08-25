@@ -2031,16 +2031,22 @@ describeDb("webhook handler behaviour", () => {
         confidence: 0.9, title: "Incorrect finding", body: "The branch is unreachable.",
       }],
       counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      scorerModel: "scorer/webhook",
     }));
     await pool.query("UPDATE reviews SET author_github_id = 501 WHERE id = $1", [reviewId]);
 
     expect((await dismissalComment("dismissal-success")).status).toBe(200);
     const dismissal = await pool.query<{
-      verb: string; reason_tag: string; author_self_dismissal: boolean; finding_model: string;
-    }>("SELECT verb, reason_tag, author_self_dismissal, finding_model FROM finding_approvals WHERE review_id = $1", [reviewId]);
+      verb: string;
+      reason_tag: string;
+      author_self_dismissal: boolean;
+      finding_model: string;
+      finding_scorer_model: string;
+    }>("SELECT verb, reason_tag, author_self_dismissal, finding_model, finding_scorer_model FROM finding_approvals WHERE review_id = $1", [reviewId]);
     expect(dismissal.rows).toEqual([{
       verb: "dismiss", reason_tag: "false-positive", author_self_dismissal: true,
       finding_model: "deepseek/deepseek-v4-pro",
+      finding_scorer_model: "scorer/webhook",
     }]);
     expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(false);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(

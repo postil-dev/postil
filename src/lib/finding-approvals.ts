@@ -28,7 +28,8 @@ export interface ApprovalRow {
   findingKind: string | null;
   findingSeverity: string | null;
   findingConfidence: number | null;
-  findingModel: string | null;
+  findingGeneratorModel: string | null;
+  findingScorerModel: string | null;
   rationale: string;
   source: "github" | "dashboard";
   sourceCommentId: string | null;
@@ -103,7 +104,8 @@ export interface ApprovalInsert {
   reasonTag?: DismissalReasonTag | null;
   authorSelfDismissal?: boolean;
   finding?: Finding;
-  findingModel?: string;
+  findingGeneratorModel?: string;
+  findingScorerModel?: string | null;
   source: "github" | "dashboard";
   sourceCommentId?: string | null;
   sourceUrl?: string | null;
@@ -333,7 +335,10 @@ export async function insertFindingApproval(
 ): Promise<string> {
   const rationale = validateApprovalRationale(input.rationale);
   const verb = input.verb ?? "approve";
-  if (verb === "dismiss" && (!input.reasonTag || !input.finding || !input.findingModel)) {
+  if (
+    verb === "dismiss" &&
+    (!input.reasonTag || !input.finding || !input.findingGeneratorModel)
+  ) {
     throw new Error("dismissal audit fields are required");
   }
   const rows = await db
@@ -351,7 +356,8 @@ export async function insertFindingApproval(
       findingKind: input.finding?.kind ?? null,
       findingSeverity: input.finding?.severity ?? null,
       findingConfidence: input.finding?.confidence ?? null,
-      findingModel: input.findingModel ?? null,
+      findingGeneratorModel: input.findingGeneratorModel ?? null,
+      findingScorerModel: input.findingScorerModel ?? null,
       rationale,
       source: input.source,
       sourceCommentId: input.sourceCommentId ?? null,

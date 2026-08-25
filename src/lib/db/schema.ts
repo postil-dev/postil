@@ -629,7 +629,8 @@ export const findingApprovals = pgTable(
     findingKind: text("finding_kind"),
     findingSeverity: text("finding_severity"),
     findingConfidence: real("finding_confidence"),
-    findingModel: text("finding_model"),
+    findingGeneratorModel: text("finding_model"),
+    findingScorerModel: text("finding_scorer_model"),
     rationale: text("rationale").notNull(),
     source: findingApprovalSource("source").notNull(),
     sourceCommentId: uuid("source_comment_id"),
@@ -682,7 +683,7 @@ export const findingApprovals = pgTable(
     ),
     check(
       "finding_approvals_dismissal_check",
-      sql`(${t.verb} = 'approve' AND ${t.reasonTag} IS NULL AND ${t.authorSelfDismissal} = false AND ${t.findingKind} IS NULL AND ${t.findingSeverity} IS NULL AND ${t.findingConfidence} IS NULL AND ${t.findingModel} IS NULL) OR (${t.verb} = 'dismiss' AND ${t.reasonTag} IS NOT NULL AND ${t.reasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope') AND ${t.findingKind} IS NOT NULL AND ${t.findingSeverity} IS NOT NULL AND ${t.findingConfidence} IS NOT NULL AND ${t.findingConfidence} BETWEEN 0 AND 1 AND ${t.findingModel} IS NOT NULL)`,
+      sql`(${t.verb} = 'approve' AND ${t.reasonTag} IS NULL AND ${t.authorSelfDismissal} = false AND ${t.findingKind} IS NULL AND ${t.findingSeverity} IS NULL AND ${t.findingConfidence} IS NULL AND ${t.findingGeneratorModel} IS NULL AND ${t.findingScorerModel} IS NULL) OR (${t.verb} = 'dismiss' AND ${t.reasonTag} IS NOT NULL AND ${t.reasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope') AND ${t.findingKind} IS NOT NULL AND ${t.findingSeverity} IS NOT NULL AND ${t.findingConfidence} IS NOT NULL AND ${t.findingConfidence} BETWEEN 0 AND 1 AND ${t.findingGeneratorModel} IS NOT NULL)`,
     ),
     check(
       "finding_approvals_binding_check",
