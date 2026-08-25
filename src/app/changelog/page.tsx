@@ -35,6 +35,30 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.0",
+    date: "August 25, 2026",
+    summary:
+      "The CLI starts useful reviews without model or diff-selection setup, keeps terminal progress concise, and keeps agent-box logins renewable.",
+    changes: [
+      {
+        label: "Changed",
+        text: "After authentication, `postil review` selects staged changes, commits since the default branch, or tracked working-tree changes and uses the embedded `openai/gpt-5.6-luna` low-effort reviewer when no local model is configured.",
+      },
+      {
+        label: "Added",
+        text: "`postil models` explains the embedded default, local scorer behavior, and how explicit endpoint model IDs are accepted.",
+      },
+      {
+        label: "Changed",
+        text: "Interactive terminals show compact progress and a final result while automation retains detailed telemetry. `--verbose` exposes the detailed stream when a person needs it.",
+      },
+      {
+        label: "Changed",
+        text: "CLI logins refresh automatically and remain renewable for up to 180 days of inactivity. The service-only mention responder is no longer exposed as a local CLI command.",
+      },
+    ],
+  },
+  {
     version: "0.8.28",
     date: "August 24, 2026",
     summary:
