@@ -23,6 +23,8 @@ import {
   type ClaimedJob,
   type GateEnforcementSweepJobPayload,
   type GithubReactionJobPayload,
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  type HostedProviderKeyLifecycleJobPayload,
   type RespondDeliveryJobPayload,
   type RespondFailureCommentJobPayload,
   type RespondJobPayload,
@@ -34,6 +36,7 @@ import {
 import { redactSecrets } from "@/lib/redact";
 import { reconcileFindingFeedbackReactions } from "@/lib/finding-feedback";
 import {
+  deferHostedProviderKeyLifecycleForRelease,
   deferHostedReviewForRelease,
   HostedInferenceReleaseDarkError,
 } from "@/lib/release-job-rollout";
@@ -59,6 +62,7 @@ import {
 } from "./billing-contact-verification";
 import { isForgeTargetGoneError, isPermanentFailure } from "./failure-classifier";
 import { runGithubReactionJob } from "./github-reaction";
+import { runHostedProviderKeyLifecycleJob } from "./hosted-provider-key-lifecycle";
 import { runGateStateSyncJob } from "./gate-state-sync";
 import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
 import {
@@ -113,6 +117,7 @@ export const WEB_PROCESSABLE_JOB_KINDS = [
 export const PROCESSABLE_JOB_KINDS = [
   ...WEB_PROCESSABLE_JOB_KINDS,
   "gate-enforcement-sweep",
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
 ] as const;
 
 interface JobContinuation {
@@ -249,6 +254,10 @@ async function handleJob(
       await reconcileFindingFeedbackReactions(getDb(), findingPublicationId);
       break;
     }
+    case HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND:
+      return runHostedProviderKeyLifecycleJob(
+        job.payload as HostedProviderKeyLifecycleJobPayload,
+      );
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
   }
@@ -306,6 +315,20 @@ export async function runClaimedJob(
       );
       return;
     }
+    if (
+      err instanceof HostedInferenceReleaseDarkError &&
+      job.kind === HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND
+    ) {
+      const outcome = await deferHostedProviderKeyLifecycleForRelease(
+        getPool(),
+        job,
+        err.releaseSha,
+      );
+      console.warn(
+        `[${label}] hosted provider key lifecycle job ${job.id} ${outcome} across managed release activation`,
+      );
+      return;
+    }
     const malformedGateSync =
       job.kind === "gate-state-sync" &&
       message.includes("gate state sync job payload is malformed");
@@ -330,6 +353,11 @@ export async function runClaimedJob(
     const malformedCheckRunCleanup =
       job.kind === "check-run-cleanup" &&
       message.includes("check-run cleanup job payload is malformed");
+    const malformedHostedProviderKeyLifecycle =
+      job.kind === HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND &&
+      message.includes(
+        "hosted provider key lifecycle job payload is malformed",
+      );
     const permanent =
       isPermanentJobError(err) ||
       malformedGateSync ||
@@ -340,6 +368,7 @@ export async function runClaimedJob(
       malformedGithubReaction ||
       malformedFindingFeedbackReconciliation ||
       malformedCheckRunCleanup ||
+      malformedHostedProviderKeyLifecycle ||
       (job.kind !== "gate-state-sync" &&
         job.kind !== "gate-enforcement-sweep" &&
         job.kind !== "webhook-dispatch" &&

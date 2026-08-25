@@ -29,6 +29,7 @@ let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let webhookCommentRun: (() => Promise<void>) | undefined;
 let githubReactionRun: (() => Promise<void>) | undefined;
+let hostedProviderKeyLifecycleRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let billingSettlementRun: (() => Promise<void>) | undefined;
 let operatorAlertRun: (() => Promise<void>) | undefined;
@@ -116,6 +117,7 @@ mock.module("@/lib/customer-notification-email", () => ({
 }));
 
 mock.module("@/lib/queue", () => ({
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND: "hosted-provider-key-lifecycle",
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
   isBoundedJobRetryError: (error: unknown) =>
     error instanceof MockBoundedJobRetryError,
@@ -265,6 +267,12 @@ mock.module("@/worker/github-reaction", () => ({
   },
 }));
 
+mock.module("@/worker/hosted-provider-key-lifecycle", () => ({
+  runHostedProviderKeyLifecycleJob: async () => {
+    await hostedProviderKeyLifecycleRun?.();
+  },
+}));
+
 mock.module("@/worker/billing-contact-verification", () => ({
   runBillingContactVerificationJob: async () => {
     await billingContactVerificationRun?.();
@@ -289,8 +297,13 @@ mock.module("@/worker/gate-enforcement-sweep", () => ({
   runGateEnforcementSweepJob: async () => null,
 }));
 
-const { drainQueueOnce, runClaimedJob, triggerQueueDrain } =
-  await import("@/worker/runner");
+const {
+  drainQueueOnce,
+  PROCESSABLE_JOB_KINDS,
+  runClaimedJob,
+  triggerQueueDrain,
+  WEB_PROCESSABLE_JOB_KINDS,
+} = await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
   return {
@@ -330,6 +343,7 @@ beforeEach(() => {
   respondFailureCommentRun = async () => undefined;
   webhookCommentRun = async () => undefined;
   githubReactionRun = async () => undefined;
+  hostedProviderKeyLifecycleRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
   billingSettlementRun = async () => undefined;
   operatorAlertRun = async () => undefined;
@@ -570,6 +584,29 @@ describe("drainQueueOnce", () => {
       ],
     ]);
     expect(claimOptions).toEqual([{ excludePrivateWorkerRehearsals: true }]);
+  });
+
+  test("keeps hosted provider lifecycle mutations on the dedicated worker", async () => {
+    expect(PROCESSABLE_JOB_KINDS).toContain("hosted-provider-key-lifecycle");
+    expect(WEB_PROCESSABLE_JOB_KINDS).not.toContain(
+      "hosted-provider-key-lifecycle" as never,
+    );
+
+    const job = reviewJob(91);
+    job.kind = "hosted-provider-key-lifecycle";
+    job.payload = {
+      orgId: 42,
+      releaseSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    };
+    let called = false;
+    hostedProviderKeyLifecycleRun = async () => {
+      called = true;
+    };
+
+    await runClaimedJob(job, "provider-lifecycle", "worker");
+
+    expect(called).toBe(true);
+    expect(completed).toEqual([91]);
   });
 
   test("dispatches fixed webhook comments through a durable job", async () => {

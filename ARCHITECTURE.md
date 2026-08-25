@@ -162,6 +162,14 @@ The organization GitHub ID is the trial identity, and the entitlement survives
 uninstall, so reinstalling cannot restart the trial. Alert delivery uses a
 provider idempotency key and contains account and installation metadata without
 repository content.
+Managed release activation durably queues one provider-key lifecycle job per
+eligible organization after the release becomes active. The dedicated worker
+binds each OpenRouter key to the exact entitlement period and spending limit,
+stores the create intent before provider access, seals the runtime credential,
+and periodically reconciles renewal, BYOK changes, suspension, expiration, and
+revocation. Provider access holds the same database lock as release activation,
+so no provider request crosses a release-dark transition. Web processes never
+claim provider-key lifecycle jobs.
 `src/lib/private-repository-entitlement.ts` is the single decision point used by
 webhook intake and workers. The webhook stores delivery and repository metadata,
 then skips review/respond queue, check, and conversational comment side effects
