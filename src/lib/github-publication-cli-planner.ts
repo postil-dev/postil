@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, open, unlink } from "node:fs/promises";
+import { lstat, mkdtemp, open, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -21,6 +21,7 @@ const MAX_PLAN_BYTES = 8 * 1024 * 1024;
 const MAX_ENVELOPE_BYTES = 8 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
 const ENVELOPE_ARTIFACT_NAME = ".postil-controller-envelope.json";
+const ARTIFACT_DIRECTORY_PREFIX = ".postil-controller-";
 
 export interface PublicationCliExecutionObservers {
   onStderrLine?: (line: string) => void;
@@ -51,9 +52,8 @@ export interface GitHubPublicationCliPlanningRequest {
   environment: Record<string, string>;
   workingDirectory: string;
   expected: ExpectedGitHubPublicationPlan;
-  bounded?: boolean;
+  inputIdentity: GitHubPublicationInputIdentity;
   baselinePath?: string;
-  sinceSha?: string;
   signal?: AbortSignal;
   onStderrLine?: (line: string) => void;
 }
@@ -89,6 +89,7 @@ export interface GitHubPublicationInputIdentity {
   baselineReviewId?: string;
   baselineHeadSha?: string;
   baselineEnvelopeSha256?: string;
+  sinceSha?: string;
   bounded: boolean;
   forceFullReview: boolean;
   detailsUrl?: string;
@@ -120,6 +121,7 @@ export interface GitHubPublicationInputIdentityValue {
     headSha: string;
     envelopeSha256: string;
   } | null;
+  sinceSha: string | null;
   bounded: boolean;
   forceFullReview: boolean;
   detailsUrl: string | null;
@@ -176,8 +178,14 @@ export function buildGitHubPublicationInputIdentity(
   if (input.baselineReviewId !== undefined) {
     assertDecimal(input.baselineReviewId, "baseline review");
   }
+  if (input.sinceSha !== undefined) {
+    assertGitSha(input.sinceSha, "incremental review SHA");
+  }
   if (typeof input.bounded !== "boolean" || typeof input.forceFullReview !== "boolean") {
     reject("review mode is invalid");
+  }
+  if (input.forceFullReview && input.sinceSha !== undefined) {
+    reject("full review cannot have an incremental review SHA");
   }
   if (
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
@@ -254,6 +262,7 @@ export function buildGitHubPublicationInputIdentity(
         headSha: input.baselineHeadSha!,
         envelopeSha256: input.baselineEnvelopeSha256!,
       },
+    sinceSha: input.sinceSha ?? null,
     bounded: input.bounded,
     forceFullReview: input.forceFullReview,
     detailsUrl: input.detailsUrl ?? null,
@@ -284,7 +293,19 @@ export async function runGitHubPublicationCliPlanning(
   request: GitHubPublicationCliPlanningRequest,
   dependencies: GitHubPublicationCliPlanningDependencies = {},
 ): Promise<GitHubPublicationCliPlanningResult> {
-  const envelopePath = join(request.workingDirectory, ENVELOPE_ARTIFACT_NAME);
+  const artifactDirectory = await mkdtemp(
+    join(request.workingDirectory, ARTIFACT_DIRECTORY_PREFIX),
+  );
+  const directoryStat = await lstat(artifactDirectory, { bigint: true });
+  if (
+    !directoryStat.isDirectory() ||
+    directoryStat.isSymbolicLink() ||
+    (directoryStat.mode & 0o077n) !== 0n
+  ) {
+    reject("private artifact directory is not owner-only");
+  }
+  const directoryIdentity = { dev: directoryStat.dev, ino: directoryStat.ino };
+  const envelopePath = join(artifactDirectory, ENVELOPE_ARTIFACT_NAME);
   const handle = await open(envelopePath, "wx", 0o600);
   let artifactIdentity: { dev: bigint; ino: bigint };
   try {
@@ -295,6 +316,8 @@ export async function runGitHubPublicationCliPlanning(
   }
   try {
     const expected = request.expected;
+    const inputIdentity = buildGitHubPublicationInputIdentity(request.inputIdentity);
+    validateExpectedPlanIdentity(expected, inputIdentity);
     const args = [
       "review",
       "--forge",
@@ -308,10 +331,9 @@ export async function runGitHubPublicationCliPlanning(
       "--base-sha",
       expected.targetSha,
     ];
-    if (request.bounded) args.push("--bounded");
-    if (request.sinceSha !== undefined) {
-      assertGitSha(request.sinceSha, "incremental review SHA");
-      args.push("--since-sha", request.sinceSha);
+    if (inputIdentity.value.bounded) args.push("--bounded");
+    if (inputIdentity.value.sinceSha !== null) {
+      args.push("--since-sha", inputIdentity.value.sinceSha);
     }
     if (request.baselinePath !== undefined) {
       if (request.baselinePath.length === 0) reject("baseline path is empty");
@@ -323,7 +345,7 @@ export async function runGitHubPublicationCliPlanning(
       "--publication-generation",
       String(expected.controllerGeneration),
       "--publication-input-identity",
-      expected.inputIdentity,
+      inputIdentity.digest,
       "--output",
       "json",
       "--output-file",
@@ -380,6 +402,30 @@ export async function runGitHubPublicationCliPlanning(
     };
   } finally {
     await unlinkOwnedPrivateArtifact(envelopePath, artifactIdentity);
+    await rmdirOwnedPrivateDirectory(artifactDirectory, directoryIdentity);
+  }
+}
+
+function validateExpectedPlanIdentity(
+  expected: ExpectedGitHubPublicationPlan,
+  identity: BuiltGitHubPublicationInputIdentity,
+): void {
+  const input = identity.value;
+  if (expected.inputIdentity !== identity.digest) {
+    reject("expected plan has a different publication input identity");
+  }
+  if (
+    String(expected.repositoryId) !== input.githubRepositoryId ||
+    expected.repositoryFullName !== input.repositoryFullName ||
+    String(expected.pullRequestNumber) !== input.pullRequestNumber ||
+    String(expected.controllerGeneration) !== input.controllerGeneration ||
+    expected.headSha !== input.headSha ||
+    expected.mergeBaseSha !== input.mergeBaseSha ||
+    expected.targetSha !== input.targetSha ||
+    textDigest(expected.pullRequestTitle) !== input.pullRequestTitleSha256 ||
+    textDigest(expected.pullRequestBody) !== input.pullRequestBodySha256
+  ) {
+    reject("expected plan differs from its publication input identity");
   }
 }
 
@@ -570,6 +616,23 @@ async function unlinkOwnedPrivateArtifact(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
+}
+
+async function rmdirOwnedPrivateDirectory(
+  path: string,
+  identity: { dev: bigint; ino: bigint },
+): Promise<void> {
+  const current = await lstat(path, { bigint: true });
+  if (
+    !current.isDirectory() ||
+    current.isSymbolicLink() ||
+    current.dev !== identity.dev ||
+    current.ino !== identity.ino ||
+    (current.mode & 0o077n) !== 0n
+  ) {
+    reject("private artifact directory identity changed before cleanup");
+  }
+  await rmdir(path);
 }
 
 function reject(reason: string): never {

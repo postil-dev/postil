@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,35 @@ import type {
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
 const TARGET = "c".repeat(40);
-const INPUT_IDENTITY = digest("input");
+const inputIdentity = {
+  databaseRepositoryId: "12",
+  githubRepositoryId: "42",
+  repositoryFullName: "acme/api",
+  pullRequestNumber: "7",
+  controllerGeneration: "17",
+  reviewId: "99",
+  headSha: HEAD,
+  mergeBaseSha: BASE,
+  targetSha: TARGET,
+  targetBranch: "main",
+  pullRequestTitle: "Title",
+  pullRequestBody: "Body",
+  expectedPullRequestUpdatedAt: "2026-08-14T00:00:00.000Z",
+  cliVersion: "0.9.0",
+  cliCommitSha: "f".repeat(40),
+  cliArtifactSha256: digest("CLI artifact"),
+  configurationSha256: digest("configuration"),
+  providerIdentity: "provider-v1",
+  retryLineage: "review:99:attempt:1",
+  baselineReviewId: "98",
+  baselineHeadSha: "d".repeat(40),
+  baselineEnvelopeSha256: digest("baseline"),
+  sinceSha: "d".repeat(40),
+  bounded: true,
+  forceFullReview: false,
+  detailsUrl: "https://postil.dev/orgs/acme/runs/run-17",
+} as const;
+const INPUT_IDENTITY = githubPublicationInputIdentity(inputIdentity);
 const REVIEW_OUTPUT_DIGEST = digest(JSON.stringify({
   controllerGeneration: "17",
   inputIdentity: INPUT_IDENTITY,
@@ -70,6 +98,7 @@ describe("GitHub publication CLI planner", () => {
       baselineReviewId: "98",
       baselineHeadSha: "d".repeat(40),
       baselineEnvelopeSha256: digest("baseline"),
+      sinceSha: "4".repeat(40),
       bounded: true,
       forceFullReview: false,
       detailsUrl: "https://postil.dev/orgs/acme/runs/run-17",
@@ -104,8 +133,9 @@ describe("GitHub publication CLI planner", () => {
       { ...input, baselineReviewId: "97" },
       { ...input, baselineHeadSha: "3".repeat(40) },
       { ...input, baselineEnvelopeSha256: digest("changed baseline") },
+      { ...input, sinceSha: "5".repeat(40) },
       { ...input, bounded: false },
-      { ...input, forceFullReview: true },
+      { ...input, sinceSha: undefined, forceFullReview: true },
       { ...input, detailsUrl: "https://postil.dev/orgs/acme/runs/run-18" },
     ]) expect(githubPublicationInputIdentity(changed)).not.toBe(identity);
     const withoutOptionalFields = buildGitHubPublicationInputIdentity({
@@ -118,6 +148,7 @@ describe("GitHub publication CLI planner", () => {
     expect(withoutOptionalFields.digest).not.toBe(identity);
     expect(withoutOptionalFields.value.baseline).toBeNull();
     expect(withoutOptionalFields.value.detailsUrl).toBeNull();
+    expect(withoutOptionalFields.value.sinceSha).toBe("4".repeat(40));
 
     expect(() => githubPublicationInputIdentity({
       ...input,
@@ -139,6 +170,10 @@ describe("GitHub publication CLI planner", () => {
       ...input,
       detailsUrl: "https://user:password@example.test/review",
     })).toThrow("details URL is invalid");
+    expect(() => githubPublicationInputIdentity({
+      ...input,
+      forceFullReview: true,
+    })).toThrow("full review cannot have an incremental review SHA");
   });
 
   test("keeps the maximum accepted input below its canonical artifact ceiling", () => {
@@ -166,8 +201,9 @@ describe("GitHub publication CLI planner", () => {
       baselineReviewId: "9223372036854775807",
       baselineHeadSha: "e".repeat(64),
       baselineEnvelopeSha256: digest("maximum baseline"),
+      sinceSha: "f".repeat(64),
       bounded: true,
-      forceFullReview: true,
+      forceFullReview: false,
       detailsUrl: `${detailsPrefix}${"d".repeat(2_048 - detailsPrefix.length)}`,
     };
     const built = buildGitHubPublicationInputIdentity(input);
@@ -198,6 +234,8 @@ describe("GitHub publication CLI planner", () => {
         stderr: observers.maxStderrBytes,
       };
       expect(cwd).toBe(workingDirectory);
+      const artifactDirectory = await lstat(join(outputFileArgument(args), ".."));
+      expect(artifactDirectory.mode & 0o777).toBe(0o700);
       await writeEnvelope(args, envelope());
       return executionResult(0);
     };
@@ -207,8 +245,7 @@ describe("GitHub publication CLI planner", () => {
       environment: { TEST_MODE: "1" },
       workingDirectory,
       expected,
-      bounded: true,
-      sinceSha: "d".repeat(40),
+      inputIdentity,
       baselinePath: join(workingDirectory, "baseline.json"),
     }, { parsePlanBytes: acceptedPlanParser() });
 
@@ -227,14 +264,24 @@ describe("GitHub publication CLI planner", () => {
     expect(observedArguments).not.toContain("--check-run-id");
     expect(observedArguments).not.toContain("--gate-check-run-id");
 
-    await expect(lstat(join(workingDirectory, ".postil-controller-envelope.json")))
-      .rejects.toMatchObject({ code: "ENOENT" });
+    await expectNoControllerArtifacts(workingDirectory);
     await expect(runGitHubPublicationCliPlanning({
       execute,
       environment: { TEST_MODE: "1" },
       workingDirectory,
       expected,
+      inputIdentity,
     }, { parsePlanBytes: acceptedPlanParser() })).resolves.toMatchObject({ exitCode: 0 });
+
+    await expect(runGitHubPublicationCliPlanning({
+      execute,
+      environment: { TEST_MODE: "1" },
+      workingDirectory,
+      expected,
+      inputIdentity: { ...inputIdentity, sinceSha: "e".repeat(40) },
+    }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
+      "different publication input identity",
+    );
   });
 
   test("rejects replacement of the private envelope inode", async () => {
@@ -252,6 +299,7 @@ describe("GitHub publication CLI planner", () => {
       environment: {},
       workingDirectory,
       expected,
+      inputIdentity,
     }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
       "private envelope artifact identity changed before cleanup",
     );
@@ -277,6 +325,7 @@ describe("GitHub publication CLI planner", () => {
       environment: {},
       workingDirectory: mismatchDirectory,
       expected,
+      inputIdentity,
     }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
       "exit status disagrees",
     );
@@ -287,6 +336,7 @@ describe("GitHub publication CLI planner", () => {
       environment: {},
       workingDirectory: headDirectory,
       expected,
+      inputIdentity,
     }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
       "different head SHA",
     );
@@ -309,6 +359,7 @@ describe("GitHub publication CLI planner", () => {
       environment: {},
       workingDirectory: advisoryDirectory,
       expected,
+      inputIdentity,
     }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(
       "advisory completion disagrees",
     );
@@ -326,9 +377,9 @@ describe("GitHub publication CLI planner", () => {
         environment: {},
         workingDirectory,
         expected,
+        inputIdentity,
       }, { parsePlanBytes: acceptedPlanParser() })).rejects.toThrow(message);
-      await expect(lstat(join(workingDirectory, ".postil-controller-envelope.json")))
-        .rejects.toMatchObject({ code: "ENOENT" });
+      await expectNoControllerArtifacts(workingDirectory);
     }
   });
 });
@@ -457,4 +508,12 @@ function acceptedPlanParser() {
 
 function digest(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+async function expectNoControllerArtifacts(workingDirectory: string): Promise<void> {
+  expect(
+    (await readdir(workingDirectory)).filter((name) =>
+      name.startsWith(".postil-controller-")
+    ),
+  ).toEqual([]);
 }
