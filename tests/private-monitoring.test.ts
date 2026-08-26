@@ -1201,6 +1201,95 @@ describeDb("private monitoring durability", () => {
       );
     }
   });
+
+  test("assigns one actionable alert to each classified review failure", async () => {
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, suspended)
+       VALUES (900038, 'monitor-classification', 'Organization', false) RETURNING id`,
+    );
+    const repository = await pool.query<{ id: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       VALUES ($1, 900038001, 'monitor-classification/service', true) RETURNING id`,
+      [installation.rows[0]!.id],
+    );
+    const repositoryId = repository.rows[0]!.id;
+    const insertCompleted = async (prNumber: number, envelope: unknown) => {
+      await pool.query(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+            envelope, queued_at, finished_at)
+         VALUES ($1, $2, $3, $4, 'completed', 'unknown', $5,
+                 now() - interval '5 minutes', now() - interval '5 minutes')`,
+        [
+          repositoryId,
+          prNumber,
+          "e".repeat(40),
+          "f".repeat(40),
+          JSON.stringify(envelope),
+        ],
+      );
+    };
+    const classifiedChecks = async () => {
+      const checks = await runDatabaseMonitoringChecks(pool);
+      return Object.fromEntries(
+        checks
+          .filter((check) =>
+            [
+              "review-operational-failures",
+              "scorer-failures",
+              "invalid-model-output",
+            ].includes(check.key),
+          )
+          .map((check) => [check.key, check.healthy]),
+      );
+    };
+    const clearReviews = () =>
+      pool.query("DELETE FROM reviews WHERE repository_id = $1", [repositoryId]);
+
+    try {
+      await insertCompleted(900, {
+        findings: [{ path: ".postil/provider" }],
+        modelIncidents: [
+          { phase: "scorer", category: "providerError", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": true,
+        "scorer-failures": false,
+        "invalid-model-output": true,
+      });
+
+      await clearReviews();
+      await insertCompleted(901, {
+        findings: [{ path: ".postil/model-output" }],
+        scorerError: "invalid scorer output",
+        modelIncidents: [
+          { phase: "scorer", category: "invalidOutput", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": true,
+        "scorer-failures": true,
+        "invalid-model-output": false,
+      });
+
+      await clearReviews();
+      await insertCompleted(902, {
+        findings: [{ path: ".postil/operational" }],
+        modelIncidents: [],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": false,
+        "scorer-failures": true,
+        "invalid-model-output": true,
+      });
+    } finally {
+      await pool.query(
+        "DELETE FROM installations WHERE github_installation_id = 900038",
+      );
+    }
+  });
 });
 
 async function customerServiceNotifications(pool: Pool, orgId: number): Promise<Array<{
