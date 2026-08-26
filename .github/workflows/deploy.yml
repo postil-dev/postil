@@ -185,9 +185,6 @@ jobs:
           )
           for name in "${operator_secret_names[@]}"; do
             value="${!name:-}"
-            if [[ "${name}" == "POSTIL_OPERATOR_GITHUB_IDS" && -z "${value}" ]]; then
-              value="${GITHUB_OPERATOR_IDS:-}"
-            fi
             if [[ -n "${value}" ]]; then
               staged+="${name}=${value}"$'\n'
             fi
@@ -239,7 +236,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
-          GITHUB_OPERATOR_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}
+          POSTIL_OPERATOR_GITHUB_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}
       - name: Provision private monitor state volume
         id: monitor-volume
         timeout-minutes: 5

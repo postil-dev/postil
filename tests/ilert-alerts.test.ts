@@ -189,7 +189,7 @@ describe("iLert operator stream protocol", () => {
     expect(operatorSecrets).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
     expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
     expect(deploy).toContain(
-      "GITHUB_OPERATOR_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}",
+      "POSTIL_OPERATOR_GITHUB_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}",
     );
   });
 
