@@ -119,9 +119,11 @@ export default async function CliAuthorizePage({
         </p>
         <p className="mt-6 text-sm text-ink-soft">
           A command line is requesting access to the selected
-          organization&apos;s hosted review budget. Access tokens rotate every 12
-          hours. The CLI remains signed in while it is used, and the renewable
-          session expires after 180 days without a successful refresh.
+          organization&apos;s hosted review budget. Access expires after 12 hours.
+          Clients that support automatic refresh stay signed in while they are
+          used; the renewable session expires after 180 days without a
+          successful refresh. Older clients must sign in again after access
+          expires.
         </p>
         <form className="mt-8 space-y-4">
           <input type="hidden" name="code" value={code} />

@@ -11,7 +11,9 @@ export function OrganizationAuthorizationFields({
         <p className="text-xs font-medium uppercase tracking-wide text-ink-soft">
           Review budget
         </p>
-        <p className="mt-1 font-medium text-ink">{organization.name}</p>
+        <p className="mt-1 [overflow-wrap:anywhere] font-medium text-ink">
+          {organization.name}
+        </p>
       </div>
     );
   }
@@ -34,10 +36,10 @@ export function OrganizationAuthorizationFields({
               className="h-4 w-4 shrink-0 accent-rust"
             />
             <span className="min-w-0">
-              <span className="block truncate font-medium text-ink">
+              <span className="block [overflow-wrap:anywhere] font-medium text-ink">
                 {organization.name}
               </span>
-              <span className="block truncate font-mono text-xs text-ink-soft">
+              <span className="block [overflow-wrap:anywhere] font-mono text-xs text-ink-soft">
                 {organization.slug}
               </span>
             </span>

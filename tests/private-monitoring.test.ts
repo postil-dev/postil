@@ -1284,6 +1284,93 @@ describeDb("private monitoring durability", () => {
         "scorer-failures": true,
         "invalid-model-output": true,
       });
+
+      await clearReviews();
+      await insertCompleted(903, {
+        findings: [{ path: ".postil/operational" }],
+        modelIncidents: [
+          { phase: "scorer", category: "providerError", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": false,
+        "scorer-failures": false,
+        "invalid-model-output": true,
+      });
+
+      await clearReviews();
+      await insertCompleted(904, {
+        findings: [{ path: ".postil/provider" }],
+        modelIncidents: [
+          { phase: "scorer", category: "timeout", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": false,
+        "scorer-failures": false,
+        "invalid-model-output": true,
+      });
+
+      await clearReviews();
+      await insertCompleted(905, {
+        findings: [
+          { path: ".postil/provider" },
+          { path: ".postil/model-output" },
+        ],
+        modelIncidents: [
+          { phase: "scorer", category: "providerError", recovered: false },
+          { phase: "review", category: "invalidOutput", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": true,
+        "scorer-failures": false,
+        "invalid-model-output": false,
+      });
+
+      await clearReviews();
+      await insertCompleted(906, {
+        findings: [{ path: ".postil/provider" }],
+        modelIncidents: [
+          { phase: "scorer", category: "invalidOutput", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": false,
+        "scorer-failures": true,
+        "invalid-model-output": false,
+      });
+
+      await clearReviews();
+      await insertCompleted(907, {
+        findings: [{ path: ".postil/operational" }],
+        scorerError: "invalid scorer output",
+        modelIncidents: [
+          { phase: "scorer", category: "invalidOutput", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": true,
+        "scorer-failures": true,
+        "invalid-model-output": false,
+      });
+
+      await clearReviews();
+      await insertCompleted(908, {
+        findings: [
+          { path: ".postil/operational" },
+          { path: ".postil/operational" },
+        ],
+        scorerError: "invalid scorer output",
+        modelIncidents: [
+          { phase: "scorer", category: "invalidOutput", recovered: false },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": false,
+        "scorer-failures": true,
+        "invalid-model-output": false,
+      });
     } finally {
       await pool.query(
         "DELETE FROM installations WHERE github_installation_id = 900038",

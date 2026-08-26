@@ -545,42 +545,80 @@ export async function runDatabaseMonitoringChecks(
                  CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
                    THEN envelope -> 'findings' ELSE '[]'::jsonb END
                ) AS finding
-               WHERE finding ->> 'path' IN ('.postil/provider', '.postil/model-output', '.postil/operational')
+               -- The CLI emits a provider sentinel with an exhausted scorer
+               -- provider incident, and one operational sentinel with an
+               -- unrecovered invalid-output incident. Collapse those exact
+               -- pairs. A second operational sentinel represents another
+               -- failure, such as incomplete coverage, and remains page-worthy.
+               WHERE (
+                    finding ->> 'path' = '.postil/operational'
+                    AND (
+                      NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(
+                          CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+                            THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+                        ) AS incident
+                        WHERE incident ->> 'category' = 'invalidOutput'
+                          AND incident ->> 'recovered' = 'false'
+                      )
+                      OR (
+                        SELECT count(*) FROM jsonb_array_elements(
+                          CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
+                            THEN envelope -> 'findings' ELSE '[]'::jsonb END
+                        ) AS operational_finding
+                        WHERE operational_finding ->> 'path' = '.postil/operational'
+                      ) > 1
+                    )
+                  )
+                  OR (
+                    finding ->> 'path' = '.postil/provider'
+                    AND NOT EXISTS (
+                      SELECT 1 FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+                          THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+                      ) AS incident
+                      WHERE incident ->> 'phase' = 'scorer'
+                        AND incident ->> 'category' = 'providerError'
+                        AND incident ->> 'recovered' = 'false'
+                    )
+                  )
+                  OR (
+                    finding ->> 'path' = '.postil/model-output'
+                    AND NOT EXISTS (
+                      SELECT 1 FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+                          THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+                      ) AS incident
+                      WHERE incident ->> 'category' = 'invalidOutput'
+                        AND incident ->> 'recovered' = 'false'
+                    )
+                  )
              ))
-           )
-           -- A classified model incident has a narrower alert below. Keep the
-           -- broad operational sentinel for failures without that diagnosis.
-           AND NOT (status = 'completed' AND EXISTS (
-             SELECT 1 FROM jsonb_array_elements(
-               CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                 THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-             ) AS incident
-             WHERE incident ->> 'recovered' = 'false'
-               AND (
-                 incident ->> 'phase' = 'scorer'
-                 OR incident ->> 'category' = 'invalidOutput'
-               )
-           ))) AS operational_failures,
+           )) AS operational_failures,
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND (
-             NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
-             OR EXISTS (
+             -- An invalid scorer output has the narrower alert below. Preserve
+             -- every other typed scorer failure and untyped legacy error.
+             EXISTS (
                SELECT 1 FROM jsonb_array_elements(
                  CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
                    THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
                ) AS incident
                WHERE incident ->> 'phase' = 'scorer' AND incident ->> 'recovered' = 'false'
+                 AND (incident ->> 'category') IS DISTINCT FROM 'invalidOutput'
              )
-           )
-           -- Invalid output has its own more specific critical alert.
-           AND NOT EXISTS (
-             SELECT 1 FROM jsonb_array_elements(
-               CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                 THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-             ) AS incident
-             WHERE incident ->> 'category' = 'invalidOutput'
-               AND incident ->> 'recovered' = 'false'
+             OR (
+               NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+                     THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+                 ) AS incident
+                 WHERE incident ->> 'phase' = 'scorer'
+                   AND incident ->> 'recovered' = 'false'
+               )
+             )
            )) AS scorer_failures,
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
