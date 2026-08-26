@@ -236,6 +236,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
           NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+          POSTIL_ILERT_WEBHOOK_SECRET: ${{ secrets.POSTIL_ILERT_WEBHOOK_SECRET }}
           POSTIL_OPERATOR_GITHUB_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}
       - name: Provision private monitor state volume
         id: monitor-volume
