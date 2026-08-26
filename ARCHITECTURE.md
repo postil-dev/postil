@@ -453,6 +453,20 @@ alert outside the platform's failure domain. Without a configured integration
 key, monitoring alerts are logged only and paging relies on the heartbeat, the
 external uptime checks, and the GitHub monitor.
 
+iLert alert actions can deliver bounded alert lifecycle events to
+`/api/webhooks/ilert` with HTTP Basic authentication. The receiver stores the
+validated operator metadata and a raw-payload digest in PostgreSQL, deduplicates
+by iLert event id, and publishes the committed sequence through PostgreSQL
+`NOTIFY`. `/api/operator/alerts/stream` replays committed sequences and then
+uses a dedicated session-capable `LISTEN` connection for SSE delivery. A known
+Supabase port-6543 transaction-pool URL is converted to its port-5432 session
+endpoint for that connection only; ordinary runtime queries retain transaction
+pooling. The stream requires a
+renewable CLI bearer token and the separate `POSTIL_OPERATOR_GITHUB_IDS`
+allowlist. Transport keepalives do not query alert state. The receiver and
+stream make no outbound iLert API calls and cannot acknowledge, accept, or
+resolve an alert.
+
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
 external metrics collector are separate dependencies. A platform-wide or

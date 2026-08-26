@@ -13,6 +13,7 @@ const MANAGED_ENV = [
   "GITHUB_OAUTH_CLIENT_ID",
   "GITHUB_OAUTH_CLIENT_SECRET",
   "GITHUB_WEBHOOK_SECRET",
+  "POSTIL_ILERT_WEBHOOK_SECRET",
   "NODE_ENV",
   "POSTIL_PUBLIC_URL",
   "POSTIL_SEALING_KEY",
@@ -423,6 +424,21 @@ describe("web startup environment validation", () => {
 
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "invalid";
     expect(() => validateEnv("web")).toThrow(/must be a valid email address/);
+  });
+
+  test("accepts only a strong optional iLert webhook password", () => {
+    configureRequiredWebEnvironment();
+    delete process.env.POSTIL_ILERT_WEBHOOK_SECRET;
+    expect(() => validateEnv("web")).not.toThrow();
+
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = "short";
+    expect(() => validateEnv("web")).toThrow(/32 to 512 random printable ASCII bytes/);
+
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = "0123456789abcdef".repeat(2);
+    expect(() => validateEnv("web")).not.toThrow();
+
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = "a".repeat(513);
+    expect(() => validateEnv("web")).toThrow(/32 to 512 random printable ASCII bytes/);
   });
 
   test("validates operator alert dashboard links in the worker", () => {

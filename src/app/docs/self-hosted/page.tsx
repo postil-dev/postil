@@ -151,6 +151,15 @@ docker compose exec web bun run db:migrate`}</code>
           match the secret on the GitHub App. <code>openssl rand -hex 32</code>.
         </li>
         <li>
+          <code>POSTIL_ILERT_WEBHOOK_SECRET</code>: optional random password
+          for iLert&apos;s outbound alert webhook. Configure iLert to send the
+          supported alert lifecycle events to <code>/api/webhooks/ilert</code>
+          with HTTP Basic username <code>postil-ilert</code>. The operator-only
+          SSE stream at <code>/api/operator/alerts/stream</code> requires a
+          renewable CLI bearer token whose GitHub id appears in{" "}
+          <code>POSTIL_OPERATOR_GITHUB_IDS</code>.
+        </li>
+        <li>
           <code>GITHUB_OAUTH_CLIENT_ID</code> and{" "}
           <code>GITHUB_OAUTH_CLIENT_SECRET</code>: dashboard sign-in. These come
           from a GitHub OAuth App, which is separate from the GitHub App (see
