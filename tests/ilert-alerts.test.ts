@@ -178,6 +178,18 @@ describe("iLert webhook input", () => {
 });
 
 describe("iLert operator stream protocol", () => {
+  test("stages the receiver secret and operator allowlist in managed deployments", async () => {
+    const deploy = await readFile(
+      join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
+      "utf8",
+    );
+    const operatorSecrets = deploy.match(
+      /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
+    )?.[1];
+    expect(operatorSecrets).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
+  });
+
   test("uses a session endpoint for Supabase LISTEN connections", () => {
     expect(ilertAlertStreamDatabaseUrl(
       "postgresql://user:password@aws-0-eu.pooler.supabase.com:6543/postgres?pgbouncer=true",

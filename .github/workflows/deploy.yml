@@ -179,6 +179,16 @@ jobs:
           if [[ -n "${BREVO_API_KEY:-}" ]]; then
             staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
           fi
+          operator_secret_names=(
+            POSTIL_ILERT_WEBHOOK_SECRET
+            POSTIL_OPERATOR_GITHUB_IDS
+          )
+          for name in "${operator_secret_names[@]}"; do
+            value="${!name:-}"
+            if [[ -n "${value}" ]]; then
+              staged+="${name}=${value}"$'\n'
+            fi
+          done
           monitor_secret_names=(
             OPENROUTER_MANAGEMENT_API_KEY
             POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME
