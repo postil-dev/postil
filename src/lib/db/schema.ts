@@ -1629,6 +1629,67 @@ export const operatorAlertDeliveries = pgTable(
   ],
 );
 
+/** Append-only iLert alert events delivered to authenticated operators. */
+export const ilertAlertEvents = pgTable(
+  "ilert_alert_events",
+  {
+    sequence: bigint("sequence", { mode: "bigint" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    eventId: uuid("event_id").notNull(),
+    alertId: text("alert_id").notNull(),
+    eventType: text("event_type").notNull(),
+    status: text("status").notNull(),
+    priority: text("priority").notNull(),
+    summary: text("summary").notNull(),
+    details: text("details").notNull(),
+    alertSourceId: bigint("alert_source_id", { mode: "bigint" }).notNull(),
+    alertSourceName: text("alert_source_name").notNull(),
+    reportTime: timestamp("report_time", { withTimezone: true }).notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    payloadSha256: text("payload_sha256").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("ilert_alert_events_event_id_idx").on(t.eventId),
+    index("ilert_alert_events_alert_sequence_idx").on(t.alertId, t.sequence),
+    check(
+      "ilert_alert_events_alert_id_check",
+      sql`${t.alertId} ~ '^[1-9][0-9]{0,63}$'`,
+    ),
+    check(
+      "ilert_alert_events_event_type_check",
+      sql`length(${t.eventType}) <= 64 AND ${t.eventType} ~ '^alert-[a-z]+(-[a-z]+)*$'`,
+    ),
+    check(
+      "ilert_alert_events_status_check",
+      sql`${t.status} IN ('PENDING', 'ACCEPTED', 'RESOLVED')`,
+    ),
+    check(
+      "ilert_alert_events_priority_check",
+      sql`${t.priority} IN ('HIGH', 'LOW')`,
+    ),
+    check(
+      "ilert_alert_events_summary_check",
+      sql`length(${t.summary}) BETWEEN 1 AND 512`,
+    ),
+    check(
+      "ilert_alert_events_details_check",
+      sql`length(${t.details}) BETWEEN 0 AND 8192`,
+    ),
+    check(
+      "ilert_alert_events_source_name_check",
+      sql`length(${t.alertSourceName}) BETWEEN 1 AND 256`,
+    ),
+    check(
+      "ilert_alert_events_payload_sha256_check",
+      sql`${t.payloadSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
 /** Atomic hosted-inference budget holds. Expired active rows no longer consume capacity. */
 export const hostedUsageReservations = pgTable(
   "hosted_usage_reservations",
