@@ -39,4 +39,29 @@ describe("CLI device authorization organization choice", () => {
     expect(markup).toContain("has-[:checked]:border-rust");
     expect(markup).toContain("acme-labs");
   });
+
+  test("preserves complete organization identities in narrow choices", () => {
+    const sharedPrefix = "International Platform Engineering and Reliability";
+    const firstName = `${sharedPrefix} Europe`;
+    const secondName = `${sharedPrefix} Americas`;
+    const secondSlug =
+      "international-platform-engineering-and-reliability-americas";
+    const markup = renderToStaticMarkup(
+      <OrganizationAuthorizationFields
+        organizations={[
+          {
+            slug: "international-platform-engineering-and-reliability-europe",
+            name: firstName,
+          },
+          { slug: secondSlug, name: secondName },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain(firstName);
+    expect(markup).toContain(secondName);
+    expect(markup).toContain(secondSlug);
+    expect(markup).toContain("[overflow-wrap:anywhere]");
+    expect(markup).not.toContain("truncate");
+  });
 });
