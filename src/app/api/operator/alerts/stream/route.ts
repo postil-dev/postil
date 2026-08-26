@@ -128,6 +128,15 @@ export async function GET(request: Request): Promise<Response> {
             // The consumer may already have cancelled the stream.
           }
         };
+        const rotate = () => {
+          if (stopped) return;
+          try {
+            controller.enqueue(encoder.encode(": rotate\n\n"));
+          } catch {
+            // The client can reconnect from its durable cursor without the hint.
+          }
+          stop();
+        };
         terminateStream = stop;
 
         controller.enqueue(encoder.encode("retry: 3000\n: connected\n\n"));
@@ -173,7 +182,7 @@ export async function GET(request: Request): Promise<Response> {
           1,
           authorization.expiresAt.getTime() - Date.now(),
         );
-        expiry = setTimeout(stop, expiresIn);
+        expiry = setTimeout(rotate, expiresIn);
         request.signal.addEventListener("abort", stop, { once: true });
         if (request.signal.aborted || listenerUnavailable) stop();
       },

@@ -29,6 +29,7 @@ const CUSTOMER_ADMIN_GITHUB_ID = 991_002;
 const OPERATOR_TOKEN = `pcli_${"a".repeat(43)}`;
 const CUSTOMER_ADMIN_TOKEN = `pcli_${"b".repeat(43)}`;
 const LEGACY_OPERATOR_TOKEN = `pcli_${"c".repeat(43)}`;
+const ROTATING_OPERATOR_TOKEN = `pcli_${"d".repeat(43)}`;
 
 describeDb("iLert durable operator alert stream", () => {
   let ephemeral: EphemeralDatabase;
@@ -238,6 +239,23 @@ describeDb("iLert durable operator alert stream", () => {
     expect(await eventuallyActiveStreamConnections(0)).toBe(0);
   });
 
+  test("marks access-expiry closes as routine cursor reconnects", async () => {
+    await insertRenewableCliToken(
+      pool,
+      ROTATING_OPERATOR_TOKEN,
+      operatorUserId,
+      operatorOrgId,
+      1_000,
+    );
+    const { GET } = await import("@/app/api/operator/alerts/stream/route");
+    const response = await GET(
+      streamRequest({ token: ROTATING_OPERATOR_TOKEN, lastEventId: sequence.toString() }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toEndWith(": rotate\n\n");
+    expect(await eventuallyActiveStreamConnections(0)).toBe(0);
+  });
+
   test("migration stores bounded metadata and no raw webhook body", async () => {
     const columns = await pool.query<{ column_name: string }>(
       `SELECT column_name
@@ -325,6 +343,7 @@ async function insertRenewableCliToken(
   token: string,
   userId: number,
   orgId: number,
+  accessMilliseconds = 60 * 60 * 1_000,
 ): Promise<void> {
   const session = await pool.query<{ id: string }>(
     `INSERT INTO cli_refresh_sessions (user_id, org_id, expires_at)
@@ -334,8 +353,8 @@ async function insertRenewableCliToken(
   await pool.query(
     `INSERT INTO cli_tokens
        (token_sha256, user_id, org_id, scope, expires_at, refresh_session_id)
-     VALUES ($1, $2, $3, 'inference', now() + interval '1 hour', $4)`,
-    [sha256(token), userId, orgId, session.rows[0]!.id],
+     VALUES ($1, $2, $3, 'inference', now() + ($5 * interval '1 millisecond'), $4)`,
+    [sha256(token), userId, orgId, session.rows[0]!.id, accessMilliseconds],
   );
 }
 
