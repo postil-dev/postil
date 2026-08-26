@@ -11,6 +11,7 @@ import {
 import { getDb, schema } from "@/lib/db";
 import { getVerifiedSessionUser, loginRedirectPath } from "@/lib/session";
 import { approveDeviceAuthorizationAction, denyDeviceAuthorizationAction } from "./actions";
+import { OrganizationAuthorizationFields } from "./organization-authorization-fields";
 
 export const metadata: Metadata = {
   title: "Authorize CLI login",
@@ -117,37 +118,14 @@ export default async function CliAuthorizePage({
           {formatUserCode(code)}
         </p>
         <p className="mt-6 text-sm text-ink-soft">
-          A command line is requesting a Postil login. Approving lets that
-          command line spend the chosen organization&apos;s review budget
-          through the hosted inference gateway, for up to twelve hours until
-          the token expires.
+          A command line is requesting access to the selected
+          organization&apos;s hosted review budget. Access tokens rotate every 12
+          hours. The CLI remains signed in while it is used, and the renewable
+          session expires after 180 days without a successful refresh.
         </p>
         <form className="mt-8 space-y-4">
           <input type="hidden" name="code" value={code} />
-          {adminOrgs.length === 1 ? (
-            <>
-              <input type="hidden" name="orgSlug" value={adminOrgs[0]!.slug} />
-              <p className="text-sm">
-                Organization: <span className="font-medium">{adminOrgs[0]!.name}</span>
-              </p>
-            </>
-          ) : (
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">Organization</legend>
-              {adminOrgs.map((org, index) => (
-                <label key={org.slug} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="orgSlug"
-                    value={org.slug}
-                    defaultChecked={index === 0}
-                    required
-                  />
-                  {org.name}
-                </label>
-              ))}
-            </fieldset>
-          )}
+          <OrganizationAuthorizationFields organizations={adminOrgs} />
           <div className="flex gap-3">
             <button formAction={approveDeviceAuthorizationAction} className="btn-primary flex-1">
               Approve
@@ -172,7 +150,11 @@ function CodeEntryForm() {
           Enter the code shown by <code>postil login</code> in your terminal.
         </p>
         <form method="get" action="/cli/authorize" className="mt-6 flex gap-2">
+          <label htmlFor="device-code" className="sr-only">
+            Device authorization code
+          </label>
           <input
+            id="device-code"
             type="text"
             name="code"
             placeholder="WDJF-3K9Q"

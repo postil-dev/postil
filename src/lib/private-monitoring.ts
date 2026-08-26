@@ -547,7 +547,20 @@ export async function runDatabaseMonitoringChecks(
                ) AS finding
                WHERE finding ->> 'path' IN ('.postil/provider', '.postil/model-output', '.postil/operational')
              ))
-           )) AS operational_failures,
+           )
+           -- A classified model incident has a narrower alert below. Keep the
+           -- broad operational sentinel for failures without that diagnosis.
+           AND NOT (status = 'completed' AND EXISTS (
+             SELECT 1 FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+                 THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+             ) AS incident
+             WHERE incident ->> 'recovered' = 'false'
+               AND (
+                 incident ->> 'phase' = 'scorer'
+                 OR incident ->> 'category' = 'invalidOutput'
+               )
+           ))) AS operational_failures,
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND (
@@ -559,6 +572,15 @@ export async function runDatabaseMonitoringChecks(
                ) AS incident
                WHERE incident ->> 'phase' = 'scorer' AND incident ->> 'recovered' = 'false'
              )
+           )
+           -- Invalid output has its own more specific critical alert.
+           AND NOT EXISTS (
+             SELECT 1 FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+                 THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+             ) AS incident
+             WHERE incident ->> 'category' = 'invalidOutput'
+               AND incident ->> 'recovered' = 'false'
            )) AS scorer_failures,
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
