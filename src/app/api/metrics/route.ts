@@ -3,7 +3,12 @@ import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import { bearerMatches } from "@/lib/metrics-auth";
-import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
+import {
+  COMPLETED_REVIEW_INVALID_OUTPUT_SQL,
+  COMPLETED_REVIEW_OPERATIONAL_SENTINEL_SQL,
+  COMPLETED_REVIEW_SCORER_FAILURE_SQL,
+  OPERATIONAL_REVIEW_FAILURE_SQL,
+} from "@/lib/review-outcome";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -472,32 +477,12 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
          WHERE finished_at >= now() - interval '30 minutes'
            AND (
              (${OPERATIONAL_REVIEW_FAILURE_SQL})
-             OR (
-               status = 'completed'
-               AND EXISTS (
-                 SELECT 1
-                 FROM jsonb_array_elements(COALESCE(envelope -> 'findings', '[]'::jsonb)) AS finding
-                 WHERE finding ->> 'path' IN (
-                   '.postil/provider',
-                   '.postil/model-output',
-                   '.postil/operational'
-                 )
-               )
-             )
+             OR (${COMPLETED_REVIEW_OPERATIONAL_SENTINEL_SQL})
            )) AS operational_failure,
         (SELECT count(*)::text
          FROM reviews
-         WHERE status = 'completed'
-           AND finished_at >= now() - interval '30 minutes'
-           AND (
-             NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
-             OR EXISTS (
-               SELECT 1
-               FROM jsonb_array_elements(COALESCE(envelope -> 'modelIncidents', '[]'::jsonb)) AS incident
-               WHERE incident ->> 'phase' = 'scorer'
-                 AND incident ->> 'recovered' = 'false'
-             )
-           )) AS scorer_failure,
+         WHERE finished_at >= now() - interval '30 minutes'
+           AND (${COMPLETED_REVIEW_SCORER_FAILURE_SQL})) AS scorer_failure,
         (SELECT count(*)::text
          FROM reviews
          WHERE status = 'completed'
@@ -520,13 +505,8 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
            )) AS model_fallback,
         (SELECT count(*)::text
          FROM reviews
-         WHERE status = 'completed'
-           AND finished_at >= now() - interval '30 minutes'
-           AND EXISTS (
-             SELECT 1
-             FROM jsonb_array_elements(COALESCE(envelope -> 'modelIncidents', '[]'::jsonb)) AS incident
-             WHERE incident ->> 'category' = 'invalidOutput'
-           )) AS invalid_output,
+         WHERE finished_at >= now() - interval '30 minutes'
+           AND (${COMPLETED_REVIEW_INVALID_OUTPUT_SQL})) AS invalid_output,
         (SELECT count(*)::text
          FROM jobs
          WHERE status = 'failed'

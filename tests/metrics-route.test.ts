@@ -181,6 +181,12 @@ function queryResponse(text: string): {
     expect(sql).not.toContain("JOIN review_logs");
     expect(sql).toContain(".postil/provider");
     expect(sql).toContain(".postil/model-output");
+    expect(sql).not.toContain("finding ->> 'path' IN");
+    expect(sql).toContain("incident ->> 'category' = 'providerError'");
+    expect(sql).toContain("incident ->> 'recovered' = 'false'");
+    expect(sql).toContain(
+      "(incident ->> 'category') IS DISTINCT FROM 'invalidOutput'",
+    );
     expect(sql).toContain(
       "Hosted inference allowance is unavailable or fully reserved.",
     );

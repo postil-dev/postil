@@ -36,6 +36,100 @@ export const OPERATIONAL_REVIEW_FAILURE_SQL = `status = 'failed' AND COALESCE(er
   (message) => `'${message.replaceAll("'", "''")}'`,
 ).join(", ")}])`;
 
+/**
+ * Completed reviews whose operational sentinel is not already represented by
+ * a narrower unrecovered model incident.
+ *
+ * The CLI emits `.postil/provider` with a scorer `providerError`, and emits one
+ * `.postil/operational` or `.postil/model-output` sentinel with an
+ * `invalidOutput` incident. Counting both shapes turns one upstream failure
+ * into two operational signals. A second operational sentinel remains a
+ * distinct failure, such as incomplete coverage.
+ */
+export const COMPLETED_REVIEW_OPERATIONAL_SENTINEL_SQL = `status = 'completed' AND EXISTS (
+  SELECT 1 FROM jsonb_array_elements(
+    CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
+      THEN envelope -> 'findings' ELSE '[]'::jsonb END
+  ) AS finding
+  WHERE (
+       finding ->> 'path' = '.postil/operational'
+       AND (
+         NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(
+             CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+               THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+           ) AS incident
+           WHERE incident ->> 'category' = 'invalidOutput'
+             AND incident ->> 'recovered' = 'false'
+         )
+         OR (
+           SELECT count(*) FROM jsonb_array_elements(
+             CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
+               THEN envelope -> 'findings' ELSE '[]'::jsonb END
+           ) AS operational_finding
+           WHERE operational_finding ->> 'path' = '.postil/operational'
+         ) > 1
+       )
+     )
+     OR (
+       finding ->> 'path' = '.postil/provider'
+       AND NOT EXISTS (
+         SELECT 1 FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+             THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+         ) AS incident
+         WHERE incident ->> 'phase' = 'scorer'
+           AND incident ->> 'category' = 'providerError'
+           AND incident ->> 'recovered' = 'false'
+       )
+     )
+     OR (
+       finding ->> 'path' = '.postil/model-output'
+       AND NOT EXISTS (
+         SELECT 1 FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+             THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+         ) AS incident
+         WHERE incident ->> 'category' = 'invalidOutput'
+           AND incident ->> 'recovered' = 'false'
+       )
+     )
+)`;
+
+/** A typed unrecovered scorer failure, excluding invalid output's own signal. */
+export const COMPLETED_REVIEW_SCORER_FAILURE_SQL = `status = 'completed' AND (
+  EXISTS (
+    SELECT 1 FROM jsonb_array_elements(
+      CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+        THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+    ) AS incident
+    WHERE incident ->> 'phase' = 'scorer'
+      AND incident ->> 'recovered' = 'false'
+      AND (incident ->> 'category') IS DISTINCT FROM 'invalidOutput'
+  )
+  OR (
+    NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+          THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+      ) AS incident
+      WHERE incident ->> 'phase' = 'scorer'
+        AND incident ->> 'recovered' = 'false'
+    )
+  )
+)`;
+
+/** Invalid model output that the review pipeline could not repair or recover. */
+export const COMPLETED_REVIEW_INVALID_OUTPUT_SQL = `status = 'completed' AND EXISTS (
+  SELECT 1 FROM jsonb_array_elements(
+    CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+      THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+  ) AS incident
+  WHERE incident ->> 'category' = 'invalidOutput'
+    AND incident ->> 'recovered' = 'false'
+)`;
+
 export type StoredReviewStatus =
   | "queued"
   | "running"

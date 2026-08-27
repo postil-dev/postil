@@ -12,7 +12,12 @@ import {
   type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 import { redactSecrets } from "@/lib/redact";
-import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
+import {
+  COMPLETED_REVIEW_INVALID_OUTPUT_SQL,
+  COMPLETED_REVIEW_OPERATIONAL_SENTINEL_SQL,
+  COMPLETED_REVIEW_SCORER_FAILURE_SQL,
+  OPERATIONAL_REVIEW_FAILURE_SQL,
+} from "@/lib/review-outcome";
 import type { TransactionalEmailContent } from "@/lib/transactional-email";
 
 export type PrivateMonitoringGroup =
@@ -540,86 +545,11 @@ export async function runDatabaseMonitoringChecks(
          WHERE finished_at >= now() - interval '30 minutes'
            AND (
              (${OPERATIONAL_REVIEW_FAILURE_SQL})
-             OR (status = 'completed' AND EXISTS (
-               SELECT 1 FROM jsonb_array_elements(
-                 CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
-                   THEN envelope -> 'findings' ELSE '[]'::jsonb END
-               ) AS finding
-               -- The CLI emits a provider sentinel with an exhausted scorer
-               -- provider incident, and one operational sentinel with an
-               -- unrecovered invalid-output incident. Collapse those exact
-               -- pairs. A second operational sentinel represents another
-               -- failure, such as incomplete coverage, and remains page-worthy.
-               WHERE (
-                    finding ->> 'path' = '.postil/operational'
-                    AND (
-                      NOT EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(
-                          CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                            THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-                        ) AS incident
-                        WHERE incident ->> 'category' = 'invalidOutput'
-                          AND incident ->> 'recovered' = 'false'
-                      )
-                      OR (
-                        SELECT count(*) FROM jsonb_array_elements(
-                          CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
-                            THEN envelope -> 'findings' ELSE '[]'::jsonb END
-                        ) AS operational_finding
-                        WHERE operational_finding ->> 'path' = '.postil/operational'
-                      ) > 1
-                    )
-                  )
-                  OR (
-                    finding ->> 'path' = '.postil/provider'
-                    AND NOT EXISTS (
-                      SELECT 1 FROM jsonb_array_elements(
-                        CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                          THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-                      ) AS incident
-                      WHERE incident ->> 'phase' = 'scorer'
-                        AND incident ->> 'category' = 'providerError'
-                        AND incident ->> 'recovered' = 'false'
-                    )
-                  )
-                  OR (
-                    finding ->> 'path' = '.postil/model-output'
-                    AND NOT EXISTS (
-                      SELECT 1 FROM jsonb_array_elements(
-                        CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                          THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-                      ) AS incident
-                      WHERE incident ->> 'category' = 'invalidOutput'
-                        AND incident ->> 'recovered' = 'false'
-                    )
-                  )
-             ))
+             OR (${COMPLETED_REVIEW_OPERATIONAL_SENTINEL_SQL})
            )) AS operational_failures,
       (SELECT count(*)::text FROM reviews
-         WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
-           AND (
-             -- An invalid scorer output has the narrower alert below. Preserve
-             -- every other typed scorer failure and untyped legacy error.
-             EXISTS (
-               SELECT 1 FROM jsonb_array_elements(
-                 CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                   THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-               ) AS incident
-               WHERE incident ->> 'phase' = 'scorer' AND incident ->> 'recovered' = 'false'
-                 AND (incident ->> 'category') IS DISTINCT FROM 'invalidOutput'
-             )
-             OR (
-               NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
-               AND NOT EXISTS (
-                 SELECT 1 FROM jsonb_array_elements(
-                   CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                     THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-                 ) AS incident
-                 WHERE incident ->> 'phase' = 'scorer'
-                   AND incident ->> 'recovered' = 'false'
-               )
-             )
-           )) AS scorer_failures,
+         WHERE finished_at >= now() - interval '30 minutes'
+           AND (${COMPLETED_REVIEW_SCORER_FAILURE_SQL})) AS scorer_failures,
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND EXISTS (
@@ -642,15 +572,8 @@ export async function runDatabaseMonitoringChecks(
       -- incident is the review pipeline working as designed, and the metrics
       -- endpoint still counts every observation for trend reporting.
       (SELECT count(*)::text FROM reviews
-         WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
-           AND EXISTS (
-             SELECT 1 FROM jsonb_array_elements(
-               CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                 THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-             ) AS incident
-             WHERE incident ->> 'category' = 'invalidOutput'
-               AND incident ->> 'recovered' = 'false'
-           )) AS invalid_outputs,
+         WHERE finished_at >= now() - interval '30 minutes'
+           AND (${COMPLETED_REVIEW_INVALID_OUTPUT_SQL})) AS invalid_outputs,
       (SELECT count(*)::text FROM jobs
          WHERE status = 'failed'
            AND run_after >= now() - interval '30 minutes') AS failed_jobs
