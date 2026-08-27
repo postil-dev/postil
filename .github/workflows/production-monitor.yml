@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .cache
-          trap 'rm -f .cache/curl-metrics.conf .cache/dependencies.out .cache/metrics.out .cache/headers.out .cache/robots.out' EXIT
+          trap 'rm -f .cache/curl-metrics.conf .cache/dependencies.out .cache/metrics.out .cache/monitor-health.out .cache/monitor-health-headers.out .cache/headers.out .cache/robots.out' EXIT
 
           public_endpoints=(
             "site https://postil.dev/"
@@ -62,6 +62,32 @@ jobs:
               --output /dev/null \
               "${url}"
           done
+
+          monitor_health_failed=0
+          monitor_health_status="$(curl \
+            --fail-with-body \
+            --location \
+            --silent \
+            --show-error \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --dump-header .cache/monitor-health-headers.out \
+            --output .cache/monitor-health.out \
+            --write-out '%{http_code}' \
+            "https://postil.dev/api/health/monitor")" || monitor_health_failed=1
+          echo "Monitor health HTTP status: ${monitor_health_status:-unavailable}"
+          if [[ "${monitor_health_failed}" -eq 1 || "${monitor_health_status}" != 2* ]]; then
+            echo "Monitor health endpoint reported an unhealthy state"
+            if [[ -s .cache/monitor-health.out ]]; then
+              cat .cache/monitor-health.out
+            else
+              echo "Monitor health response body is unavailable"
+            fi
+            monitor_health_failed=1
+          fi
 
           echo "Checking robots: https://postil.dev/robots.txt"
           curl \
@@ -143,6 +169,17 @@ jobs:
             fi
           done
 
+          echo "Checking noindex header for monitor health"
+          if ! grep -iq '^x-robots-tag: noindex, nofollow' .cache/monitor-health-headers.out; then
+            echo "Missing X-Robots-Tag on monitor health endpoint"
+            if [[ -s .cache/monitor-health-headers.out ]]; then
+              cat .cache/monitor-health-headers.out
+            else
+              echo "Monitor health response headers are unavailable"
+            fi
+            monitor_health_failed=1
+          fi
+
           echo "Checking dependencies: https://postil.dev/api/health/dependencies"
           dependency_status="$(curl \
             --location \
@@ -193,9 +230,18 @@ jobs:
               cat .cache/metrics.out
               exit 1
             fi
+            stale_found="${monitor_health_failed}"
             if ! grep -E '^postil_private_monitor_heartbeat_fresh 1$' .cache/metrics.out; then
               echo "Private monitor heartbeat is missing or stale"
-              exit 1
+              stale_found=1
+            fi
+            if ! grep -E '^postil_private_monitor_collection_fresh 1$' .cache/metrics.out; then
+              echo "Private monitor collection is missing or stale"
+              stale_found=1
+            fi
+            if ! grep -E '^postil_monitor_heartbeat_delivery_fresh 1$' .cache/metrics.out; then
+              echo "External monitor heartbeat delivery is missing or stale"
+              stale_found=1
             fi
 
             # A running review or queued/running job past 30 minutes should
@@ -203,7 +249,24 @@ jobs:
             # checks both ledgers because a dead worker can leave a review
             # running after its queue job has already reached a terminal state.
             stale_threshold_seconds=1800
-            stale_found=0
+            monitor_failures=$(awk \
+              '$1 == "postil_private_monitor_consecutive_failed_passes" { print $2 }' \
+              .cache/metrics.out)
+            echo "Consecutive failed monitor passes: ${monitor_failures:-missing}"
+            if [[ -z "${monitor_failures:-}" ]] || \
+               (( $(printf '%.0f' "${monitor_failures:-0}") > 1 )); then
+              echo "Private monitor has more than one consecutive failed pass or its metric is missing"
+              stale_found=1
+            fi
+            monitor_running_age=$(awk \
+              '$1 == "postil_private_monitor_running_pass_age_seconds" { print $2 }' \
+              .cache/metrics.out)
+            echo "Running monitor pass age: ${monitor_running_age:-missing}s"
+            if [[ -z "${monitor_running_age:-}" ]] || \
+               (( $(printf '%.0f' "${monitor_running_age:-0}") > 900 )); then
+              echo "Private monitor pass is stuck or its metric is missing"
+              stale_found=1
+            fi
             review_age=$(grep -E '^postil_oldest_running_review_age_seconds ' .cache/metrics.out \
               | awk '{print $2}')
             echo "Oldest running review age: ${review_age:-missing}s"
