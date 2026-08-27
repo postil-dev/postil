@@ -315,6 +315,8 @@ export async function completeReviewPublicationLifecycle(
     if (rows.length !== 1) {
       throw new Error("completed review is unavailable for publication lifecycle reconciliation");
     }
+    // The gate-job trigger takes the shared lifecycle release lock for this
+    // insert and parks it at infinity when deactivation owns the boundary.
     await tx.insert(schema.jobs).values({
       kind: "gate-state-sync",
       payload: {
