@@ -35,7 +35,12 @@ export async function withPinnedDatabaseTransaction<T>(
       }
     });
   } catch (error) {
-    if (bodyFailed && error === bodyError) throw error;
+    if (bodyFailed && error === bodyError) {
+      // Drizzle rethrows the callback's identical value only after ROLLBACK
+      // succeeds. Leave releaseError unset so pg returns this client to the
+      // pool; a different error means transaction cleanup was not confirmed.
+      throw error;
+    }
     releaseError = databaseClientError(error, `${label} transaction failed`);
     if (bodyFailed) {
       throw new AggregateError(
