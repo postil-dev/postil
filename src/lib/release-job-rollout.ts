@@ -240,13 +240,8 @@ export async function activatePublicationLifecycleRelease(
               SET status = 'queued',
                   locked_at = NULL,
                   locked_by = NULL,
-                  run_after = 'infinity'::timestamptz,
-                  payload = jsonb_set(
-                    payload,
-                    ARRAY[$1]::text[],
-                    'true'::jsonb,
-                    true
-                  ),
+                  run_after = now(),
+                  payload = payload - $1,
                   last_error = concat_ws(
                     ' ', NULLIF(last_error, ''),
                     '[release: recovered abandoned gate publisher]'

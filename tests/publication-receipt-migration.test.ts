@@ -681,7 +681,7 @@ describeDb("publication receipt migration and lifecycle", () => {
           "UPDATE reviews SET envelope = $2::jsonb WHERE id = $1",
           [reviewId, JSON.stringify(envelope({ head: "6".repeat(40) }))],
         );
-        const gate = await client.query<{ parked: boolean; dark: boolean }>(
+        const gate = await client.query<{ deferred: boolean; dark: boolean }>(
           `INSERT INTO jobs (kind, payload)
            VALUES ('gate-state-sync', jsonb_build_object(
              'reviewId', $1::bigint, 'reviewPublicId', (
@@ -689,12 +689,13 @@ describeDb("publication receipt migration and lifecycle", () => {
              )
            ))
            RETURNING
-             run_after = 'infinity'::timestamptz AS parked,
+             run_after > now()
+               AND run_after <= now() + interval '31 seconds' AS deferred,
              payload ? '_postilPublicationLifecycleDark' AS dark`,
           [reviewId],
         );
         await client.query("COMMIT");
-        expect(gate.rows[0]).toEqual({ parked: true, dark: true });
+        expect(gate.rows[0]).toEqual({ deferred: true, dark: true });
       } catch (error) {
         await client.query("ROLLBACK").catch(() => undefined);
         throw error;
@@ -716,6 +717,63 @@ describeDb("publication receipt migration and lifecycle", () => {
     expect(await activatePublicationLifecycleRelease(pool)).toMatchObject({
       activated: true,
     });
+  });
+
+  test("a gate committed after the activation sweep self-heals", async () => {
+    await deactivatePublicationLifecycleRelease(pool);
+    const activationClient = await pool.connect();
+    let lateGateId = 0;
+    try {
+      await activationClient.query("BEGIN");
+      await activationClient.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        ["postil:publication-lifecycle-release"],
+      );
+      await activationClient.query(
+        `INSERT INTO deployment_capabilities (name)
+         VALUES ('publication-lifecycle-fleet-active')
+         ON CONFLICT (name) DO NOTHING`,
+      );
+      await activationClient.query(
+        `UPDATE jobs
+            SET run_after = now(),
+                payload = payload - '_postilPublicationLifecycleDark'
+          WHERE kind = 'gate-state-sync'
+            AND status = 'queued'
+            AND payload ? '_postilPublicationLifecycleDark'`,
+      );
+      const lateGate = await pool.query<{
+        id: string;
+        deferred: boolean;
+        dark: boolean;
+      }>(
+        `INSERT INTO jobs (kind, payload)
+         VALUES ('gate-state-sync', jsonb_build_object(
+           'reviewId', 1, 'reviewPublicId', '00000000-0000-4000-8000-000000000001'
+         ))
+         RETURNING id,
+           run_after > now()
+             AND run_after <= now() + interval '31 seconds' AS deferred,
+           payload ? '_postilPublicationLifecycleDark' AS dark`,
+      );
+      lateGateId = Number(lateGate.rows[0]!.id);
+      expect(lateGate.rows[0]).toMatchObject({ deferred: true, dark: true });
+      await activationClient.query("COMMIT");
+    } catch (error) {
+      await activationClient.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      activationClient.release();
+    }
+    const converged = await pool.query<{ due: boolean; dark: boolean }>(
+      `UPDATE jobs SET run_after = now()
+        WHERE id = $1
+        RETURNING run_after <= now() AS due,
+          payload ? '_postilPublicationLifecycleDark' AS dark`,
+      [lateGateId],
+    );
+    expect(converged.rows[0]).toEqual({ due: true, dark: false });
+    await activatePublicationLifecycleRelease(pool);
   });
 
   test("pull-request decision lock blocks a newer staged recurrence", async () => {

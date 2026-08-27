@@ -34,26 +34,34 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
+  lifecycle_locked boolean := false;
   lifecycle_active boolean := false;
 BEGIN
   -- A failed try-lock means deactivation owns or is queued for the boundary.
   -- Park the job without waiting while its caller may hold narrower locks.
-  IF pg_try_advisory_xact_lock_shared(
+  lifecycle_locked := pg_try_advisory_xact_lock_shared(
     hashtextextended('postil:publication-lifecycle-release', 0)
-  ) THEN
+  );
+  IF lifecycle_locked THEN
     SELECT EXISTS (
       SELECT 1 FROM deployment_capabilities
       WHERE name = 'publication-lifecycle-fleet-active'
     ) INTO lifecycle_active;
   END IF;
   IF NOT lifecycle_active THEN
-    NEW.run_after := 'infinity'::timestamptz;
+    NEW.run_after := CASE
+      WHEN lifecycle_locked THEN 'infinity'::timestamptz
+      ELSE now() + interval '30 seconds'
+    END;
     NEW.payload := jsonb_set(
       COALESCE(NEW.payload, '{}'::jsonb),
       '{_postilPublicationLifecycleDark}',
       'true'::jsonb,
       true
     );
+  ELSE
+    NEW.payload := COALESCE(NEW.payload, '{}'::jsonb)
+      - '_postilPublicationLifecycleDark';
   END IF;
   RETURN NEW;
 END;
