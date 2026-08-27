@@ -238,6 +238,36 @@ describe("worker startup environment validation", () => {
       ]).exitCode,
     ).not.toBe(0);
   });
+
+  test("typechecks deploy source before the remote image build", async () => {
+    const root = join(import.meta.dir, "..");
+    const [deployWorkflow, dockerfile, nextConfig] = await Promise.all([
+      readFile(join(root, ".github/workflows/deploy.yml"), "utf8"),
+      readFile(join(root, "Dockerfile"), "utf8"),
+      readFile(join(root, "next.config.ts"), "utf8"),
+    ]);
+
+    const typecheck = deployWorkflow.indexOf("- name: Verify deploy source types");
+    const secrets = deployWorkflow.indexOf("- name: Load deployment secrets");
+    const deploy = deployWorkflow.indexOf("- name: Deploy managed fleet");
+    expect(typecheck).toBeGreaterThan(-1);
+    expect(deployWorkflow.slice(typecheck, secrets)).toContain(
+      "bun install --frozen-lockfile",
+    );
+    expect(deployWorkflow.slice(typecheck, secrets)).toContain("bunx tsc --noEmit");
+    expect(typecheck).toBeLessThan(secrets);
+    expect(secrets).toBeLessThan(deploy);
+    expect(dockerfile).toContain("ARG POSTIL_DEPLOY_SOURCE_TYPECHECKED=0");
+    expect(dockerfile).toContain(
+      "POSTIL_DEPLOY_SOURCE_TYPECHECKED=${POSTIL_DEPLOY_SOURCE_TYPECHECKED}",
+    );
+    expect(deployWorkflow).toContain(
+      "--build-arg POSTIL_DEPLOY_SOURCE_TYPECHECKED=1",
+    );
+    expect(nextConfig).toContain(
+      'ignoreBuildErrors: process.env.POSTIL_DEPLOY_SOURCE_TYPECHECKED === "1"',
+    );
+  });
 });
 
 function managedMachine(

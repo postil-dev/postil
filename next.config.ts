@@ -44,6 +44,12 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   skipTrailingSlashRedirect: true,
+  typescript: {
+    // The deploy workflow runs `tsc --noEmit` on its GitHub runner before any
+    // production secrets are loaded. The remote image builder omits only that
+    // duplicate, memory-intensive check; every ordinary build still runs it.
+    ignoreBuildErrors: process.env.POSTIL_DEPLOY_SOURCE_TYPECHECKED === "1",
+  },
   images: {
     // Optimized image responses are content-addressed by their query string;
     // let browsers and the CDN keep them for a year.

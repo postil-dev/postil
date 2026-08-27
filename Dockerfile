@@ -20,11 +20,15 @@ RUN bun install --frozen-lockfile
 
 FROM oven/bun:1.3 AS build
 ARG NEXT_PUBLIC_POSTHOG_HOST
-ENV NEXT_PUBLIC_POSTHOG_HOST=${NEXT_PUBLIC_POSTHOG_HOST}
+ARG POSTIL_DEPLOY_SOURCE_TYPECHECKED=0
+ENV NEXT_PUBLIC_POSTHOG_HOST=${NEXT_PUBLIC_POSTHOG_HOST} \
+    POSTIL_DEPLOY_SOURCE_TYPECHECKED=${POSTIL_DEPLOY_SOURCE_TYPECHECKED}
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# next build needs no live environment; env is validated at boot instead.
+# The deploy workflow typechecks this exact source before secrets are loaded.
+# Skip only the duplicate Next.js typecheck in the constrained remote image
+# builder. next build needs no live environment; env is validated at boot.
 RUN bun run build
 
 FROM oven/bun:1.3 AS runtime
