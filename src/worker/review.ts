@@ -31,7 +31,10 @@ import {
 } from "@/lib/envelope";
 import { enqueueGateStateSync } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
+import {
+  observeGitHubReviewThreads,
+  resolveGitHubReviewThreads,
+} from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
@@ -114,7 +117,7 @@ import {
 } from "@/lib/private-worker-rehearsal";
 import {
   applyPublicationThreadObservations,
-  getPullRequestPublicationCommentIds,
+  getPullRequestPublicationThreadPlan,
   readPublicationReceipt,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
@@ -1860,16 +1863,22 @@ export async function runReviewJob(
       );
     } else {
       try {
-        const commentIds = await getPullRequestPublicationCommentIds(
+        const threadPlan = await getPullRequestPublicationThreadPlan(
           db,
           repository.id,
           payload.prNumber,
         );
-        const observations = await observeGitHubReviewThreads(
+        const observed = await observeGitHubReviewThreads(
           token,
           payload.repoFullName,
           payload.prNumber,
-          commentIds,
+          threadPlan.commentIds,
+          signal,
+        );
+        const observations = await resolveGitHubReviewThreads(
+          token,
+          observed,
+          threadPlan.resolveCommentIds,
           signal,
         );
         await applyPublicationThreadObservations(db, observations);
@@ -1879,11 +1888,11 @@ export async function runReviewJob(
           );
         }
       } catch (error) {
-        // A transient GitHub read does not invalidate the immutable receipt.
+        // A transient GitHub lifecycle failure does not invalidate the immutable receipt.
         console.warn(
-          `review ${reviewId} publication lifecycle observation deferred: ${redactSecrets(error)}`,
+          `review ${reviewId} publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
         );
-        reviewLog.line("publication lifecycle observation deferred");
+        reviewLog.line("publication lifecycle reconciliation deferred");
       }
     }
   } catch (err) {

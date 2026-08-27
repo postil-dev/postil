@@ -3,7 +3,10 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
+import {
+  observeGitHubReviewThreads,
+  resolveGitHubReviewThreads,
+} from "@/lib/github/publication-threads";
 import {
   parsePublicationReceipt,
   readPublicationReceipt,
@@ -497,9 +500,9 @@ describe("GitHub publication thread observations", () => {
     expect(
       await observeGitHubReviewThreads("token", "owner/repo", 4, ["11", "12", "13", "14"]),
     ).toEqual([
-      { githubCommentId: "11", state: "resolved" },
-      { githubCommentId: "12", state: "outdated" },
-      { githubCommentId: "13", state: "inline" },
+      { githubCommentId: "11", githubThreadId: "thread-11", state: "resolved" },
+      { githubCommentId: "12", githubThreadId: "thread-12", state: "outdated" },
+      { githubCommentId: "13", githubThreadId: "thread-13", state: "inline" },
       { githubCommentId: "14", state: "deleted" },
     ]);
   });
@@ -544,12 +547,50 @@ describe("GitHub publication thread observations", () => {
     }) as unknown as typeof fetch;
 
     expect(await observeGitHubReviewThreads("token", "owner/repo", 4, ["11"])).toEqual([
-      { githubCommentId: "11", state: "resolved" },
+      { githubCommentId: "11", githubThreadId: "thread-paged", state: "resolved" },
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[1]?.variables).toEqual({
       threadId: "thread-paged",
       commentsCursor: "comment-page-2",
     });
+  });
+
+  test("resolves only Postil-owned threads whose durable finding state is terminal", async () => {
+    const requestedThreadIds: string[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as {
+        variables?: { threadId?: string };
+      };
+      const threadId = request.variables?.threadId;
+      if (!threadId) throw new Error("test mutation omitted thread identity");
+      requestedThreadIds.push(threadId);
+      return new Response(JSON.stringify({
+        data: {
+          resolveReviewThread: {
+            thread: { id: threadId, isResolved: true },
+          },
+        },
+      }));
+    }) as unknown as typeof fetch;
+
+    const reconciled = await resolveGitHubReviewThreads(
+      "token",
+      [
+        { githubCommentId: "11", githubThreadId: "thread-11", state: "outdated" },
+        { githubCommentId: "12", githubThreadId: "thread-12", state: "inline" },
+        { githubCommentId: "13", githubThreadId: "thread-13", state: "resolved" },
+        { githubCommentId: "14", state: "deleted" },
+      ],
+      ["11", "13", "14"],
+    );
+
+    expect(requestedThreadIds).toEqual(["thread-11"]);
+    expect(reconciled).toEqual([
+      { githubCommentId: "11", githubThreadId: "thread-11", state: "resolved" },
+      { githubCommentId: "12", githubThreadId: "thread-12", state: "inline" },
+      { githubCommentId: "13", githubThreadId: "thread-13", state: "resolved" },
+      { githubCommentId: "14", state: "deleted" },
+    ]);
   });
 });
