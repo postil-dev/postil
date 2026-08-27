@@ -1,2 +1,3 @@
 ignore:
   - "drizzle/meta/*_snapshot.json"
+maxFindings: 8
