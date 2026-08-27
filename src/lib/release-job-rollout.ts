@@ -51,39 +51,24 @@ export async function publicationLifecycleReleaseActivated(
   return result.rows[0]?.active === true;
 }
 
-async function unlockPublicationLifecycleSession(
-  client: PoolClient,
-  shared: boolean,
-): Promise<void> {
-  const result = shared
-    ? await client.query<{ unlocked: boolean }>(
-        "SELECT pg_advisory_unlock_shared(hashtextextended($1, 0)) AS unlocked",
-        [PUBLICATION_LIFECYCLE_LOCK],
-      )
-    : await client.query<{ unlocked: boolean }>(
-        "SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS unlocked",
-        [PUBLICATION_LIFECYCLE_LOCK],
-      );
-  if (result.rows[0]?.unlocked !== true) {
-    throw new Error("publication lifecycle session lock was not held");
-  }
-}
-
 /** Keep gate publication inside the active lifecycle release boundary. */
 export async function withPublicationLifecycleReleaseActive<T>(
   pool: Pool,
-  operation: (db: Database, client: PoolClient) => Promise<T>,
+  operation: (db: Database, client: Pool) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
-  const db = drizzle(client, { schema });
-  let locked = false;
+  const lockClient = await pool.connect();
+  const db = drizzle(pool, { schema });
   try {
-    await client.query(
-      "SELECT pg_advisory_lock_shared(hashtextextended($1, 0))",
+    // Transaction pooling can move a client between server sessions after
+    // each commit. Pin only the capability lock in one bounded transaction;
+    // the operation uses the pool so its leases and convergence writes remain
+    // independently visible while deactivation waits on this transaction.
+    await lockClient.query("BEGIN");
+    await lockClient.query(
+      "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
       [PUBLICATION_LIFECYCLE_LOCK],
     );
-    locked = true;
-    const active = await client.query<{ active: boolean }>(
+    const active = await lockClient.query<{ active: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
        ) AS active`,
@@ -92,21 +77,14 @@ export async function withPublicationLifecycleReleaseActive<T>(
     if (active.rows[0]?.active !== true) {
       throw new PublicationLifecycleReleaseDarkError();
     }
-    return await operation(db, client);
+    const result = await operation(db, pool);
+    await lockClient.query("COMMIT");
+    return result;
+  } catch (error) {
+    await lockClient.query("ROLLBACK").catch(() => undefined);
+    throw error;
   } finally {
-    let releaseError: Error | undefined;
-    if (locked) {
-      try {
-        await unlockPublicationLifecycleSession(client, true);
-      } catch (error) {
-        releaseError =
-          error instanceof Error
-            ? error
-            : new Error("publication lifecycle shared lock release failed");
-      }
-    }
-    client.release(releaseError);
-    if (releaseError) throw releaseError;
+    lockClient.release();
   }
 }
 
@@ -161,13 +139,11 @@ export async function activatePublicationLifecycleRelease(
   released: number;
 }> {
   const client = await pool.connect();
-  let locked = false;
   try {
-    await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       PUBLICATION_LIFECYCLE_LOCK,
     ]);
-    locked = true;
-    await client.query("BEGIN");
     const invalid = await client.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM reviews AS review
@@ -290,19 +266,7 @@ export async function activatePublicationLifecycleRelease(
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
   } finally {
-    let releaseError: Error | undefined;
-    if (locked) {
-      try {
-        await unlockPublicationLifecycleSession(client, false);
-      } catch (error) {
-        releaseError =
-          error instanceof Error
-            ? error
-            : new Error("publication lifecycle activation lock release failed");
-      }
-    }
-    client.release(releaseError);
-    if (releaseError) throw releaseError;
+    client.release();
   }
 }
 

@@ -8,6 +8,7 @@ interface ThreadNode {
   id?: string | null;
   isResolved?: boolean;
   isOutdated?: boolean;
+  viewerCanResolve?: boolean;
   comments?: CommentsConnection | null;
 }
 
@@ -74,7 +75,10 @@ export async function observeGitHubReviewThreads(
   const expected = new Set(expectedCommentIds);
   const observed = new Map<
     string,
-    Pick<PublicationThreadObservation, "githubThreadId" | "state">
+    Pick<
+      PublicationThreadObservation,
+      "githubThreadId" | "state" | "viewerCanResolve"
+    >
   >();
   const timeoutSignal = AbortSignal.timeout(15_000);
   const requestSignal = signal
@@ -102,12 +106,15 @@ export async function observeGitHubReviewThreads(
     comments: CommentsConnection | null | undefined,
     githubThreadId: string,
     state: PublicationThreadObservation["state"],
+    viewerCanResolve: boolean,
   ): void {
     for (const comment of comments?.nodes ?? []) {
       const id = comment?.databaseId;
       if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) {
         const key = String(id);
-        if (expected.has(key)) observed.set(key, { githubThreadId, state });
+        if (expected.has(key)) {
+          observed.set(key, { githubThreadId, state, viewerCanResolve });
+        }
       }
     }
   }
@@ -115,6 +122,7 @@ export async function observeGitHubReviewThreads(
     threadId: string,
     initialCursor: string,
     state: PublicationThreadObservation["state"],
+    viewerCanResolve: boolean,
   ): Promise<void> {
     let commentsCursor: string | null = initialCursor;
     for (let page = 1; page < MAX_PAGES; page += 1) {
@@ -138,7 +146,7 @@ export async function observeGitHubReviewThreads(
       if (!comments) {
         throw new Error("GitHub review thread comment observation returned no thread");
       }
-      recordComments(comments, threadId, state);
+      recordComments(comments, threadId, state, viewerCanResolve);
       if (!comments.pageInfo?.hasNextPage) return;
       commentsCursor = comments.pageInfo.endCursor ?? null;
       if (!commentsCursor) {
@@ -158,6 +166,7 @@ export async function observeGitHubReviewThreads(
                   id
                   isResolved
                   isOutdated
+                  viewerCanResolve
                   comments(first: ${PAGE_SIZE}) {
                     nodes { databaseId }
                     pageInfo { hasNextPage endCursor }
@@ -182,18 +191,31 @@ export async function observeGitHubReviewThreads(
       if (!thread.id) {
         throw new Error("GitHub review thread observation omitted its identity");
       }
+      if (typeof thread.viewerCanResolve !== "boolean") {
+        throw new Error("GitHub review thread observation omitted its resolution capability");
+      }
       const state = thread.isResolved
         ? "resolved"
         : thread.isOutdated
           ? "outdated"
           : "inline";
-      recordComments(thread.comments, thread.id, state);
+      recordComments(
+        thread.comments,
+        thread.id,
+        state,
+        thread.viewerCanResolve,
+      );
       if (thread.comments?.pageInfo?.hasNextPage) {
         const commentsCursor = thread.comments.pageInfo.endCursor ?? null;
         if (!commentsCursor) {
           throw new Error("GitHub review thread comment pagination omitted its identity or cursor");
         }
-        await observeRemainingComments(thread.id, commentsCursor, state);
+        await observeRemainingComments(
+          thread.id,
+          commentsCursor,
+          state,
+          thread.viewerCanResolve,
+        );
       }
     }
     if (!threads.pageInfo?.hasNextPage) {
@@ -228,6 +250,19 @@ export async function resolveGitHubReviewThreads(
     ) {
       if (!observation.githubThreadId) {
         throw new Error("GitHub review thread resolution omitted its thread identity");
+      }
+      if (
+        observation.viewerCanResolve === false &&
+        observation.state === "outdated"
+      ) {
+        continue;
+      }
+      if (observation.viewerCanResolve !== true) {
+        throw new Error(
+          observation.viewerCanResolve === false
+            ? "GitHub cannot resolve an active Postil review thread"
+            : "GitHub review thread resolution capability is unknown",
+        );
       }
       threadIds.add(observation.githubThreadId);
     }

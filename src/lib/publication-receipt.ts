@@ -386,6 +386,7 @@ export interface PublicationThreadObservation {
   githubCommentId: string;
   githubThreadId?: string;
   state: "inline" | "resolved" | "outdated" | "deleted";
+  viewerCanResolve?: boolean;
 }
 
 /** Apply only forge-observed thread state; human prose and review dismissal are not inputs. */

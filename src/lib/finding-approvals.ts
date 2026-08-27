@@ -315,51 +315,16 @@ export async function withReviewDecisionScopeLock<T>(
 ): Promise<T> {
   const client = await pool.connect();
   const db = drizzle(client, { schema });
-  let pullRequestLocked = false;
-  let reviewLocked = false;
-  let identity: string | undefined;
   try {
-    const review = (
-      await db
-        .select({
-          githubRepoId: schema.repositories.githubRepoId,
-          prNumber: schema.reviews.prNumber,
-        })
-        .from(schema.reviews)
-        .innerJoin(
-          schema.repositories,
-          eq(schema.repositories.id, schema.reviews.repositoryId),
-        )
-        .where(eq(schema.reviews.id, reviewId))
-        .limit(1)
-    )[0];
-    if (!review?.githubRepoId) {
-      throw new Error("review decision scope is unavailable");
-    }
-    identity = reviewDecisionScopeIdentity(review);
-    await db.execute(
-      sql`SELECT pg_advisory_lock(hashtextextended(${`postil:review-pr:${identity}`}, 0))`,
-    );
-    pullRequestLocked = true;
-    await db.execute(sql`SELECT pg_advisory_lock(${reviewId})`);
-    reviewLocked = true;
-    return await operation(db);
+    return await db.transaction(async (tx) => {
+      // The production provider transaction-pools connections. Transaction
+      // advisory locks remain attached to the backend for this bounded
+      // reconciliation and release automatically on commit or rollback.
+      await lockReviewDecisionScopeById(tx as Database, reviewId);
+      return operation(tx as Database);
+    });
   } finally {
-    try {
-      if (reviewLocked) {
-        await db.execute(sql`SELECT pg_advisory_unlock(${reviewId})`);
-      }
-    } finally {
-      try {
-        if (pullRequestLocked && identity !== undefined) {
-          await db.execute(
-            sql`SELECT pg_advisory_unlock(hashtextextended(${`postil:review-pr:${identity}`}, 0))`,
-          );
-        }
-      } finally {
-        client.release();
-      }
-    }
+    client.release();
   }
 }
 

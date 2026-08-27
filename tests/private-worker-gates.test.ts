@@ -175,6 +175,48 @@ describe("private repository worker defense in depth", () => {
     );
   });
 
+  test("publication lifecycle exclusion uses transaction-scoped advisory locks", () => {
+    const rollout = readFileSync("src/lib/release-job-rollout.ts", "utf8");
+    const sharedStart = rollout.indexOf(
+      "export async function withPublicationLifecycleReleaseActive",
+    );
+    const sharedEnd = rollout.indexOf(
+      "export async function deactivatePublicationLifecycleRelease",
+      sharedStart,
+    );
+    const activationStart = rollout.indexOf(
+      "export async function activatePublicationLifecycleRelease",
+    );
+    const activationEnd = rollout.indexOf(
+      "function normalizedReleaseSha",
+      activationStart,
+    );
+    const decisions = readFileSync("src/lib/finding-approvals.ts", "utf8");
+    const decisionStart = decisions.indexOf(
+      "export async function withReviewDecisionScopeLock",
+    );
+    const decisionEnd = decisions.indexOf(
+      "export async function lockReviewDecisionScopeById",
+      decisionStart,
+    );
+
+    const shared = rollout.slice(sharedStart, sharedEnd);
+    const activation = rollout.slice(activationStart, activationEnd);
+    const decision = decisions.slice(decisionStart, decisionEnd);
+    expect(shared).toContain("pg_advisory_xact_lock_shared");
+    expect(shared).toContain("const db = drizzle(pool");
+    expect(shared).toContain("operation(db, pool)");
+    expect(shared).not.toContain("operation(tx");
+    expect(shared).not.toContain("pg_advisory_lock_shared");
+    expect(shared).not.toContain("pg_advisory_unlock_shared");
+    expect(activation).toContain("pg_advisory_xact_lock");
+    expect(activation).not.toContain("pg_advisory_unlock");
+    expect(decision).toContain("db.transaction");
+    expect(decision).toContain("lockReviewDecisionScopeById");
+    expect(decision).not.toContain("pg_advisory_lock(");
+    expect(decision).not.toContain("pg_advisory_unlock(");
+  });
+
   test("respond honors entitlement and release activation before tokens or provider access", () => {
     const source = readFileSync("src/worker/respond.ts", "utf8");
     const start = source.indexOf("export async function runRespondJob");
