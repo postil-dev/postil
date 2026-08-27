@@ -49,11 +49,12 @@ jobs:
           DATABASE_URL: postgresql://postgres@localhost:5432/postil_migrations
           POSTIL_SEALING_KEY: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
       - run: bun run test
-      - name: Verify CLI credential rotation on fresh Postgres
+      - name: Verify CLI credentials and inference gateway on fresh Postgres
         run: >-
           bun test --isolate
           tests/cli-device-auth.test.ts
           tests/cli-refresh-migration.test.ts
+          tests/cli-inference-gateway.test.ts
         env:
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
           POSTIL_SEALING_KEY: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f

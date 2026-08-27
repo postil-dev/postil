@@ -27,6 +27,7 @@ let deviceIssuerInputs: string[] = [];
 
 mock.module("@/lib/db", () => ({
   schema: databaseSchema,
+  getPool: () => ({}),
   getDb: () => ({
     select: () => ({
       from: () => ({

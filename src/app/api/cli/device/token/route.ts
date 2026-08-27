@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 import { claimDeviceAuthorizationToken, readCliJsonBody } from "@/lib/cli-auth";
 import { resolveHostedGatewayDefaultModel } from "@/lib/cli-gateway";
-import { getDb, schema } from "@/lib/db";
+import { getDb, getPool, schema } from "@/lib/db";
 import { publicOrigin } from "@/lib/oauth";
 
 export const runtime = "nodejs";
@@ -56,7 +56,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     // usable to hand back.
     return NextResponse.json({ status: "expired" }, { status: 410 });
   }
-  const model = await resolveHostedGatewayDefaultModel();
+  const model = await resolveHostedGatewayDefaultModel(getPool());
 
   return NextResponse.json(
     {
