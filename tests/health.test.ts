@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parse } from "yaml";
 
 let queryCount = 0;
 let queryImpl: (text: string) => Promise<unknown>;
@@ -149,5 +154,205 @@ describe("/api/health/monitor", () => {
         heartbeatDelivery: "unknown",
       },
     });
+  });
+});
+
+describe("production monitor workflow", () => {
+  test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(
+      source.match(/https:\/\/postil\.dev\/api\/health\/monitor/g),
+    ).toHaveLength(1);
+    expect(source).toContain(
+      "--dump-header .cache/monitor-health-headers.out",
+    );
+    expect(source).toContain(
+      "grep -iq '^x-robots-tag: noindex, nofollow' .cache/monitor-health-headers.out",
+    );
+    expect(source).toContain("monitor_health_failed=0");
+    expect(source).toContain('stale_found="${monitor_health_failed}"');
+    expect(source).toContain("postil_private_monitor_collection_fresh 1");
+    expect(source).toContain("postil_monitor_heartbeat_delivery_fresh 1");
+    expect(source).toContain(
+      'postil_private_monitor_consecutive_failed_passes" { print $2 }',
+    );
+    expect(source).toContain(
+      '$(printf \'%.0f\' "${monitor_failures:-0}") > 1',
+    );
+    expect(source).toContain(
+      'postil_private_monitor_running_pass_age_seconds" { print $2 }',
+    );
+    expect(source).toContain(
+      '$(printf \'%.0f\' "${monitor_running_age:-0}") > 900',
+    );
+  });
+
+  test("allows one failed pass and 900 seconds, then fails at the next boundary", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const policyStart = source.indexOf("            monitor_failures=$(awk");
+    const policyEnd = source.indexOf(
+      "            review_age=$(grep",
+      policyStart,
+    );
+    expect(policyStart).toBeGreaterThan(-1);
+    expect(policyEnd).toBeGreaterThan(policyStart);
+    const policy = source
+      .slice(policyStart, policyEnd)
+      .replace(/^ {12}/gm, "");
+
+    const evaluate = (
+      failures: number | null,
+      runningAge: number | null,
+    ) => {
+      const metrics = [
+        failures === null
+          ? null
+          : `postil_private_monitor_consecutive_failed_passes ${failures}`,
+        runningAge === null
+          ? null
+          : `postil_private_monitor_running_pass_age_seconds ${runningAge}`,
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n");
+      const workingDirectory = mkdtempSync(
+        join(tmpdir(), "postil-monitor-policy-"),
+      );
+      const script = `set -euo pipefail
+mkdir -p .cache
+cat > .cache/metrics.out <<'METRICS'
+${metrics}
+METRICS
+stale_found=0
+${policy}
+exit "${"${stale_found}"}"
+`;
+      try {
+        return spawnSync("bash", ["-c", script], {
+          cwd: workingDirectory,
+          encoding: "utf8",
+        }).status;
+      } finally {
+        rmSync(workingDirectory, { recursive: true, force: true });
+      }
+    };
+
+    expect(evaluate(1, 900)).toBe(0);
+    expect(evaluate(2, 900)).toBe(1);
+    expect(evaluate(1, 901)).toBe(1);
+    expect(evaluate(null, 900)).toBe(1);
+    expect(evaluate(1, null)).toBe(1);
+  });
+
+  test("collects metrics before failing an unhealthy monitor probe", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: { smoke: { steps: Array<{ name: string; run?: string }> } };
+    };
+    const run = workflow.jobs.smoke.steps.find(
+      (step) => step.name === "Check public endpoints",
+    )?.run;
+    expect(run).toBeDefined();
+
+    const workingDirectory = mkdtempSync(
+      join(tmpdir(), "postil-monitor-workflow-"),
+    );
+    const metrics = [
+      "postil_database_up 1",
+      "postil_private_monitor_heartbeat_fresh 1",
+      "postil_private_monitor_collection_fresh 1",
+      "postil_monitor_heartbeat_delivery_fresh 1",
+      "postil_private_monitor_consecutive_failed_passes 0",
+      "postil_private_monitor_running_pass_age_seconds 0",
+      "postil_oldest_running_review_age_seconds 0",
+      "postil_check_run_cleanup_failures_30m 0",
+      "postil_operator_alert_failures_current 0",
+      "postil_oldest_operator_alert_pending_age_seconds 0",
+      "postil_billing_settlement_failures_current 0",
+      "postil_oldest_billing_settlement_pending_age_seconds 0",
+      "postil_unmatched_billing_provider_events_24h 0",
+      "postil_oldest_billing_checkout_open_age_seconds 0",
+      "postil_billing_checkout_failures_24h 0",
+      ...[
+        "operational_failure",
+        "scorer_failure",
+        "scorer_fallback",
+        "model_fallback",
+        "invalid_output",
+        "failed_job",
+      ].map(
+        (category) =>
+          `postil_review_incidents_30m{category="${category}"} 0`,
+      ),
+      'postil_oldest_job_age_seconds{status="queued"} 0',
+      'postil_oldest_job_age_seconds{status="running"} 0',
+    ].join("\n");
+    const fakeCurl = `curl() {
+  local output_path=/dev/null
+  local header_path=""
+  local url="${"${!#}"}"
+  while (( "$#" )); do
+    case "$1" in
+      --output) output_path="$2"; shift 2 ;;
+      --dump-header) header_path="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -n "$header_path" ]]; then
+    printf 'HTTP/2 200\\nx-robots-tag: noindex, nofollow\\n' > "$header_path"
+  fi
+  case "$url" in
+    https://postil.dev/api/health/monitor)
+      printf '{"ok":false,"monitor":{"process":"up","collection":"stale","heartbeatDelivery":"up"}}\\n' > "$output_path"
+      printf '503'
+      return 22
+      ;;
+    https://postil.dev/robots.txt)
+      printf 'User-Agent: *\\nAllow: /\\nSitemap: https://postil.dev/sitemap.xml\\n' > "$output_path"
+      ;;
+    https://postil.dev/about)
+      printf '308 https://postil.dev/why-postil'
+      ;;
+    'https://www.postil.dev/docs?utm_source=monitor')
+      printf '308 https://postil.dev/docs?utm_source=monitor'
+      ;;
+    https://postil.dev/api/health/dependencies)
+      printf '{"ok":true}\\n' > "$output_path"
+      printf '200'
+      ;;
+    https://postil.dev/api/metrics)
+      printf '%s\\n' '${metrics}' > "$output_path"
+      touch metrics-collected
+      printf '200'
+      ;;
+  esac
+}
+`;
+
+    try {
+      const result = spawnSync("bash", ["-c", `${fakeCurl}\n${run}`], {
+        cwd: workingDirectory,
+        encoding: "utf8",
+        env: { ...process.env, METRICS_API_KEY: "test" },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("Monitor health HTTP status: 503");
+      expect(result.stdout).toContain('"collection":"stale"');
+      expect(result.stdout).toContain("Full metrics for context:");
+      expect(
+        await Bun.file(join(workingDirectory, "metrics-collected")).exists(),
+      ).toBe(true);
+    } finally {
+      rmSync(workingDirectory, { recursive: true, force: true });
+    }
   });
 });
