@@ -29,8 +29,8 @@ import {
   isEnvelopeOperationallyUnavailable,
   type Envelope,
 } from "@/lib/envelope";
-import { enqueueGateStateSync } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
+import { withReviewDecisionScopeLock } from "@/lib/finding-approvals";
 import {
   observeGitHubReviewThreads,
   resolveGitHubReviewThreads,
@@ -95,6 +95,7 @@ import {
 } from "@/lib/large-review-resume";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
+  completeReviewPublicationLifecycle,
   finalizeStagedReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
   type ReviewCompletionInput,
@@ -109,7 +110,10 @@ import {
   HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
   PUBLICATION_INELIGIBLE_MESSAGE,
 } from "@/lib/review-outcome";
-import { HostedInferenceReleaseDarkError } from "@/lib/release-job-rollout";
+import {
+  HostedInferenceReleaseDarkError,
+  publicationLifecycleReleaseActivated,
+} from "@/lib/release-job-rollout";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
   consumePrivateWorkerRehearsalAfterStaging,
@@ -148,7 +152,10 @@ export class WorkerShutdownError extends OperationalError {
 }
 
 export class ReviewPublicationReconciliationError extends OperationalError {
-  constructor(message = "review publication reconciliation is pending") {
+  constructor(
+    message = "review publication reconciliation is pending",
+    readonly reconciliationStartedAt = new Date(),
+  ) {
     super(message);
     this.name = "ReviewPublicationReconciliationError";
   }
@@ -703,44 +710,57 @@ function reviewUsageFromEnvelope(
   }));
 }
 
-async function reconcileReviewPublicationThreads(input: {
-  db: Database;
+async function reconcileReviewPublicationLifecycle(input: {
+  pool: import("pg").Pool;
   token: string;
+  reviewId: number;
+  reviewPublicId: string;
   repositoryId: number;
   repoFullName: string;
   prNumber: number;
   signal?: AbortSignal;
 }): Promise<number> {
-  const threadPlan = await getPullRequestPublicationThreadPlan(
-    input.db,
-    input.repositoryId,
-    input.prNumber,
+  return withReviewDecisionScopeLock(
+    input.pool,
+    input.reviewId,
+    async (lockedDb) => {
+      const threadPlan = await getPullRequestPublicationThreadPlan(
+        lockedDb,
+        input.repositoryId,
+        input.prNumber,
+      );
+      const observed = await observeGitHubReviewThreads(
+        input.token,
+        input.repoFullName,
+        input.prNumber,
+        threadPlan.commentIds,
+        input.signal,
+      );
+      const observations = await resolveGitHubReviewThreads(
+        input.token,
+        observed,
+        threadPlan.resolveCommentIds,
+        input.signal,
+      );
+      await applyPublicationThreadObservations(lockedDb, observations);
+      await completeReviewPublicationLifecycle(lockedDb, {
+        reviewId: input.reviewId,
+        reviewPublicId: input.reviewPublicId,
+      });
+      return observations.length;
+    },
   );
-  const observed = await observeGitHubReviewThreads(
-    input.token,
-    input.repoFullName,
-    input.prNumber,
-    threadPlan.commentIds,
-    input.signal,
-  );
-  const observations = await resolveGitHubReviewThreads(
-    input.token,
-    observed,
-    threadPlan.resolveCommentIds,
-    input.signal,
-  );
-  await applyPublicationThreadObservations(input.db, observations);
-  return observations.length;
 }
 
-async function resumeStagedReviewCompletion(input: {
+export async function resumeStagedReviewCompletion(input: {
   db: Database;
+  pool: import("pg").Pool;
   payload: ReviewJobPayload;
   installation: { id: number; orgId: number | null; orgSlug: string | null };
   repository: { id: number; githubRepoId: number; fullName: string };
   signal?: AbortSignal;
 }): Promise<boolean> {
-  const { db, payload, installation, repository, signal } = input;
+  const { db, pool, payload, installation, repository, signal } = input;
   const trigger = normalizeReviewTriggerContext(payload.trigger);
   const selection = {
     id: schema.reviews.id,
@@ -758,12 +778,18 @@ async function resumeStagedReviewCompletion(input: {
     envelope: schema.reviews.envelope,
     advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
     gateCheckRunId: schema.reviews.gateCheckRunId,
+    finishedAt: schema.reviews.finishedAt,
+    publicationStagedAt: schema.reviewPublicationReceipts.observedAt,
   };
   const stagedReview = payload.recoveryReviewId
     ? (
         await db
           .select(selection)
           .from(schema.reviews)
+          .leftJoin(
+            schema.reviewPublicationReceipts,
+            eq(schema.reviewPublicationReceipts.reviewId, schema.reviews.id),
+          )
           .where(eq(schema.reviews.id, payload.recoveryReviewId))
           .limit(1)
       )[0]
@@ -771,6 +797,10 @@ async function resumeStagedReviewCompletion(input: {
         await db
           .select(selection)
           .from(schema.reviews)
+          .leftJoin(
+            schema.reviewPublicationReceipts,
+            eq(schema.reviewPublicationReceipts.reviewId, schema.reviews.id),
+          )
           .where(
             and(
               eq(schema.reviews.repositoryId, repository.id),
@@ -845,6 +875,8 @@ async function resumeStagedReviewCompletion(input: {
     stagedReview.publicId,
     installation.orgSlug,
   );
+  const reconciliationStartedAt =
+    stagedReview.finishedAt ?? stagedReview.publicationStagedAt ?? new Date();
   try {
     await verifyCompletedCheckRun(
       token,
@@ -890,15 +922,16 @@ async function resumeStagedReviewCompletion(input: {
         );
       }
     }
-    await reconcileReviewPublicationThreads({
-      db,
+    await reconcileReviewPublicationLifecycle({
+      pool,
       token,
+      reviewId: stagedReview.id,
+      reviewPublicId: stagedReview.publicId,
       repositoryId: repository.id,
       repoFullName: payload.repoFullName,
       prNumber: payload.prNumber,
       signal,
     });
-    await enqueueGateStateSync(db, stagedReview);
     void import("@/worker/runner").then(({ triggerQueueDrain }) =>
       triggerQueueDrain("gate-state-sync"),
     );
@@ -906,7 +939,11 @@ async function resumeStagedReviewCompletion(input: {
     return true;
   } catch (error) {
     if (signal?.aborted) throw new WorkerShutdownError();
-    throw new ReviewPublicationReconciliationError(redactSecrets(error));
+    if (error instanceof ReviewPublicationReconciliationError) throw error;
+    throw new ReviewPublicationReconciliationError(
+      redactSecrets(error),
+      reconciliationStartedAt,
+    );
   }
 }
 
@@ -1022,9 +1059,17 @@ export async function runReviewJob(
       `review job cannot start: repository ${payload.repoFullName} is missing`,
     );
   }
+  const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+  if (
+    releaseSha &&
+    !(await publicationLifecycleReleaseActivated(getPool()))
+  ) {
+    throw new HostedInferenceReleaseDarkError(releaseSha);
+  }
   if (
     await resumeStagedReviewCompletion({
       db,
+      pool: getPool(),
       payload,
       installation,
       repository,
@@ -1230,6 +1275,10 @@ export async function runReviewJob(
     sinceSha: forceFullReview ? null : (baseline?.headSha ?? null),
     triggerSource: trigger.source,
     triggerContext: trigger,
+    // The database marks the review as lifecycle-gated when its publication
+    // envelope is staged. Keep reconciliation absent until GitHub confirms
+    // the terminal thread state.
+    publicationLifecycleReconciledAt: null,
     queuedAt: timing.queuedAt,
     startedAt: timing.startedAt,
   };
@@ -1858,10 +1907,13 @@ export async function runReviewJob(
     );
     const completed = completion.completed;
     if (completed) {
+      const reconciliationStartedAt = new Date();
       try {
-        const observationCount = await reconcileReviewPublicationThreads({
-          db,
+        const observationCount = await reconcileReviewPublicationLifecycle({
+          pool: getPool(),
           token,
+          reviewId,
+          reviewPublicId: publicId,
           repositoryId: repository.id,
           repoFullName: payload.repoFullName,
           prNumber: payload.prNumber,
@@ -1879,9 +1931,9 @@ export async function runReviewJob(
         // resumeStagedReviewCompletion without rerunning inference.
         throw new ReviewPublicationReconciliationError(
           `publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
+          reconciliationStartedAt,
         );
       }
-      await enqueueGateStateSync(db, { id: reviewId, publicId });
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );

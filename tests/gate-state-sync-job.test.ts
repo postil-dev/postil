@@ -31,6 +31,8 @@ const row = {
   engineGateFailing: true,
   gateFailing: true,
   gateCheckRunId: 99,
+  publicationLifecycleRequiredAt: new Date() as Date | null,
+  publicationLifecycleReconciledAt: new Date() as Date | null,
   repoFullName: "acme/repo",
   repositoryEnabled: true,
   orgId: 20,
@@ -112,6 +114,10 @@ mock.module("@/lib/db", () => ({
       engineGateFailing: "reviews.engine_gate_failing",
       gateFailing: "reviews.gate_failing",
       gateCheckRunId: "reviews.gate_check_run_id",
+      publicationLifecycleReconciledAt:
+        "reviews.publication_lifecycle_reconciled_at",
+      publicationLifecycleRequiredAt:
+        "reviews.publication_lifecycle_required_at",
       gateSyncLeaseId: "reviews.gate_sync_lease_id",
       gateSyncLeaseExpiresAt: "reviews.gate_sync_lease_expires_at",
       queuedAt: "reviews.queued_at",
@@ -227,6 +233,8 @@ beforeEach(() => {
   leaseHeld = false;
   blockToken = false;
   loseLeaseAfterCheck = false;
+  row.publicationLifecycleReconciledAt = new Date();
+  row.publicationLifecycleRequiredAt = new Date();
   tokenEntered = new Promise<void>((resolve) => {
     tokenEnteredResolve = resolve;
   });
@@ -236,6 +244,25 @@ beforeEach(() => {
 });
 
 describe("durable gate state synchronization", () => {
+  test("does not publish before review-thread lifecycle reconciliation", async () => {
+    row.publicationLifecycleReconciledAt = null;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls).toEqual([]);
+    expect(storedStates).toEqual([]);
+  });
+
+  test("publishes a legacy completion that predates lifecycle enforcement", async () => {
+    row.publicationLifecycleRequiredAt = null;
+    row.publicationLifecycleReconciledAt = null;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls).toHaveLength(1);
+    expect(storedStates).toEqual([false]);
+  });
+
   test("recomputes state under an advisory lock before publishing", async () => {
     await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
 

@@ -426,10 +426,13 @@ export async function getPullRequestPublicationThreadPlan(
 ): Promise<PullRequestPublicationThreadPlan> {
   const rows = await db
     .select({
+      reviewId: schema.findingPublications.reviewId,
       findingId: schema.findingPublications.findingId,
       stableIdentity: schema.findingPublications.stableIdentity,
       githubCommentId: schema.findingPublications.githubCommentId,
       currentState: schema.findingPublications.currentState,
+      reviewStatus: schema.reviews.status,
+      queuedAt: schema.reviews.queuedAt,
     })
     .from(schema.findingPublications)
     .innerJoin(schema.reviews, eq(schema.reviews.id, schema.findingPublications.reviewId))
@@ -442,17 +445,43 @@ export async function getPullRequestPublicationThreadPlan(
   const commentIds = new Set<string>();
   const resolveCommentIds = new Set<string>();
   // Forge observations can move the published comment row to outdated or
-  // deleted. The receipt row from the later review retains the finding's
-  // terminal state without a comment identity, so resolve by stable finding
-  // identity across both rows instead of consulting only the old comment row.
+  // deleted. Resolve from the newest stable occurrence of the finding: a
+  // later terminal receipt row has no comment identity, while a still later
+  // active recurrence must supersede that terminal state.
+  const latestStableState = new Map<
+    string,
+    {
+      reviewId: number;
+      queuedAt: Date;
+      currentState: PublicationState;
+      reviewStatus: (typeof schema.reviews.status.enumValues)[number];
+    }
+  >();
+  for (const row of rows) {
+    if (!row.stableIdentity) continue;
+    const latest = latestStableState.get(row.findingId);
+    if (
+      !latest ||
+      row.queuedAt > latest.queuedAt ||
+      (row.queuedAt.getTime() === latest.queuedAt.getTime() &&
+        row.reviewId > latest.reviewId)
+    ) {
+      latestStableState.set(row.findingId, {
+        reviewId: row.reviewId,
+        queuedAt: row.queuedAt,
+        currentState: row.currentState as PublicationState,
+        reviewStatus: row.reviewStatus,
+      });
+    }
+  }
   const terminalFindingIds = new Set(
-    rows
+    [...latestStableState]
       .filter(
-        (row) =>
-          row.stableIdentity &&
+        ([, row]) =>
+          row.reviewStatus === "completed" &&
           (row.currentState === "resolved" || row.currentState === "suppressed"),
       )
-      .map((row) => row.findingId),
+      .map(([findingId]) => findingId),
   );
   for (const row of rows) {
     if (!row.githubCommentId) continue;

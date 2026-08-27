@@ -13,6 +13,7 @@ import {
   continueClaimedJob,
   completeWebhookDelivery,
   completeJob,
+  externalSideEffectLeaseActive,
   failJob,
   isBoundedJobRetryError,
   isPermanentJobError,
@@ -39,6 +40,8 @@ import {
   deferHostedProviderKeyLifecycleForRelease,
   deferHostedReviewForRelease,
   HostedInferenceReleaseDarkError,
+  PublicationLifecycleReleaseDarkError,
+  withPublicationLifecycleReleaseActive,
 } from "@/lib/release-job-rollout";
 import {
   reportOperationalFailure,
@@ -212,7 +215,15 @@ async function handleJob(
       );
       break;
     case "gate-state-sync":
-      await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
+      await withPublicationLifecycleReleaseActive(
+        getPool(),
+        async (db, client) => {
+          if (!(await externalSideEffectLeaseActive(client, job))) return;
+          await runGateStateSyncJob(job.payload as GateStateSyncJobPayload, {
+            db,
+          });
+        },
+      );
       break;
     case "gate-enforcement-sweep":
       return runGateEnforcementSweepJob(
@@ -385,7 +396,16 @@ export async function runClaimedJob(
       (job.kind === "github-reaction" && !malformedGithubReaction) ||
       err instanceof ReviewPublicationReconciliationError;
     const outcome = reconcileIndefinitely
-      ? await retryJobIndefinitely(getPool(), job, message)
+      ? await retryJobIndefinitely(
+          getPool(),
+          job,
+          message,
+          err instanceof ReviewPublicationReconciliationError
+            ? { startedAt: err.reconciliationStartedAt }
+            : err instanceof PublicationLifecycleReleaseDarkError
+              ? { startedAt: job.lockedAt }
+            : undefined,
+        )
       : await failJob(getPool(), job, message, {
           permanent,
           ...(job.kind === "respond"

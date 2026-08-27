@@ -66,7 +66,9 @@ cp .env.example .env
 # below for the full list and how to generate each one.
 
 docker compose up -d
-docker compose exec web bun run db:migrate`}</code>
+docker compose exec web bun run db:migrate
+docker compose exec web bun run operational:indexes
+docker compose exec web bun run jobs:activate-release`}</code>
       </pre>
       <p>
         The Docker image bakes in the reviewer CLI from a binary you supply at{" "}
@@ -428,9 +430,12 @@ ${doctorTranscript}`}</code>
           <code>docker compose exec web bun run db:migrate</code> (Drizzle).
           Then run{" "}
           <code>docker compose exec web bun run operational:indexes</code> to
-          create or verify indexes that must be built concurrently. Run both
-          commands once after the initial <code>up</code> and again after every
-          upgrade that changes the schema, before traffic hits the new image.
+          create or verify indexes that must be built concurrently. Then run{" "}
+          <code>docker compose exec web bun run jobs:activate-release</code> to
+          release staged jobs after every web and worker container uses the
+          same image. Run all three commands after the initial <code>up</code>
+          and after upgrades that change the schema, before traffic reaches the
+          new image.
         </li>
       </ul>
     </div>

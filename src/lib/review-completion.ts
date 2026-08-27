@@ -291,6 +291,41 @@ export async function finalizeStagedReviewCompletionWithGateMode(
   });
 }
 
+/** Record successful forge lifecycle reconciliation and queue its gate atomically. */
+export async function completeReviewPublicationLifecycle(
+  db: Database,
+  input: { reviewId: number; reviewPublicId: string },
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await lockReviewDecisionScopeById(tx, input.reviewId);
+    const rows = await tx
+      .update(schema.reviews)
+      .set({
+        publicationLifecycleReconciledAt:
+          sql`COALESCE(${schema.reviews.publicationLifecycleReconciledAt}, now())`,
+      })
+      .where(
+        and(
+          eq(schema.reviews.id, input.reviewId),
+          eq(schema.reviews.publicId, input.reviewPublicId),
+          eq(schema.reviews.status, "completed"),
+        ),
+      )
+      .returning({ id: schema.reviews.id });
+    if (rows.length !== 1) {
+      throw new Error("completed review is unavailable for publication lifecycle reconciliation");
+    }
+    await tx.insert(schema.jobs).values({
+      kind: "gate-state-sync",
+      payload: {
+        reviewId: input.reviewId,
+        reviewPublicId: input.reviewPublicId,
+      },
+      maxAttempts: 5,
+    });
+  });
+}
+
 /** Persist the terminal review, effective gate state, and accounting atomically. */
 export async function persistReviewCompletionWithGateMode(
   db: Database,

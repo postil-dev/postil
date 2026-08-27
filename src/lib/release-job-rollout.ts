@@ -1,5 +1,8 @@
+import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool, PoolClient } from "pg";
 
+import type { Database } from "@/lib/db";
+import * as schema from "@/lib/db/schema";
 import { OPENROUTER_EXACT_LIMIT_MAX_MICROS } from "@/lib/openrouter-management-adapter";
 import {
   HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
@@ -22,6 +25,286 @@ const HOSTED_INFERENCE_DARK_PREFIX = "hosted-inference-dark:";
 export const HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY =
   "hosted-inference-fleet-active";
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
+export const PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY =
+  "publication-lifecycle-fleet-active";
+const PUBLICATION_LIFECYCLE_LOCK = "postil:publication-lifecycle-release";
+const PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY =
+  "_postilPublicationLifecycleDark";
+
+export class PublicationLifecycleReleaseDarkError extends Error {
+  override name = "PublicationLifecycleReleaseDarkError";
+
+  constructor() {
+    super("publication lifecycle release is awaiting activation");
+  }
+}
+
+export async function publicationLifecycleReleaseActivated(
+  pool: Pool,
+): Promise<boolean> {
+  const result = await pool.query<{ active: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM deployment_capabilities WHERE name = $1
+     ) AS active`,
+    [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+  );
+  return result.rows[0]?.active === true;
+}
+
+async function unlockPublicationLifecycleSession(
+  client: PoolClient,
+  shared: boolean,
+): Promise<void> {
+  const result = shared
+    ? await client.query<{ unlocked: boolean }>(
+        "SELECT pg_advisory_unlock_shared(hashtextextended($1, 0)) AS unlocked",
+        [PUBLICATION_LIFECYCLE_LOCK],
+      )
+    : await client.query<{ unlocked: boolean }>(
+        "SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS unlocked",
+        [PUBLICATION_LIFECYCLE_LOCK],
+      );
+  if (result.rows[0]?.unlocked !== true) {
+    throw new Error("publication lifecycle session lock was not held");
+  }
+}
+
+/** Keep gate publication inside the active lifecycle release boundary. */
+export async function withPublicationLifecycleReleaseActive<T>(
+  pool: Pool,
+  operation: (db: Database, client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  const db = drizzle(client, { schema });
+  let locked = false;
+  try {
+    await client.query(
+      "SELECT pg_advisory_lock_shared(hashtextextended($1, 0))",
+      [PUBLICATION_LIFECYCLE_LOCK],
+    );
+    locked = true;
+    const active = await client.query<{ active: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name = $1
+       ) AS active`,
+      [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+    );
+    if (active.rows[0]?.active !== true) {
+      throw new PublicationLifecycleReleaseDarkError();
+    }
+    return await operation(db, client);
+  } finally {
+    let releaseError: Error | undefined;
+    if (locked) {
+      try {
+        await unlockPublicationLifecycleSession(client, true);
+      } catch (error) {
+        releaseError =
+          error instanceof Error
+            ? error
+            : new Error("publication lifecycle shared lock release failed");
+      }
+    }
+    client.release(releaseError);
+    if (releaseError) throw releaseError;
+  }
+}
+
+/** Park every gate while a mixed-version fleet can still enqueue old work. */
+export async function deactivatePublicationLifecycleRelease(
+  pool: Pool,
+): Promise<{ deactivated: boolean; parked: number }> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [PUBLICATION_LIFECYCLE_LOCK],
+    );
+    const deactivated = await client.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+    );
+    const parked = await client.query(
+      `UPDATE jobs
+          SET run_after = 'infinity'::timestamptz,
+              payload = jsonb_set(
+                payload,
+                ARRAY[$1]::text[],
+                'true'::jsonb,
+                true
+              )
+        WHERE kind = 'gate-state-sync'
+          AND status = 'queued'`,
+      [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+    );
+    await client.query("COMMIT");
+    return {
+      deactivated: (deactivated.rowCount ?? 0) > 0,
+      parked: parked.rowCount ?? 0,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Queue mixed-fleet recovery and release gates after homogeneous-fleet proof. */
+export async function activatePublicationLifecycleRelease(
+  pool: Pool,
+): Promise<{
+  activated: boolean;
+  recoveriesQueued: number;
+  runningGatesRecovered: number;
+  released: number;
+}> {
+  const client = await pool.connect();
+  let locked = false;
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
+      PUBLICATION_LIFECYCLE_LOCK,
+    ]);
+    locked = true;
+    await client.query("BEGIN");
+    const invalid = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM reviews AS review
+         LEFT JOIN repositories AS repository
+           ON repository.id = review.repository_id
+         LEFT JOIN installations AS installation
+           ON installation.id = repository.installation_id
+        WHERE review.status = 'completed'
+          AND review.publication_lifecycle_required_at IS NOT NULL
+          AND review.publication_lifecycle_reconciled_at IS NULL
+          AND (
+            review.envelope IS NULL
+            OR review.finished_at IS NULL
+            OR review.advisory_check_run_id IS NULL
+            OR review.gate_check_run_id IS NULL
+            OR review.source_org_id IS NULL
+            OR review.source_installation_id IS NULL
+            OR review.source_github_installation_id IS NULL
+            OR review.source_github_repo_id IS NULL
+            OR review.source_repo_full_name IS NULL
+            OR installation.id IS NULL
+            OR review.source_org_id IS DISTINCT FROM installation.org_id
+            OR review.source_installation_id IS DISTINCT FROM installation.id
+            OR review.source_github_installation_id IS DISTINCT FROM installation.github_installation_id
+            OR review.source_github_repo_id IS DISTINCT FROM repository.github_repo_id
+            OR review.source_repo_full_name IS DISTINCT FROM repository.full_name
+            OR NOT EXISTS (
+              SELECT 1 FROM review_publication_receipts AS receipt
+               WHERE receipt.review_id = review.id
+            )
+          )`,
+    );
+    const invalidCount = Number(invalid.rows[0]?.count ?? "0");
+    if (invalidCount > 0) {
+      throw new Error(
+        `publication lifecycle activation found ${invalidCount} unrecoverable completed reviews`,
+      );
+    }
+    const recoveries = await client.query(
+      `INSERT INTO jobs (kind, payload, max_attempts)
+       SELECT
+         'review',
+         jsonb_strip_nulls(jsonb_build_object(
+           'installationId', review.source_github_installation_id,
+           'sourceInstallationId', review.source_installation_id,
+           'sourceOrgId', review.source_org_id,
+           'githubRepoId', review.source_github_repo_id,
+           'repoFullName', review.source_repo_full_name,
+           'repositoryPrivate', repository.private,
+           'prNumber', review.pr_number,
+           'authorGithubId', review.author_github_id,
+           'authorLogin', review.author_login,
+           'headSha', review.head_sha,
+           'baseSha', review.base_sha,
+           'trigger', COALESCE(
+             review.trigger_context,
+             jsonb_build_object('source', review.trigger_source)
+           ),
+           'recoveryReviewId', review.id
+         )),
+         5
+       FROM reviews AS review
+       INNER JOIN repositories AS repository
+         ON repository.id = review.repository_id
+       WHERE review.status = 'completed'
+         AND review.publication_lifecycle_required_at IS NOT NULL
+         AND review.publication_lifecycle_reconciled_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+             FROM jobs AS active_recovery
+            WHERE active_recovery.kind = 'review'
+              AND active_recovery.status IN ('queued', 'running')
+              AND active_recovery.payload->>'recoveryReviewId' = review.id::text
+         )`,
+    );
+    const activated = await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+    );
+    const runningGates = (activated.rowCount ?? 0) > 0
+      ? await client.query(
+          `UPDATE jobs
+              SET status = 'queued',
+                  locked_at = NULL,
+                  locked_by = NULL,
+                  run_after = 'infinity'::timestamptz,
+                  payload = jsonb_set(
+                    payload,
+                    ARRAY[$1]::text[],
+                    'true'::jsonb,
+                    true
+                  ),
+                  last_error = concat_ws(
+                    ' ', NULLIF(last_error, ''),
+                    '[release: recovered abandoned gate publisher]'
+                  )
+            WHERE kind = 'gate-state-sync'
+              AND status = 'running'`,
+          [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+        )
+      : { rowCount: 0 };
+    const released = await client.query(
+      `UPDATE jobs
+          SET run_after = now(), payload = payload - $1
+        WHERE kind = 'gate-state-sync'
+          AND status = 'queued'
+          AND payload ? $1`,
+      [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+    );
+    await client.query("COMMIT");
+    return {
+      activated: (activated.rowCount ?? 0) > 0,
+      recoveriesQueued: recoveries.rowCount ?? 0,
+      runningGatesRecovered: runningGates.rowCount ?? 0,
+      released: released.rowCount ?? 0,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    let releaseError: Error | undefined;
+    if (locked) {
+      try {
+        await unlockPublicationLifecycleSession(client, false);
+      } catch (error) {
+        releaseError =
+          error instanceof Error
+            ? error
+            : new Error("publication lifecycle activation lock release failed");
+      }
+    }
+    client.release(releaseError);
+    if (releaseError) throw releaseError;
+  }
+}
 
 function normalizedReleaseSha(releaseSha: string): string {
   const normalized = releaseSha.trim().toLowerCase();
