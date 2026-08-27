@@ -255,7 +255,9 @@ async function waitForDelivery(
         throw new Error("iLert returned invalid action history during the canary");
       }
       const deliveries = actions
-        .filter((item) => object(item)?.alertActionId === options.actionId)
+        .filter(
+          (item) => opaqueId(object(item)?.alertActionId) === options.actionId,
+        )
         .flatMap((item) => {
           const history = object(item)?.history;
           return Array.isArray(history) ? history : [];
@@ -376,16 +378,23 @@ function alertSource(value: unknown, expectedId: number): Json {
 }
 
 function actionId(value: unknown): string {
-  const id = object(value)?.id;
-  if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) return String(id);
-  if (
-    typeof id === "string" &&
-    id.length <= 128 &&
-    /^[A-Za-z0-9._:-]+$/u.test(id)
-  ) {
-    return id;
-  }
+  const id = opaqueId(object(value)?.id);
+  if (id) return id;
   throw new Error("iLert returned an alert action without an identity");
+}
+
+function opaqueId(value: unknown): string | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return String(value);
+  }
+  if (
+    typeof value === "string" &&
+    value.length <= 128 &&
+    /^[A-Za-z0-9._:-]+$/u.test(value)
+  ) {
+    return value;
+  }
+  return null;
 }
 
 function positiveId(value: unknown): string | null {

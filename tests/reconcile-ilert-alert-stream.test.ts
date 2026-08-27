@@ -243,7 +243,7 @@ describe("iLert alert-stream reconciliation", () => {
           (value) => value.method === "POST" && value.url.endsWith("/events"),
         ).length > 1;
         return Response.json({
-          alertActionId: "72",
+          alertActionId: 72,
           history: resolveSent
             ? [{ success: true }, { success: true }]
             : [{ success: true }],
