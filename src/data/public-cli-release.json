@@ -1,9 +1,9 @@
 {
   "cliRelease": "v0.7.2",
   "cliCommit": "dcf4e34c4804d4bf64705ab6367c883cea23b33a",
-  "hostedCliRelease": "v0.9.0",
-  "hostedCliCommit": "571987601f2e90f453f9db4725790b60be22680b",
-  "hostedCliLinuxX86_64Sha256": "14ba485e57a0dbe674f9e0e379e0806fdc2d9b025b8e28f6c803f0ddd487d7f4",
+  "hostedCliRelease": "v0.9.4",
+  "hostedCliCommit": "e48d2940442a1936281a62c0871d74185caa2747",
+  "hostedCliLinuxX86_64Sha256": "7a37296793be6b82753c447d23a85af6e8744fb119a9e4f0ae8ca97898ffe023",
   "hostedCliDefaultModel": "openai/gpt-5.6-luna",
   "actionCommit": "00442e2340edaa4a681955dbb25e20650ca1514c"
 }

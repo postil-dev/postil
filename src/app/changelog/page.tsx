@@ -35,8 +35,8 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.9.0",
-    date: "August 25, 2026",
+    version: "0.9.4",
+    date: "August 27, 2026",
     summary:
       "The CLI starts useful reviews without model or diff-selection setup, keeps terminal progress concise, and keeps agent-box logins renewable.",
     changes: [
