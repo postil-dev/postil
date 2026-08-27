@@ -35,8 +35,9 @@ export async function withPinnedDatabaseTransaction<T>(
       }
     });
   } catch (error) {
+    if (bodyFailed && error === bodyError) throw error;
     releaseError = databaseClientError(error, `${label} transaction failed`);
-    if (bodyFailed && error !== bodyError) {
+    if (bodyFailed) {
       throw new AggregateError(
         [databaseClientError(bodyError, `${label} operation failed`), releaseError],
         `${label} operation and transaction cleanup failed`,

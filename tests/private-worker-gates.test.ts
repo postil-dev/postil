@@ -229,7 +229,7 @@ describe("private repository worker defense in depth", () => {
     expect(decision).not.toContain("pg_advisory_unlock(");
     expect(database).toContain("clientDatabase.transaction");
     expect(database).toContain("client.release(releaseError)");
-    expect(database).toContain("bodyFailed && error !== bodyError");
+    expect(database).toContain("bodyFailed && error === bodyError");
   });
 
   test("respond honors entitlement and release activation before tokens or provider access", () => {
