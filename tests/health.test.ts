@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse } from "yaml";
 
 let queryCount = 0;
 let queryImpl: (text: string) => Promise<unknown>;
@@ -247,5 +248,111 @@ exit "${"${stale_found}"}"
     expect(evaluate(1, 901)).toBe(1);
     expect(evaluate(null, 900)).toBe(1);
     expect(evaluate(1, null)).toBe(1);
+  });
+
+  test("collects metrics before failing an unhealthy monitor probe", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: { smoke: { steps: Array<{ name: string; run?: string }> } };
+    };
+    const run = workflow.jobs.smoke.steps.find(
+      (step) => step.name === "Check public endpoints",
+    )?.run;
+    expect(run).toBeDefined();
+
+    const workingDirectory = mkdtempSync(
+      join(tmpdir(), "postil-monitor-workflow-"),
+    );
+    const metrics = [
+      "postil_database_up 1",
+      "postil_private_monitor_heartbeat_fresh 1",
+      "postil_private_monitor_collection_fresh 1",
+      "postil_monitor_heartbeat_delivery_fresh 1",
+      "postil_private_monitor_consecutive_failed_passes 0",
+      "postil_private_monitor_running_pass_age_seconds 0",
+      "postil_oldest_running_review_age_seconds 0",
+      "postil_check_run_cleanup_failures_30m 0",
+      "postil_operator_alert_failures_current 0",
+      "postil_oldest_operator_alert_pending_age_seconds 0",
+      "postil_billing_settlement_failures_current 0",
+      "postil_oldest_billing_settlement_pending_age_seconds 0",
+      "postil_unmatched_billing_provider_events_24h 0",
+      "postil_oldest_billing_checkout_open_age_seconds 0",
+      "postil_billing_checkout_failures_24h 0",
+      ...[
+        "operational_failure",
+        "scorer_failure",
+        "scorer_fallback",
+        "model_fallback",
+        "invalid_output",
+        "failed_job",
+      ].map(
+        (category) =>
+          `postil_review_incidents_30m{category="${category}"} 0`,
+      ),
+      'postil_oldest_job_age_seconds{status="queued"} 0',
+      'postil_oldest_job_age_seconds{status="running"} 0',
+    ].join("\n");
+    const fakeCurl = `curl() {
+  local output_path=/dev/null
+  local header_path=""
+  local url="${"${!#}"}"
+  while (( "$#" )); do
+    case "$1" in
+      --output) output_path="$2"; shift 2 ;;
+      --dump-header) header_path="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -n "$header_path" ]]; then
+    printf 'HTTP/2 200\\nx-robots-tag: noindex, nofollow\\n' > "$header_path"
+  fi
+  case "$url" in
+    https://postil.dev/api/health/monitor)
+      printf '{"ok":false,"monitor":{"process":"up","collection":"stale","heartbeatDelivery":"up"}}\\n' > "$output_path"
+      printf '503'
+      return 22
+      ;;
+    https://postil.dev/robots.txt)
+      printf 'User-Agent: *\\nAllow: /\\nSitemap: https://postil.dev/sitemap.xml\\n' > "$output_path"
+      ;;
+    https://postil.dev/about)
+      printf '308 https://postil.dev/why-postil'
+      ;;
+    'https://www.postil.dev/docs?utm_source=monitor')
+      printf '308 https://postil.dev/docs?utm_source=monitor'
+      ;;
+    https://postil.dev/api/health/dependencies)
+      printf '{"ok":true}\\n' > "$output_path"
+      printf '200'
+      ;;
+    https://postil.dev/api/metrics)
+      printf '%s\\n' '${metrics}' > "$output_path"
+      touch metrics-collected
+      printf '200'
+      ;;
+  esac
+}
+`;
+
+    try {
+      const result = spawnSync("bash", ["-c", `${fakeCurl}\n${run}`], {
+        cwd: workingDirectory,
+        encoding: "utf8",
+        env: { ...process.env, METRICS_API_KEY: "test" },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("Monitor health HTTP status: 503");
+      expect(result.stdout).toContain('"collection":"stale"');
+      expect(result.stdout).toContain("Full metrics for context:");
+      expect(
+        await Bun.file(join(workingDirectory, "metrics-collected")).exists(),
+      ).toBe(true);
+    } finally {
+      rmSync(workingDirectory, { recursive: true, force: true });
+    }
   });
 });
