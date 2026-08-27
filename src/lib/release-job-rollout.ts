@@ -1,8 +1,6 @@
-import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool, PoolClient } from "pg";
 
-import type { Database } from "@/lib/db";
-import * as schema from "@/lib/db/schema";
+import { type Database, withPinnedDatabaseTransaction } from "@/lib/db";
 import { OPENROUTER_EXACT_LIMIT_MAX_MICROS } from "@/lib/openrouter-management-adapter";
 import {
   HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
@@ -58,50 +56,31 @@ export async function publicationLifecycleReleaseActivated(
 /** Keep gate publication inside the active lifecycle release boundary. */
 export async function withPublicationLifecycleReleaseActive<T>(
   pool: Pool,
-  operation: (db: Database, client: Pool) => Promise<T>,
+  operation: (db: Database, client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const lockClient = await pool.connect();
-  const db = drizzle(pool, { schema });
-  let releaseError: Error | undefined;
-  try {
-    // Transaction pooling can move a client between server sessions after
-    // each commit. Pin only the capability lock in one bounded transaction;
-    // the operation uses the pool so its leases and convergence writes remain
-    // independently visible while deactivation waits on this transaction.
-    await lockClient.query("BEGIN");
-    await lockClient.query(
-      "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
-      [PUBLICATION_LIFECYCLE_LOCK],
-    );
-    const active = await lockClient.query<{ active: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM deployment_capabilities WHERE name = $1
-       ) AS active`,
-      [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
-    );
-    if (active.rows[0]?.active !== true) {
-      throw new PublicationLifecycleReleaseDarkError();
-    }
-    const result = await operation(db, pool);
-    await lockClient.query("COMMIT");
-    return result;
-  } catch (error) {
-    try {
-      await lockClient.query("ROLLBACK");
-    } catch (rollbackError) {
-      releaseError = databaseClientError(
-        rollbackError,
-        "publication lifecycle lock rollback failed",
+  return withPinnedDatabaseTransaction(
+    pool,
+    "publication lifecycle gate",
+    async (transaction, client) => {
+      // Use one transaction for the release lock, leases, nested job staging,
+      // and convergence writes. Trigger lock requests are then reentrant on
+      // the same backend even when deactivation is already waiting.
+      await client.query(
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
+        [PUBLICATION_LIFECYCLE_LOCK],
       );
-      throw new AggregateError(
-        [databaseClientError(error, "publication lifecycle operation failed"), releaseError],
-        "publication lifecycle operation and rollback failed",
+      const active = await client.query<{ active: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM deployment_capabilities WHERE name = $1
+         ) AS active`,
+        [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
       );
-    }
-    throw error;
-  } finally {
-    lockClient.release(releaseError);
-  }
+      if (active.rows[0]?.active !== true) {
+        throw new PublicationLifecycleReleaseDarkError();
+      }
+      return operation(transaction, client);
+    },
+  );
 }
 
 /** Park every gate while a mixed-version fleet can still enqueue old work. */

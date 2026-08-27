@@ -1,9 +1,7 @@
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
-import type { Database } from "@/lib/db";
-import { schema } from "@/lib/db";
+import { type Database, schema, withPinnedDatabaseTransaction } from "@/lib/db";
 import {
   computeEffectiveGate,
   envelopeSchema,
@@ -313,19 +311,17 @@ export async function withReviewDecisionScopeLock<T>(
   reviewId: number,
   operation: (db: Database) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
-  const db = drizzle(client, { schema });
-  try {
-    return await db.transaction(async (tx) => {
+  return withPinnedDatabaseTransaction(
+    pool,
+    "review decision scope",
+    async (transaction) => {
       // The production provider transaction-pools connections. Transaction
       // advisory locks remain attached to the backend for this bounded
       // reconciliation and release automatically on commit or rollback.
-      await lockReviewDecisionScopeById(tx as Database, reviewId);
-      return operation(tx as Database);
-    });
-  } finally {
-    client.release();
-  }
+      await lockReviewDecisionScopeById(transaction, reviewId);
+      return operation(transaction);
+    },
+  );
 }
 
 export async function lockReviewDecisionScopeById(

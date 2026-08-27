@@ -192,6 +192,7 @@ describe("private repository worker defense in depth", () => {
       activationStart,
     );
     const decisions = readFileSync("src/lib/finding-approvals.ts", "utf8");
+    const database = readFileSync("src/lib/db/index.ts", "utf8");
     const decisionStart = decisions.indexOf(
       "export async function withReviewDecisionScopeLock",
     );
@@ -204,20 +205,22 @@ describe("private repository worker defense in depth", () => {
     const activation = rollout.slice(activationStart, activationEnd);
     const decision = decisions.slice(decisionStart, decisionEnd);
     expect(shared).toContain("pg_advisory_xact_lock_shared");
-    expect(shared).toContain("const db = drizzle(pool");
-    expect(shared).toContain("operation(db, pool)");
-    expect(shared).not.toContain("operation(tx");
-    expect(shared).toContain("lockClient.release(releaseError)");
+    expect(shared).toContain("withPinnedDatabaseTransaction");
+    expect(shared).toContain("operation(transaction, client)");
+    expect(shared).not.toContain("drizzle(pool");
     expect(shared).not.toContain("pg_advisory_lock_shared");
     expect(shared).not.toContain("pg_advisory_unlock_shared");
     expect(activation).toContain("pg_advisory_xact_lock");
     expect(activation).toContain("client.release(releaseError)");
     expect(activation).not.toContain('query("ROLLBACK").catch');
     expect(activation).not.toContain("pg_advisory_unlock");
-    expect(decision).toContain("db.transaction");
+    expect(decision).toContain("withPinnedDatabaseTransaction");
     expect(decision).toContain("lockReviewDecisionScopeById");
     expect(decision).not.toContain("pg_advisory_lock(");
     expect(decision).not.toContain("pg_advisory_unlock(");
+    expect(database).toContain("clientDatabase.transaction");
+    expect(database).toContain("client.release(releaseError)");
+    expect(database).toContain("bodyFailed && error !== bodyError");
   });
 
   test("respond honors entitlement and release activation before tokens or provider access", () => {

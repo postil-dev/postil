@@ -612,9 +612,16 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
     const publication = withPublicationLifecycleReleaseActive(
       pool,
-      async () => {
+      async (_lockedDb, lockedClient) => {
         publicationLocked();
         await publicationHold;
+        await lockedClient.query(
+          `INSERT INTO jobs (kind, payload)
+           VALUES ('gate-state-sync', jsonb_build_object(
+             'reviewId', $1::bigint, 'reviewPublicId', $2::text
+           ))`,
+          [reviewId, review.rows[0]!.public_id],
+        );
       },
     );
     await publicationAcquired;
@@ -630,19 +637,15 @@ describeDb("publication receipt migration and lifecycle", () => {
     finishPublication();
     await publication;
     await expect(deactivation).resolves.toMatchObject({ deactivated: true });
-    const secondGate = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (kind, payload)
-       VALUES ('gate-state-sync', jsonb_build_object(
-         'reviewId', $1::bigint, 'reviewPublicId', $2::text
-       ))
-       RETURNING id`,
-      [reviewId, review.rows[0]!.public_id],
+    const parkedAfter = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM jobs
+        WHERE kind = 'gate-state-sync'
+          AND payload->>'reviewPublicId' = $1
+          AND run_after = 'infinity'::timestamptz`,
+      [review.rows[0]!.public_id],
     );
-    const parkedAfter = await pool.query<{ parked: boolean }>(
-      "SELECT run_after = 'infinity'::timestamptz AS parked FROM jobs WHERE id = $1",
-      [secondGate.rows[0]!.id],
-    );
-    expect(parkedAfter.rows[0]?.parked).toBe(true);
+    expect(Number(parkedAfter.rows[0]?.count ?? "0")).toBeGreaterThan(0);
     expect(await activatePublicationLifecycleRelease(pool)).toMatchObject({
       activated: true,
     });
