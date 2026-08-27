@@ -394,7 +394,8 @@ export async function runClaimedJob(
         !boundedWebhookRetry) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment) ||
       (job.kind === "github-reaction" && !malformedGithubReaction) ||
-      err instanceof ReviewPublicationReconciliationError;
+      err instanceof ReviewPublicationReconciliationError ||
+      err instanceof PublicationLifecycleReleaseDarkError;
     const outcome = reconcileIndefinitely
       ? await retryJobIndefinitely(
           getPool(),
@@ -404,7 +405,7 @@ export async function runClaimedJob(
             ? { startedAt: err.reconciliationStartedAt }
             : err instanceof PublicationLifecycleReleaseDarkError
               ? { startedAt: job.lockedAt }
-            : undefined,
+              : undefined,
         )
       : await failJob(getPool(), job, message, {
           permanent,
