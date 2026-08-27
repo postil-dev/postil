@@ -1,7 +1,8 @@
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Pool } from "pg";
 
-import { type Database, schema, withPinnedDatabaseTransaction } from "@/lib/db";
+import { type Database, schema } from "@/lib/db";
+import { withPinnedDatabaseTransaction } from "@/lib/db-transaction";
 import {
   computeEffectiveGate,
   envelopeSchema,

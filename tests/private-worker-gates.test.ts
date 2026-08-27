@@ -192,7 +192,7 @@ describe("private repository worker defense in depth", () => {
       activationStart,
     );
     const decisions = readFileSync("src/lib/finding-approvals.ts", "utf8");
-    const database = readFileSync("src/lib/db/index.ts", "utf8");
+    const database = readFileSync("src/lib/db-transaction.ts", "utf8");
     const decisionStart = decisions.indexOf(
       "export async function withReviewDecisionScopeLock",
     );

@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 
-import { type Database, withPinnedDatabaseTransaction } from "@/lib/db";
+import type { Database } from "@/lib/db";
+import { withPinnedDatabaseTransaction } from "@/lib/db-transaction";
 import { OPENROUTER_EXACT_LIMIT_MAX_MICROS } from "@/lib/openrouter-management-adapter";
 import {
   HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
