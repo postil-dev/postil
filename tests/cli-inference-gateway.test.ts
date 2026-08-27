@@ -12,6 +12,8 @@ import { join } from "node:path";
 
 import { Client, Pool } from "pg";
 
+import release from "@/data/public-cli-release.json";
+
 // Mirrors the private sha256() helper in src/lib/cli-auth.ts.
 function sha256(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
@@ -27,7 +29,19 @@ const ORIGINAL_ENV = {
   POSTIL_API_FORMAT: process.env.POSTIL_API_FORMAT,
   MODEL_API_KEY: process.env.MODEL_API_KEY,
   POSTIL_CLI_GATEWAY_HOURLY_CAP: process.env.POSTIL_CLI_GATEWAY_HOURLY_CAP,
+  POSTIL_HOSTED_INFERENCE_ENABLED: process.env.POSTIL_HOSTED_INFERENCE_ENABLED,
+  POSTIL_PROVISIONAL_HOSTED_ROSTER: process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER,
+  POSTIL_RELEASE_SHA: process.env.POSTIL_RELEASE_SHA,
 };
+
+test("uses the pinned CLI default when the managed provisional roster has no environment model", async () => {
+  const { hostedModelRoster } = await import("@/lib/cli-gateway");
+  expect(hostedModelRoster({}, "1")).toEqual([release.hostedCliDefaultModel]);
+  expect(hostedModelRoster({}, "0")).toEqual([]);
+  expect(hostedModelRoster({ model: "configured/model" }, "1")).toEqual([
+    "configured/model",
+  ]);
+});
 
 describeDb("POST /api/inference/v1/chat/completions", () => {
   const databaseName = `postil_cli_gateway_${process.pid}_${Date.now()}`;
@@ -68,6 +82,9 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     process.env.POSTIL_API_BASE = "https://mock-upstream.test/v1";
     process.env.POSTIL_API_FORMAT = "openai-compatible";
     process.env.MODEL_API_KEY = "test-fixture-upstream-key";
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = "1";
+    delete process.env.POSTIL_RELEASE_SHA;
     pool = new Pool({ connectionString: databaseUrl.toString(), max: 4 });
   }, 30_000);
 
@@ -89,6 +106,11 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
 
   afterEach(() => {
     globalThis.fetch = ORIGINAL_FETCH;
+    process.env.REVIEW_MODEL = "z-ai/glm-5.2";
+    process.env.REVIEW_MODEL_CASCADE = "moonshotai/kimi-k2.7-code";
+    process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = "1";
+    delete process.env.POSTIL_RELEASE_SHA;
   });
 
   async function createOrgWithHostedEntitlement(): Promise<number> {
@@ -250,6 +272,80 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       [orgId],
     );
     expect(reservations.rows.map((row) => row.status)).toEqual(["released"]);
+  });
+
+  test("forwards the pinned CLI default when the environment roster is empty", async () => {
+    delete process.env.REVIEW_MODEL;
+    delete process.env.REVIEW_MODEL_CASCADE;
+    let forwardedModel: unknown;
+    globalThis.fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        forwardedModel = JSON.parse(String(init?.body)).model;
+        return new Response(JSON.stringify({
+          id: "chatcmpl-pinned-default",
+          object: "chat.completion",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "ok" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { resolveHostedGatewayDefaultModel } = await import("@/lib/cli-gateway");
+    const orgId = await createOrgWithHostedEntitlement();
+    const token = await issueCliToken(orgId);
+
+    const response = await POST(
+      chatRequest(token, { messages: [{ role: "user", content: "hi" }] }),
+    );
+    expect(response.status).toBe(200);
+    expect(forwardedModel).toBe(release.hostedCliDefaultModel);
+    expect(await resolveHostedGatewayDefaultModel(pool!)).toBe(release.hostedCliDefaultModel);
+  });
+
+  test("keeps the gateway and advertised model dark while hosted inference is unavailable", async () => {
+    delete process.env.REVIEW_MODEL;
+    delete process.env.REVIEW_MODEL_CASCADE;
+    let upstreamCalled = false;
+    globalThis.fetch = Object.assign(
+      async () => {
+        upstreamCalled = true;
+        throw new Error("unavailable hosted inference must not call upstream");
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { resolveHostedGatewayDefaultModel } = await import("@/lib/cli-gateway");
+
+    for (const [enabled, releaseSha] of [
+      ["0", undefined],
+      ["1", "c".repeat(40)],
+    ] as const) {
+      process.env.POSTIL_HOSTED_INFERENCE_ENABLED = enabled;
+      if (releaseSha === undefined) delete process.env.POSTIL_RELEASE_SHA;
+      else process.env.POSTIL_RELEASE_SHA = releaseSha;
+      const orgId = await createOrgWithHostedEntitlement();
+      const token = await issueCliToken(orgId);
+
+      const response = await POST(
+        chatRequest(token, { messages: [{ role: "user", content: "hi" }] }),
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        error: { message: "hosted inference is unavailable", type: "unavailable" },
+      });
+      expect(await resolveHostedGatewayDefaultModel(pool!)).toBeNull();
+      const reservations = await pool!.query(
+        `SELECT 1 FROM hosted_usage_reservations WHERE org_id = $1`,
+        [orgId],
+      );
+      expect(reservations.rows).toHaveLength(0);
+    }
+    expect(upstreamCalled).toBe(false);
   });
 
   test("rejects stream: true with 400 without ever calling upstream", async () => {

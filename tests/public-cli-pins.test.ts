@@ -68,6 +68,7 @@ describe("public CLI pins", () => {
   test("pins the deployed Linux artifact digest", () => {
     expect(release.hostedCliCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(release.hostedCliRelease).toMatch(/^v\d+\.\d+\.\d+$/);
+    expect(release.hostedCliDefaultModel).toMatch(/^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/);
     expect(release.hostedCliLinuxX86_64Sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(
       parseReleaseChecksum(

@@ -1,6 +1,10 @@
+import type { Pool } from "pg";
+
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import { bearerCliToken, resolveCliToken, touchCliTokenLastUsed } from "@/lib/cli-auth";
 import type { Database } from "@/lib/db";
+import release from "@/data/public-cli-release.json";
+import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
 import {
   countCliGatewayReservationsLastHour,
   reconcileHostedCliGatewaySpend,
@@ -45,20 +49,26 @@ function cliGatewayHourlyCap(): number {
 }
 
 /**
- * The roster Postil already operates for hosted inference: the default model
- * and cascade the deployment is configured with, the same values
- * `resolveLlmConfig` hands the worker's spawned CLI for every hosted review.
- * There is no separate roster table in this repository to defer to instead.
+ * The hosted inference roster follows the deployment's configured default and
+ * cascade. Managed provisional mode falls back to the exact default pinned for
+ * the hosted CLI release when the deployment deliberately omits those values.
  */
-function hostedModelRoster(llm: { model?: string; modelCascade?: string }): string[] {
+export function hostedModelRoster(
+  llm: { model?: string; modelCascade?: string },
+  provisionalRoster = optionalEnv("POSTIL_PROVISIONAL_HOSTED_ROSTER", "0") as string,
+): string[] {
   const models = [llm.model, ...(llm.modelCascade ?? "").split(",")]
     .map((model) => model?.trim())
     .filter((model): model is string => Boolean(model));
+  if (models.length === 0 && provisionalRoster === "1") {
+    models.push(release.hostedCliDefaultModel);
+  }
   return Array.from(new Set(models));
 }
 
 /** The model `postil login` reports as the gateway's default, shared with the roster above. */
-export async function resolveHostedGatewayDefaultModel(): Promise<string | null> {
+export async function resolveHostedGatewayDefaultModel(pool: Pool): Promise<string | null> {
+  if (!(await hostedInferenceAvailable(pool))) return null;
   const llm = await resolveLlmConfig(null);
   return hostedModelRoster(llm)[0] ?? null;
 }
@@ -93,6 +103,7 @@ function extractUpstreamUsage(upstreamJson: unknown): UpstreamUsage {
 
 export async function runCliGatewayChatCompletion(
   db: Database,
+  pool: Pool,
   authorizationHeader: string | null,
   rawBody: string,
 ): Promise<CliGatewayResult> {
@@ -146,14 +157,19 @@ export async function runCliGatewayChatCompletion(
     return errorResult(402, access.reason, "entitlement");
   }
 
-  // 5. Reserve spend under the same fail-closed reservation layer the worker uses.
+  // 5. Honor the managed release pause and exact-image activation gate.
+  if (!(await hostedInferenceAvailable(pool))) {
+    return errorResult(503, "hosted inference is unavailable", "unavailable");
+  }
+
+  // 6. Reserve spend under the same fail-closed reservation layer the worker uses.
   const reservation = await reserveHostedCliGatewaySpend(db, { orgId: resolved.orgId });
   if (!reservation.allowed || !reservation.reservationId) {
     return errorResult(402, reservation.reason, "entitlement");
   }
   const reservationId = reservation.reservationId;
 
-  // 6. Restrict the requested model to the hosted roster.
+  // 7. Restrict the requested model to the hosted roster.
   const llm = await resolveLlmConfig(null);
   if (llm.apiFormat !== "openai-compatible") {
     await releaseHostedCliGatewaySpend(db, reservationId);
@@ -193,7 +209,7 @@ export async function runCliGatewayChatCompletion(
     );
   }
 
-  // 7. Proxy upstream with Postil's credential. The inbound Authorization
+  // 8. Proxy upstream with Postil's credential. The inbound Authorization
   // header (the caller's CLI token) is never forwarded; only the resolved
   // upstream credential is sent, and it is never echoed back to the caller.
   const upstreamRequestBody: Record<string, unknown> = { ...parsed, model };
