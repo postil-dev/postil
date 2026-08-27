@@ -44,7 +44,9 @@ export const OPERATIONAL_REVIEW_FAILURE_SQL = `status = 'failed' AND COALESCE(er
  * `.postil/operational` or `.postil/model-output` sentinel with an
  * `invalidOutput` incident. Counting both shapes turns one upstream failure
  * into two operational signals. A second operational sentinel remains a
- * distinct failure, such as incomplete coverage.
+ * distinct failure, such as incomplete coverage. A recovered invalid-output
+ * incident cannot explain a remaining operational sentinel, so that mixed
+ * shape stays fail-closed.
  */
 export const COMPLETED_REVIEW_OPERATIONAL_SENTINEL_SQL = `status = 'completed' AND EXISTS (
   SELECT 1 FROM jsonb_array_elements(

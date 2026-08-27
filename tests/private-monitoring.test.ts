@@ -1371,6 +1371,24 @@ describeDb("private monitoring durability", () => {
         "scorer-failures": true,
         "invalid-model-output": false,
       });
+
+      await clearReviews();
+      await insertCompleted(909, {
+        findings: [{ path: ".postil/operational" }],
+        modelIncidents: [
+          {
+            phase: "review",
+            category: "invalidOutput",
+            recovered: true,
+            recovery: "repair",
+          },
+        ],
+      });
+      expect(await classifiedChecks()).toEqual({
+        "review-operational-failures": false,
+        "scorer-failures": true,
+        "invalid-model-output": true,
+      });
     } finally {
       await pool.query(
         "DELETE FROM installations WHERE github_installation_id = 900038",
