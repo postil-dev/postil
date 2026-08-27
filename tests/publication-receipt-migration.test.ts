@@ -651,6 +651,73 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
   });
 
+  test("trigger producers park without waiting behind queued deactivation", async () => {
+    const transitionPool = new Pool({ connectionString: TEST_URL, max: 3 });
+    const reviewId = await createRunningReview("6".repeat(40), null, 74, false);
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    let holderAcquired!: () => void;
+    const acquired = new Promise<void>((resolve) => {
+      holderAcquired = resolve;
+    });
+    const holder = withPublicationLifecycleReleaseActive(
+      transitionPool,
+      async () => {
+        holderAcquired();
+        await holderReleased;
+      },
+    );
+    await acquired;
+    const deactivation = deactivatePublicationLifecycleRelease(transitionPool);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const client = await transitionPool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL statement_timeout = '2s'");
+        await client.query(
+          "UPDATE reviews SET envelope = $2::jsonb WHERE id = $1",
+          [reviewId, JSON.stringify(envelope({ head: "6".repeat(40) }))],
+        );
+        const gate = await client.query<{ parked: boolean; dark: boolean }>(
+          `INSERT INTO jobs (kind, payload)
+           VALUES ('gate-state-sync', jsonb_build_object(
+             'reviewId', $1::bigint, 'reviewPublicId', (
+               SELECT public_id::text FROM reviews WHERE id = $1
+             )
+           ))
+           RETURNING
+             run_after = 'infinity'::timestamptz AS parked,
+             payload ? '_postilPublicationLifecycleDark' AS dark`,
+          [reviewId],
+        );
+        await client.query("COMMIT");
+        expect(gate.rows[0]).toEqual({ parked: true, dark: true });
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    } finally {
+      releaseHolder();
+      await holder;
+      await deactivation;
+      await transitionPool.end();
+    }
+    const lifecycle = await pool.query<{ required: boolean }>(
+      `SELECT publication_lifecycle_required_at IS NOT NULL AS required
+         FROM reviews WHERE id = $1`,
+      [reviewId],
+    );
+    expect(lifecycle.rows[0]?.required).toBe(true);
+    expect(await activatePublicationLifecycleRelease(pool)).toMatchObject({
+      activated: true,
+    });
+  });
+
   test("pull-request decision lock blocks a newer staged recurrence", async () => {
     const firstId = await createRunningReview("4".repeat(40), null, 73, false);
     const secondId = await createRunningReview(
