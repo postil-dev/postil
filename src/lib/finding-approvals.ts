@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 
 import { type Database, schema } from "@/lib/db";
 import { withPinnedDatabaseTransaction } from "@/lib/db-transaction";
+import { lockPublicationLifecycleShared } from "@/lib/publication-lifecycle-lock";
 import {
   computeEffectiveGate,
   envelopeSchema,
@@ -319,6 +320,7 @@ export async function withReviewDecisionScopeLock<T>(
       // The production provider transaction-pools connections. Transaction
       // advisory locks remain attached to the backend for this bounded
       // reconciliation and release automatically on commit or rollback.
+      await lockPublicationLifecycleShared(transaction);
       await lockReviewDecisionScopeById(transaction, reviewId);
       return operation(transaction);
     },

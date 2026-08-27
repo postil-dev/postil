@@ -2,6 +2,10 @@ import type { Pool, PoolClient } from "pg";
 
 import type { Database } from "@/lib/db";
 import { withPinnedDatabaseTransaction } from "@/lib/db-transaction";
+import {
+  lockPublicationLifecycleShared,
+  PUBLICATION_LIFECYCLE_LOCK,
+} from "@/lib/publication-lifecycle-lock";
 import { OPENROUTER_EXACT_LIMIT_MAX_MICROS } from "@/lib/openrouter-management-adapter";
 import {
   HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
@@ -26,7 +30,6 @@ export const HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY =
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
 export const PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY =
   "publication-lifecycle-fleet-active";
-const PUBLICATION_LIFECYCLE_LOCK = "postil:publication-lifecycle-release";
 const PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY =
   "_postilPublicationLifecycleDark";
 
@@ -66,10 +69,7 @@ export async function withPublicationLifecycleReleaseActive<T>(
       // Use one transaction for the release lock, leases, nested job staging,
       // and convergence writes. Trigger lock requests are then reentrant on
       // the same backend even when deactivation is already waiting.
-      await client.query(
-        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
-        [PUBLICATION_LIFECYCLE_LOCK],
-      );
+      await lockPublicationLifecycleShared(transaction);
       const active = await client.query<{ active: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM deployment_capabilities WHERE name = $1

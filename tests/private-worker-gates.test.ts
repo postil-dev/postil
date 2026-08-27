@@ -193,6 +193,10 @@ describe("private repository worker defense in depth", () => {
     );
     const decisions = readFileSync("src/lib/finding-approvals.ts", "utf8");
     const database = readFileSync("src/lib/db-transaction.ts", "utf8");
+    const lifecycleLock = readFileSync(
+      "src/lib/publication-lifecycle-lock.ts",
+      "utf8",
+    );
     const decisionStart = decisions.indexOf(
       "export async function withReviewDecisionScopeLock",
     );
@@ -204,8 +208,9 @@ describe("private repository worker defense in depth", () => {
     const shared = rollout.slice(sharedStart, sharedEnd);
     const activation = rollout.slice(activationStart, activationEnd);
     const decision = decisions.slice(decisionStart, decisionEnd);
-    expect(shared).toContain("pg_advisory_xact_lock_shared");
+    expect(lifecycleLock).toContain("pg_advisory_xact_lock_shared");
     expect(shared).toContain("withPinnedDatabaseTransaction");
+    expect(shared).toContain("lockPublicationLifecycleShared(transaction)");
     expect(shared).toContain("operation(transaction, client)");
     expect(shared).not.toContain("drizzle(pool");
     expect(shared).not.toContain("pg_advisory_lock_shared");
@@ -215,7 +220,11 @@ describe("private repository worker defense in depth", () => {
     expect(activation).not.toContain('query("ROLLBACK").catch');
     expect(activation).not.toContain("pg_advisory_unlock");
     expect(decision).toContain("withPinnedDatabaseTransaction");
+    expect(decision).toContain("lockPublicationLifecycleShared(transaction)");
     expect(decision).toContain("lockReviewDecisionScopeById");
+    expect(decision.indexOf("lockPublicationLifecycleShared(transaction)")).toBeLessThan(
+      decision.indexOf("lockReviewDecisionScopeById"),
+    );
     expect(decision).not.toContain("pg_advisory_lock(");
     expect(decision).not.toContain("pg_advisory_unlock(");
     expect(database).toContain("clientDatabase.transaction");
