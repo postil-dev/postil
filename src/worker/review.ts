@@ -1873,6 +1873,10 @@ export async function runReviewJob(
           );
         }
       } catch (error) {
+        // Required-conversation rules make terminal Postil thread state part
+        // of publishing the verdict. Keep the merge gate pending here; the
+        // runner retries this staged, already-accounted review through
+        // resumeStagedReviewCompletion without rerunning inference.
         throw new ReviewPublicationReconciliationError(
           `publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
         );
