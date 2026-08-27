@@ -341,7 +341,7 @@ describe("private repository worker defense in depth", () => {
     const catchStart = source.indexOf(
       "} catch (err) {",
       source.indexOf(
-        'reviewLog.line("publication lifecycle observation deferred")',
+        'reviewLog.line("publication lifecycle reconciliation deferred")',
       ),
     );
     const catchEnd = source.indexOf("} finally {", catchStart);
@@ -414,7 +414,7 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
       "} catch (err) {",
-      source.indexOf('reviewLog.line("publication lifecycle observation deferred")'),
+      source.indexOf('reviewLog.line("publication lifecycle reconciliation deferred")'),
     );
     const failureUpdate = source.indexOf("const failedRows", catchStart);
     const supersessionRace = source.slice(catchStart, failureUpdate);
