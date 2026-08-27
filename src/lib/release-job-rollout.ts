@@ -31,6 +31,10 @@ const PUBLICATION_LIFECYCLE_LOCK = "postil:publication-lifecycle-release";
 const PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY =
   "_postilPublicationLifecycleDark";
 
+function databaseClientError(error: unknown, fallback: string): Error {
+  return error instanceof Error ? error : new Error(fallback);
+}
+
 export class PublicationLifecycleReleaseDarkError extends Error {
   override name = "PublicationLifecycleReleaseDarkError";
 
@@ -58,6 +62,7 @@ export async function withPublicationLifecycleReleaseActive<T>(
 ): Promise<T> {
   const lockClient = await pool.connect();
   const db = drizzle(pool, { schema });
+  let releaseError: Error | undefined;
   try {
     // Transaction pooling can move a client between server sessions after
     // each commit. Pin only the capability lock in one bounded transaction;
@@ -81,10 +86,21 @@ export async function withPublicationLifecycleReleaseActive<T>(
     await lockClient.query("COMMIT");
     return result;
   } catch (error) {
-    await lockClient.query("ROLLBACK").catch(() => undefined);
+    try {
+      await lockClient.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "publication lifecycle lock rollback failed",
+      );
+      throw new AggregateError(
+        [databaseClientError(error, "publication lifecycle operation failed"), releaseError],
+        "publication lifecycle operation and rollback failed",
+      );
+    }
     throw error;
   } finally {
-    lockClient.release();
+    lockClient.release(releaseError);
   }
 }
 
@@ -93,6 +109,7 @@ export async function deactivatePublicationLifecycleRelease(
   pool: Pool,
 ): Promise<{ deactivated: boolean; parked: number }> {
   const client = await pool.connect();
+  let releaseError: Error | undefined;
   try {
     await client.query("BEGIN");
     await client.query(
@@ -122,10 +139,21 @@ export async function deactivatePublicationLifecycleRelease(
       parked: parked.rowCount ?? 0,
     };
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "publication lifecycle deactivation rollback failed",
+      );
+      throw new AggregateError(
+        [databaseClientError(error, "publication lifecycle deactivation failed"), releaseError],
+        "publication lifecycle deactivation and rollback failed",
+      );
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(releaseError);
   }
 }
 
@@ -139,6 +167,7 @@ export async function activatePublicationLifecycleRelease(
   released: number;
 }> {
   const client = await pool.connect();
+  let releaseError: Error | undefined;
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
@@ -263,10 +292,21 @@ export async function activatePublicationLifecycleRelease(
       released: released.rowCount ?? 0,
     };
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "publication lifecycle activation rollback failed",
+      );
+      throw new AggregateError(
+        [databaseClientError(error, "publication lifecycle activation failed"), releaseError],
+        "publication lifecycle activation and rollback failed",
+      );
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(releaseError);
   }
 }
 

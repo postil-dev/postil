@@ -207,9 +207,12 @@ describe("private repository worker defense in depth", () => {
     expect(shared).toContain("const db = drizzle(pool");
     expect(shared).toContain("operation(db, pool)");
     expect(shared).not.toContain("operation(tx");
+    expect(shared).toContain("lockClient.release(releaseError)");
     expect(shared).not.toContain("pg_advisory_lock_shared");
     expect(shared).not.toContain("pg_advisory_unlock_shared");
     expect(activation).toContain("pg_advisory_xact_lock");
+    expect(activation).toContain("client.release(releaseError)");
+    expect(activation).not.toContain('query("ROLLBACK").catch');
     expect(activation).not.toContain("pg_advisory_unlock");
     expect(decision).toContain("db.transaction");
     expect(decision).toContain("lockReviewDecisionScopeById");
