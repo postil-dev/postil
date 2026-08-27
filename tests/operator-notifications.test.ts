@@ -129,14 +129,15 @@ describe("ilert event transport", () => {
 });
 
 describe("configured monitoring alert transport", () => {
-  test("logs and reports delivered when no integration key is configured", async () => {
+  test("fails closed when no integration key is configured", async () => {
     const previous = process.env.ILERT_INTEGRATION_KEY;
     delete process.env.ILERT_INTEGRATION_KEY;
     try {
-      const result = await configuredMonitoringAlertTransport().send(
-        notification(),
+      await expect(
+        configuredMonitoringAlertTransport().send(notification()),
+      ).rejects.toThrow(
+        "ILERT_INTEGRATION_KEY is required for monitoring alert delivery",
       );
-      expect(result).toEqual({ messageId: null });
     } finally {
       if (previous !== undefined) process.env.ILERT_INTEGRATION_KEY = previous;
     }

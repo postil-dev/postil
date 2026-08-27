@@ -1857,7 +1857,7 @@ export const serviceHeartbeats = pgTable(
   (t) => [
     check(
       "service_heartbeats_component_check",
-      sql`${t.component} IN ('worker', 'monitor')`,
+      sql`${t.component} IN ('worker', 'monitor', 'monitor-heartbeat-delivery')`,
     ),
     check(
       "service_heartbeats_instance_nonempty",

@@ -15,6 +15,7 @@ mock.module("@/lib/db", () => ({
 
 const livenessRoute = await import("@/app/api/health/route");
 const dependenciesRoute = await import("@/app/api/health/dependencies/route");
+const monitorRoute = await import("@/app/api/health/monitor/route");
 
 beforeEach(() => {
   queryCount = 0;
@@ -71,5 +72,82 @@ describe("/api/health/dependencies", () => {
       error: "database health check failed",
     });
     expect(queryCount).toBe(1);
+  });
+});
+
+describe("/api/health/monitor", () => {
+  test("reports healthy only when process, collection, and heartbeat delivery are fresh", async () => {
+    queryImpl = async (text: string) => {
+      expect(text).toContain("component = 'monitor'");
+      expect(text).toContain("last_completed_at");
+      expect(text).toContain("component = 'monitor-heartbeat-delivery'");
+      return {
+        rows: [
+          {
+            process_age_seconds: "30",
+            collection_age_seconds: "45",
+            heartbeat_delivery_age_seconds: "60",
+          },
+        ],
+      };
+    };
+
+    const response = await monitorRoute.GET();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      ok: true,
+      monitor: {
+        process: "up",
+        collection: "up",
+        heartbeatDelivery: "up",
+      },
+    });
+    expect(queryCount).toBe(1);
+  });
+
+  test("distinguishes stale and missing monitor evidence", async () => {
+    queryImpl = async () => ({
+      rows: [
+        {
+          process_age_seconds: "901",
+          collection_age_seconds: "2147483647",
+          heartbeat_delivery_age_seconds: "900",
+        },
+      ],
+    });
+
+    const response = await monitorRoute.GET();
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      ok: false,
+      monitor: {
+        process: "stale",
+        collection: "missing",
+        heartbeatDelivery: "stale",
+      },
+    });
+  });
+
+  test("fails closed without disclosing database errors", async () => {
+    queryImpl = async () => {
+      throw new Error("private database endpoint");
+    };
+
+    const response = await monitorRoute.GET();
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      ok: false,
+      monitor: {
+        process: "unknown",
+        collection: "unknown",
+        heartbeatDelivery: "unknown",
+      },
+    });
   });
 });

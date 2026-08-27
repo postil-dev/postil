@@ -12,6 +12,7 @@ import { NON_OPERATIONAL_REVIEW_FAILURE_MESSAGES } from "@/lib/review-outcome";
 import {
   acquirePrivateMonitorLease,
   claimPrivateMonitoringNotifications,
+  deliverExternalMonitorHeartbeat,
   deliverPrivateMonitoringNotification,
   finishPrivateMonitoringPass,
   getPrivateMonitoringDashboard,
@@ -34,6 +35,79 @@ const NOW = new Date("2026-07-19T12:00:00.000Z");
 const BUCKET = new Date("2026-07-19T12:00:00.000Z");
 
 describe("private monitoring public probes", () => {
+  test("records external heartbeat delivery only after a successful response", async () => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    let redirect: RequestRedirect | undefined;
+    const pool = {
+      query: async (text: string, values: unknown[]) => {
+        queries.push({ text, values });
+        return { rowCount: 1, rows: [] };
+      },
+    } as unknown as Pool;
+    const result = await deliverExternalMonitorHeartbeat(pool, {
+      url: "https://beat.example.test/api/pings/example",
+      instanceId: "monitor-a",
+      now: NOW,
+      fetchImpl: async (_input, init) => {
+        redirect = init?.redirect;
+        return new Response(null, { status: 204 });
+      },
+    });
+
+    expect(result).toBe("delivered");
+    expect(redirect).toBe("error");
+    expect(queries).toHaveLength(1);
+    expect(queries[0]?.text).toContain("INSERT INTO service_heartbeats");
+    expect(queries[0]?.values).toEqual([
+      "monitor-heartbeat-delivery",
+      "monitor-a",
+      NOW,
+    ]);
+  });
+
+  test("does not record an external heartbeat when delivery fails or is disabled", async () => {
+    let queryCount = 0;
+    let fetchCount = 0;
+    const pool = {
+      query: async () => {
+        queryCount += 1;
+        return { rowCount: 1, rows: [] };
+      },
+    } as unknown as Pool;
+
+    expect(
+      await deliverExternalMonitorHeartbeat(pool, {
+        url: undefined,
+        instanceId: "monitor-a",
+        fetchImpl: async () => {
+          fetchCount += 1;
+          return new Response(null, { status: 204 });
+        },
+      }),
+    ).toBe("disabled");
+    await expect(
+      deliverExternalMonitorHeartbeat(pool, {
+        url: "https://beat.example.test/api/pings/example",
+        instanceId: "monitor-a",
+        fetchImpl: async () => {
+          fetchCount += 1;
+          return new Response(null, { status: 503 });
+        },
+      }),
+    ).rejects.toThrow("external monitor heartbeat returned HTTP 503");
+    await expect(
+      deliverExternalMonitorHeartbeat(pool, {
+        url: "http://beat.example.test/api/pings/example",
+        instanceId: "monitor-a",
+      }),
+    ).rejects.toThrow(
+      "external monitor heartbeat URL must use HTTPS without URL user info",
+    );
+
+    expect(fetchCount).toBe(1);
+    expect(queryCount).toBe(0);
+  });
+
   test("alerts once in every six-hour database-outage bucket", () => {
     let state: MonitorPassFailureState = {
       bucket: null,
@@ -1040,6 +1114,27 @@ describeDb("private monitoring durability", () => {
     ).find((check) => check.key === "worker-heartbeat");
     expect(defaultCheck?.healthy).toBe(false);
     expect(relaxedCheck?.healthy).toBe(true);
+  });
+
+  test("persists the external heartbeat delivery component", async () => {
+    await recordServiceHeartbeat(
+      pool,
+      "monitor-heartbeat-delivery",
+      "monitor-delivery-a",
+      NOW,
+    );
+    const result = await pool.query<{
+      instance_id: string;
+      observed_at: Date;
+    }>(
+      `SELECT instance_id, observed_at
+         FROM service_heartbeats
+        WHERE component = 'monitor-heartbeat-delivery'`,
+    );
+
+    expect(result.rows).toEqual([
+      { instance_id: "monitor-delivery-a", observed_at: NOW },
+    ]);
   });
 
   test("reports healthy queue and signup state from a fresh database", async () => {

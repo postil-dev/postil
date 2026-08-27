@@ -1,0 +1,2 @@
+ALTER TABLE "service_heartbeats" DROP CONSTRAINT "service_heartbeats_component_check";--> statement-breakpoint
+ALTER TABLE "service_heartbeats" ADD CONSTRAINT "service_heartbeats_component_check" CHECK ("service_heartbeats"."component" IN ('worker', 'monitor', 'monitor-heartbeat-delivery'));
