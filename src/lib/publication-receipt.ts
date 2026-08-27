@@ -384,6 +384,7 @@ export async function persistPublicationReceipt(
 
 export interface PublicationThreadObservation {
   githubCommentId: string;
+  githubThreadId?: string;
   state: "inline" | "resolved" | "outdated" | "deleted";
 }
 
@@ -412,13 +413,22 @@ export async function applyPublicationThreadObservations(
   }
 }
 
-export async function getPullRequestPublicationCommentIds(
+export interface PullRequestPublicationThreadPlan {
+  commentIds: string[];
+  resolveCommentIds: string[];
+}
+
+/** Load every owned thread plus the subset whose finding is no longer active. */
+export async function getPullRequestPublicationThreadPlan(
   db: Database,
   repositoryId: number,
   prNumber: number,
-): Promise<string[]> {
+): Promise<PullRequestPublicationThreadPlan> {
   const rows = await db
-    .selectDistinct({ githubCommentId: schema.findingPublications.githubCommentId })
+    .select({
+      githubCommentId: schema.findingPublications.githubCommentId,
+      currentState: schema.findingPublications.currentState,
+    })
     .from(schema.findingPublications)
     .innerJoin(schema.reviews, eq(schema.reviews.id, schema.findingPublications.reviewId))
     .where(
@@ -428,7 +438,19 @@ export async function getPullRequestPublicationCommentIds(
         sql`${schema.findingPublications.githubCommentId} IS NOT NULL`,
       ),
     );
-  return rows.flatMap((row) => (row.githubCommentId ? [row.githubCommentId] : []));
+  const commentIds = new Set<string>();
+  const resolveCommentIds = new Set<string>();
+  for (const row of rows) {
+    if (!row.githubCommentId) continue;
+    commentIds.add(row.githubCommentId);
+    if (row.currentState === "resolved" || row.currentState === "suppressed") {
+      resolveCommentIds.add(row.githubCommentId);
+    }
+  }
+  return {
+    commentIds: [...commentIds].sort(),
+    resolveCommentIds: [...resolveCommentIds].sort(),
+  };
 }
 
 export interface PublicationCounts {

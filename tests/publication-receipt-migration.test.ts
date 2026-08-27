@@ -14,6 +14,7 @@ import {
 } from "@/lib/org-reviews";
 import {
   applyPublicationThreadObservations,
+  getPullRequestPublicationThreadPlan,
   getReviewPublicationCounts,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
@@ -281,7 +282,7 @@ describeDb("publication receipt migration and lifecycle", () => {
       firstId,
       envelope({
         head: "b".repeat(40),
-        findings: [finding("inline-id"), finding("summary-id")],
+        findings: [finding("inline-id"), finding("summary-id"), finding("resolved-id")],
       }),
       {
         version: 1,
@@ -301,6 +302,13 @@ describeDb("publication receipt migration and lifecycle", () => {
             initialOutcome: "summaryOnly",
             inlineRejected: false,
           },
+          {
+            findingId: "resolved-id",
+            stableIdentity: true,
+            initialOutcome: "inline",
+            inlineRejected: false,
+            commentId: "8002",
+          },
         ],
       },
     );
@@ -312,7 +320,7 @@ describeDb("publication receipt migration and lifecycle", () => {
         head: "c".repeat(40),
         since: "b".repeat(40),
         findings: [finding("inline-id", "[carried from previous review]\n\nA complete finding body.")],
-        resolved: [finding("summary-id")],
+        resolved: [finding("summary-id"), finding("resolved-id")],
       }),
       {
         version: 1,
@@ -326,6 +334,12 @@ describeDb("publication receipt migration and lifecycle", () => {
           },
           {
             findingId: "summary-id",
+            stableIdentity: true,
+            initialOutcome: "resolved",
+            inlineRejected: false,
+          },
+          {
+            findingId: "resolved-id",
             stableIdentity: true,
             initialOutcome: "resolved",
             inlineRejected: false,
@@ -345,8 +359,16 @@ describeDb("publication receipt migration and lifecycle", () => {
     );
     expect(rows.rows).toEqual([
       { finding_id: "inline-id", initial_state: "inline", current_state: "carried" },
+      { finding_id: "resolved-id", initial_state: "inline", current_state: "resolved" },
       { finding_id: "summary-id", initial_state: "summaryOnly", current_state: "resolved" },
     ]);
+
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002"],
+      resolveCommentIds: ["8002"],
+    });
 
     await applyPublicationThreadObservations(db, [
       { githubCommentId: "8001", state: "inline" },
