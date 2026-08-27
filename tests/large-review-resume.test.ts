@@ -9,11 +9,15 @@ import {
   hashEffectiveReviewConfiguration,
   largeReviewAttemptKey,
   largeReviewRunKey,
+  canonicalOpenRouterRequestHeaders,
+  inspectOpenRouterFailure,
+  openRouterFailureDiagnostics,
   privateUpstreamAllowed,
   providerIdentity,
   startLargeReviewProviderProxy,
   type AttemptClaim,
   type LargeReviewAttemptStore,
+  type LargeReviewProviderDiagnostic,
   type LargeReviewRunContext,
   type LargeReviewRunIdentity,
   type StoredProviderResponse,
@@ -100,6 +104,14 @@ class MemoryAttemptStore implements LargeReviewAttemptStore {
   }
 }
 
+class FailingCompleteAttemptStore extends MemoryAttemptStore {
+  override async completeAttempt(
+    _input: Parameters<LargeReviewAttemptStore["completeAttempt"]>[0],
+  ): Promise<void> {
+    throw new Error("test persistence failure");
+  }
+}
+
 function proxySeed(upstreamApiBase: string) {
   return {
     upstreamApiBase,
@@ -162,6 +174,276 @@ const successfulBody = JSON.stringify({
 });
 
 describe("durable large-review provider proxy", () => {
+  test("uses the canonical OpenRouter metadata header", () => {
+    const forwarded = canonicalOpenRouterRequestHeaders(
+      new Headers({
+        authorization: "Bearer request-token",
+        "x-openrouter-experimental-metadata": "enabled",
+        "x-openrouter-metadata": "disabled",
+      }),
+    );
+    expect(forwarded.get("x-openrouter-metadata")).toBe("enabled");
+    expect(forwarded.get("x-openrouter-experimental-metadata")).toBeNull();
+    expect(forwarded.get("authorization")).toBe("Bearer request-token");
+  });
+
+  test("extracts ordered attempts from every supported upstream failure status", () => {
+    const error = { error: { type: "provider_error", message: "unavailable" } };
+    const body = JSON.stringify({
+      ...error,
+      openrouter_metadata: {
+        attempts: [
+          { provider: " Azure ", status: 503 },
+          { provider: "Novita", status: 200 },
+        ],
+        region: "discarded",
+      },
+    });
+    for (const status of [502, 503, 504, 529]) {
+      const inspection = inspectOpenRouterFailure({
+        isCanonicalOpenRouter: true,
+        status,
+        body,
+      });
+      expect(inspection.attempts).toEqual([
+        { ordinal: 1, provider: "Azure", status: 503 },
+        { ordinal: 2, provider: "Novita", status: 200 },
+      ]);
+      expect(JSON.parse(inspection.body)).toEqual(error);
+    }
+
+    const diagnostics = openRouterFailureDiagnostics({
+      isCanonicalOpenRouter: true,
+      status: 503,
+      body,
+      reviewId: 42,
+      requestSha256: "f".repeat(64),
+    });
+    expect(diagnostics.diagnostics).toEqual([
+      {
+        event: "postil.large_review.provider_failure",
+        source: "upstream",
+        review_id: 42,
+        request_sha256: "f".repeat(64),
+        upstream_status: 503,
+        attempt_ordinal: 1,
+        provider: "Azure",
+        attempted_status: 503,
+      },
+      {
+        event: "postil.large_review.provider_failure",
+        source: "upstream",
+        review_id: 42,
+        request_sha256: "f".repeat(64),
+        upstream_status: 503,
+        attempt_ordinal: 2,
+        provider: "Novita",
+        attempted_status: 200,
+      },
+    ]);
+  });
+
+  test("filters malformed attempts and provider labels without forwarding metadata", () => {
+    const body = JSON.stringify({
+      error: { type: "provider_error" },
+      preserved: "value",
+      openrouter_metadata: {
+        attempts: [
+          { provider: " Azure ", status: 503 },
+          { provider: "bad\nprovider", status: 200 },
+          { provider: "https://provider.example", status: 200 },
+          { provider: "www.provider.example", status: 200 },
+          { provider: ["sk", "live-123456789012"].join("-"), status: 200 },
+          {
+            provider: [
+              "eyJhbGciOiJIUzI1NiJ9",
+              "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+              "signature-part-is-long",
+            ].join("."),
+            status: 200,
+          },
+          { provider: "a".repeat(81), status: 200 },
+          { provider: "Novita", status: "200" },
+          { provider: "Novita", status: 99 },
+          { provider: "Novita", status: 600 },
+          { provider: "Z.AI", status: 429 },
+        ],
+        extra: "ignored",
+      },
+    });
+    const inspection = inspectOpenRouterFailure({
+      isCanonicalOpenRouter: true,
+      status: 503,
+      body,
+    });
+    expect(inspection.attempts).toEqual([
+      { ordinal: 1, provider: "Azure", status: 503 },
+    ]);
+    expect(JSON.parse(inspection.body)).toEqual({
+      error: { type: "provider_error" },
+      preserved: "value",
+    });
+
+    expect(
+      inspectOpenRouterFailure({
+        isCanonicalOpenRouter: true,
+        status: 503,
+        body: JSON.stringify({
+          error: { type: "provider_error" },
+          openrouter_metadata: { attempts: "malformed" },
+        }),
+      }),
+    ).toMatchObject({
+      attempts: [],
+      body: JSON.stringify({ error: { type: "provider_error" } }),
+    });
+    expect(
+      inspectOpenRouterFailure({
+        isCanonicalOpenRouter: true,
+        status: 503,
+        body: "not-json",
+      }),
+    ).toEqual({ body: "not-json", attempts: [] });
+  });
+
+  test("caps valid provider attempts at eight while preserving order", () => {
+    const inspection = inspectOpenRouterFailure({
+      isCanonicalOpenRouter: true,
+      status: 504,
+      body: JSON.stringify({
+        error: { type: "provider_error" },
+        openrouter_metadata: {
+          attempts: Array.from({ length: 10 }, (_, index) => ({
+            provider: `Provider ${index + 1}`,
+            status: 500 + index,
+          })),
+        },
+      }),
+    });
+    expect(inspection.attempts).toHaveLength(8);
+    expect(inspection.attempts[0]).toEqual({
+      ordinal: 1,
+      provider: "Provider 1",
+      status: 500,
+    });
+    expect(inspection.attempts[7]).toEqual({
+      ordinal: 8,
+      provider: "Provider 8",
+      status: 507,
+    });
+
+    const malformedFirst = inspectOpenRouterFailure({
+      isCanonicalOpenRouter: true,
+      status: 503,
+      body: JSON.stringify({
+        error: { type: "provider_error" },
+        openrouter_metadata: {
+          attempts: [
+            { provider: "bad\nprovider", status: 503 },
+            ...Array.from({ length: 8 }, (_, index) => ({
+              provider: `Provider ${index + 1}`,
+              status: 500 + index,
+            })),
+          ],
+        },
+      }),
+    });
+    expect(malformedFirst.attempts).toHaveLength(7);
+    expect(malformedFirst.attempts[0]).toEqual({
+      ordinal: 2,
+      provider: "Provider 1",
+      status: 500,
+    });
+    expect(malformedFirst.attempts[6]).toEqual({
+      ordinal: 8,
+      provider: "Provider 7",
+      status: 506,
+    });
+  });
+
+  test("does not inspect non-OpenRouter BYOK failures", () => {
+    const body = JSON.stringify({
+      error: { type: "provider_error" },
+      openrouter_metadata: { attempts: [{ provider: "Azure", status: 503 }] },
+    });
+    expect(
+      inspectOpenRouterFailure({
+        isCanonicalOpenRouter: false,
+        status: 503,
+        body,
+      }),
+    ).toEqual({ body, attempts: [] });
+  });
+
+  test("labels a gateway-created 502 as gateway instead of upstream", async () => {
+    const unreachable = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response(null, { status: 204 });
+      },
+    });
+    const port = unreachable.port;
+    unreachable.stop(true);
+    const diagnostics: LargeReviewProviderDiagnostic[] = [];
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://127.0.0.1:${port}/v1`),
+      store: new MemoryAttemptStore(),
+      operatorLog: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    expect((await register(proxy)).status).toBe(204);
+    const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+      method: "POST",
+      body: requestBody,
+    });
+    expect(response.status).toBe(502);
+    expect(diagnostics).toEqual([
+      {
+        event: "postil.large_review.provider_failure",
+        source: "gateway",
+        review_id: 1,
+        request_sha256: expect.any(String),
+        gateway_status: 502,
+        request_attempt: 1,
+      },
+    ]);
+    proxy.close();
+  });
+
+  test("labels a gateway-created 503 as gateway instead of upstream", async () => {
+    const upstream = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return new Response(successfulBody);
+      },
+    });
+    servers.push(upstream);
+    const diagnostics: LargeReviewProviderDiagnostic[] = [];
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://127.0.0.1:${upstream.port}/v1`),
+      store: new FailingCompleteAttemptStore(),
+      operatorLog: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    expect((await register(proxy)).status).toBe(204);
+    const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+      method: "POST",
+      body: requestBody,
+    });
+    expect(response.status).toBe(503);
+    expect(diagnostics).toEqual([
+      {
+        event: "postil.large_review.provider_failure",
+        source: "gateway",
+        review_id: 1,
+        request_sha256: expect.any(String),
+        gateway_status: 503,
+        request_attempt: 1,
+      },
+    ]);
+    proxy.close();
+  });
+
   test("requires authenticated plan registration and uses the validated address set", async () => {
     let providerCalls = 0;
     let resolutions = 0;

@@ -20,6 +20,16 @@ const MAX_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PLAN_REGISTRATION_BYTES = 16 * 1024;
 const PLAN_REGISTRATION_VERSION = 1;
+const MAX_OPENROUTER_ATTEMPTS = 8;
+const OPENROUTER_FAILURE_STATUSES = new Set([502, 503, 504, 529]);
+const SAFE_PROVIDER_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,78}[A-Za-z0-9])?$/;
+const URL_LIKE_PROVIDER_LABEL = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)/i;
+const TOKEN_LIKE_PROVIDER_LABELS = [
+  /^(?:bearer|basic)\s+/i,
+  /^(?:sk|rk|pk|key|token|secret|gh[pousr]|xox[baprs])[-_][A-Za-z0-9_-]{12,}$/i,
+  /^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$/,
+  /^[A-Fa-f0-9]{32,}$/,
+];
 
 export interface LargeReviewRunIdentity {
   repositoryId: number;
@@ -44,6 +54,37 @@ export interface StoredProviderResponse {
   headers: Record<string, string>;
   body: string;
 }
+
+export interface OpenRouterProviderAttempt {
+  ordinal: number;
+  provider: string;
+  status: number;
+}
+
+export interface OpenRouterFailureInspection {
+  body: string;
+  attempts: OpenRouterProviderAttempt[];
+}
+
+export type LargeReviewProviderDiagnostic =
+  | {
+      event: "postil.large_review.provider_failure";
+      source: "upstream";
+      review_id: number;
+      request_sha256: string;
+      upstream_status: number;
+      attempt_ordinal: number;
+      provider: string;
+      attempted_status: number;
+    }
+  | {
+      event: "postil.large_review.provider_failure";
+      source: "gateway";
+      review_id: number;
+      request_sha256: string;
+      gateway_status: number;
+      request_attempt: number;
+    };
 
 export type AttemptClaim =
   | { kind: "execute"; attemptKey: string; leaseId: string }
@@ -529,12 +570,126 @@ function requestHeaders(headers: Headers, additionalAuthHeader?: string): Header
     "x-api-key",
     "x-title",
     "anthropic-version",
-    "x-openrouter-experimental-metadata",
   ]);
   if (additionalAuthHeader) retained.add(additionalAuthHeader.toLowerCase());
   return new Headers(
     [...headers.entries()].filter(([name]) => retained.has(name.toLowerCase())),
   );
+}
+
+export function canonicalOpenRouterRequestHeaders(
+  headers: Headers,
+  additionalAuthHeader?: string,
+): Headers {
+  const forwarded = requestHeaders(headers, additionalAuthHeader);
+  forwarded.set("x-openrouter-metadata", "enabled");
+  return forwarded;
+}
+
+function isCanonicalOpenRouterApiBase(rawBase: string): boolean {
+  try {
+    const url = new URL(rawBase);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "openrouter.ai" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.pathname.replace(/\/+$/, "") === "/api/v1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function safeProviderLabel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const label = value.trim();
+  if (
+    label.length === 0 ||
+    label.length > 80 ||
+    !SAFE_PROVIDER_LABEL.test(label) ||
+    URL_LIKE_PROVIDER_LABEL.test(label) ||
+    TOKEN_LIKE_PROVIDER_LABELS.some((pattern) => pattern.test(label))
+  ) {
+    return null;
+  }
+  return label;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+export function inspectOpenRouterFailure(input: {
+  isCanonicalOpenRouter: boolean;
+  status: number;
+  body: string;
+}): OpenRouterFailureInspection {
+  if (!input.isCanonicalOpenRouter || !OPENROUTER_FAILURE_STATUSES.has(input.status)) {
+    return { body: input.body, attempts: [] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.body);
+  } catch {
+    return { body: input.body, attempts: [] };
+  }
+  const envelope = recordValue(parsed);
+  if (!envelope) return { body: input.body, attempts: [] };
+
+  const metadata = recordValue(envelope.openrouter_metadata);
+  const attempts: OpenRouterProviderAttempt[] = [];
+  if (Array.isArray(metadata?.attempts)) {
+    for (const [index, candidate] of metadata.attempts
+      .slice(0, MAX_OPENROUTER_ATTEMPTS)
+      .entries()) {
+      const attempt = recordValue(candidate);
+      const provider = safeProviderLabel(attempt?.provider);
+      const status = attempt?.status;
+      if (
+        provider &&
+        typeof status === "number" &&
+        Number.isInteger(status) &&
+        status >= 100 &&
+        status <= 599
+      ) {
+        attempts.push({ ordinal: index + 1, provider, status });
+      }
+    }
+  }
+
+  const sanitizedEnvelope = { ...envelope };
+  delete sanitizedEnvelope.openrouter_metadata;
+  return { body: JSON.stringify(sanitizedEnvelope), attempts };
+}
+
+export function openRouterFailureDiagnostics(input: {
+  isCanonicalOpenRouter: boolean;
+  status: number;
+  body: string;
+  reviewId: number;
+  requestSha256: string;
+}): OpenRouterFailureInspection & { diagnostics: LargeReviewProviderDiagnostic[] } {
+  const inspection = inspectOpenRouterFailure(input);
+  return {
+    ...inspection,
+    diagnostics: inspection.attempts.map((attempt) => ({
+      event: "postil.large_review.provider_failure",
+      source: "upstream",
+      review_id: input.reviewId,
+      request_sha256: input.requestSha256,
+      upstream_status: input.status,
+      attempt_ordinal: attempt.ordinal,
+      provider: attempt.provider,
+      attempted_status: attempt.status,
+    })),
+  };
 }
 
 function providerRequestIdentity(bytes: Uint8Array): {
@@ -825,6 +980,7 @@ export async function startLargeReviewProviderProxy(input: {
   identity: ProxyIdentitySeed;
   runContext: LargeReviewRunContext;
   store: LargeReviewAttemptStore;
+  operatorLog?: (diagnostic: LargeReviewProviderDiagnostic) => void;
 }): Promise<LargeReviewProviderProxy> {
   const token = randomUUID();
   const planToken = randomUUID();
@@ -842,6 +998,16 @@ export async function startLargeReviewProviderProxy(input: {
   let cachedResponses = 0;
   let ambiguousProviderContact = false;
   const attempts = new Map<string, number>();
+  const operatorLog = input.operatorLog ?? ((diagnostic) => {
+    console.warn(JSON.stringify(diagnostic));
+  });
+  const emitDiagnostic = (diagnostic: LargeReviewProviderDiagnostic): void => {
+    try {
+      operatorLog(diagnostic);
+    } catch {
+      // Operator diagnostics must never alter provider failure handling.
+    }
+  };
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -913,24 +1079,35 @@ export async function startLargeReviewProviderProxy(input: {
         return new Response("request too large", { status: 413 });
       }
 
-      const headers = requestHeaders(request.headers, input.additionalAuthHeader);
-      if (
-        input.upstreamApiBase.replace(/\/+$/, "") ===
-        "https://openrouter.ai/api/v1"
-      ) {
-        headers.set("x-openrouter-experimental-metadata", "enabled");
-      }
-      const forward = async (): Promise<Response> => {
+      const canonicalOpenRouter = isCanonicalOpenRouterApiBase(
+        input.upstreamApiBase,
+      );
+      const headers = canonicalOpenRouter
+        ? canonicalOpenRouterRequestHeaders(
+            request.headers,
+            input.additionalAuthHeader,
+          )
+        : requestHeaders(request.headers, input.additionalAuthHeader);
+      const forward = async (): Promise<{
+        response: Response;
+        source: "upstream" | "gateway";
+      }> => {
         try {
-          return await forwardPinnedRequest({
-            upstream,
-            headers,
-            body: bytes,
-            signal: request.signal,
-          });
+          return {
+            response: await forwardPinnedRequest({
+              upstream,
+              headers,
+              body: bytes,
+              signal: request.signal,
+            }),
+            source: "upstream",
+          };
         } catch {
           ambiguousProviderContact = true;
-          return new Response("provider request failed", { status: 502 });
+          return {
+            response: new Response("provider request failed", { status: 502 }),
+            source: "gateway",
+          };
         }
       };
       if (!runKey) return new Response("provider plan is not bound", { status: 409 });
@@ -952,18 +1129,45 @@ export async function startLargeReviewProviderProxy(input: {
         });
       }
       if (claim.kind === "pending") {
+        emitDiagnostic({
+          event: "postil.large_review.provider_failure",
+          source: "gateway",
+          review_id: input.runContext.currentReviewId,
+          request_sha256: requestSha256,
+          gateway_status: 503,
+          request_attempt: attempt,
+        });
         return new Response("provider attempt is already in progress", {
           status: 503,
           headers: { "retry-after": "1" },
         });
       }
 
-      const response = await forward();
+      const forwarded = await forward();
+      const response = forwarded.response;
       const body = await response.text();
+      if (forwarded.source === "gateway") {
+        emitDiagnostic({
+          event: "postil.large_review.provider_failure",
+          source: "gateway",
+          review_id: input.runContext.currentReviewId,
+          request_sha256: requestSha256,
+          gateway_status: response.status,
+          request_attempt: attempt,
+        });
+      }
+      const inspection = openRouterFailureDiagnostics({
+        isCanonicalOpenRouter: forwarded.source === "upstream" && canonicalOpenRouter,
+        status: response.status,
+        body,
+        reviewId: input.runContext.currentReviewId,
+        requestSha256,
+      });
+      for (const diagnostic of inspection.diagnostics) emitDiagnostic(diagnostic);
       const storedResponse = {
         status: response.status,
         headers: responseHeaders(response.headers),
-        body,
+        body: inspection.body,
       };
       if (
         response.ok &&
@@ -978,6 +1182,14 @@ export async function startLargeReviewProviderProxy(input: {
           cachedResponses += 1;
         } catch {
           ambiguousProviderContact = true;
+          emitDiagnostic({
+            event: "postil.large_review.provider_failure",
+            source: "gateway",
+            review_id: input.runContext.currentReviewId,
+            request_sha256: requestSha256,
+            gateway_status: 503,
+            request_attempt: attempt,
+          });
           return new Response("provider response could not be persisted", {
             status: 503,
           });
@@ -986,7 +1198,7 @@ export async function startLargeReviewProviderProxy(input: {
         await input.store.abandonAttempt(claim.attemptKey, claim.leaseId);
         if (response.ok) ambiguousProviderContact = true;
       }
-      return new Response(body, {
+      return new Response(inspection.body, {
         status: response.status,
         headers: storedResponse.headers,
       });
