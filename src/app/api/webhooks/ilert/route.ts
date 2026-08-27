@@ -10,6 +10,7 @@ import {
   recordIlertAlertEvent,
   verifyIlertWebhookAuthorization,
 } from "@/lib/ilert-alerts";
+import { reportOperationalFailure } from "@/lib/server-observability";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,7 +68,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       },
       { status: 202 },
     );
-  } catch {
+  } catch (error) {
+    reportOperationalFailure("web", "ilert_webhook_processing_failed", error);
     return NextResponse.json(
       { error: "webhook processing unavailable" },
       { status: 503, headers: { "retry-after": "30" } },

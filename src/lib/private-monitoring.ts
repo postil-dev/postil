@@ -115,7 +115,7 @@ const SAFE_INSTANCE = /^[A-Za-z0-9._:-]{1,160}$/;
 
 export async function recordServiceHeartbeat(
   pool: Pool,
-  component: "worker" | "monitor",
+  component: "worker" | "monitor" | "monitor-heartbeat-delivery",
   instanceId: string,
   now = new Date(),
 ): Promise<void> {
@@ -130,6 +130,40 @@ export async function recordServiceHeartbeat(
        observed_at = GREATEST(service_heartbeats.observed_at, EXCLUDED.observed_at)`,
     [component, instanceId, now],
   );
+}
+
+export async function deliverExternalMonitorHeartbeat(
+  pool: Pool,
+  options: {
+    url: string | undefined;
+    instanceId: string;
+    now?: Date;
+    fetchImpl?: Fetch;
+  },
+): Promise<"disabled" | "delivered"> {
+  if (!options.url) return "disabled";
+  const url = new URL(options.url);
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error(
+      "external monitor heartbeat URL must use HTTPS without URL user info",
+    );
+  }
+  const response = await (options.fetchImpl ?? fetch)(url, {
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `external monitor heartbeat returned HTTP ${response.status}`,
+    );
+  }
+  await recordServiceHeartbeat(
+    pool,
+    "monitor-heartbeat-delivery",
+    options.instanceId,
+    options.now ?? new Date(),
+  );
+  return "delivered";
 }
 
 export async function getPrivateMonitoringDashboard(

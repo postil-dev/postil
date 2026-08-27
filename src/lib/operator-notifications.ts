@@ -63,22 +63,19 @@ const ILERT_DETAIL_LIMIT = 4_000;
 /**
  * Monitoring alerts are delivered to the external alerting service, never by
  * the platform's own email path: the platform detects, the external system
- * pages. Without a configured integration key the incident is logged for the
- * log pipeline and treated as delivered; paging then relies on the external
- * uptime checks and the GitHub production monitor until the key is set.
+ * pages. Missing delivery configuration fails closed so the durable outbox
+ * retains the incident and retries after configuration is restored.
  */
 export function configuredMonitoringAlertTransport(): OperatorNotificationTransport {
   const integrationKey = optionalEnv("ILERT_INTEGRATION_KEY")?.trim();
   if (!integrationKey) {
     return {
-      send(notification) {
-        console.error(
-          `[monitoring-alert] undeliverable (ILERT_INTEGRATION_KEY unset) ` +
-            `state=${notification.incident?.state ?? "open"} ` +
-            `key=${notification.incident?.key ?? notification.idempotencyKey} ` +
-            `summary=${notification.subject}`,
+      send() {
+        return Promise.reject(
+          new Error(
+            "ILERT_INTEGRATION_KEY is required for monitoring alert delivery",
+          ),
         );
-        return Promise.resolve({ messageId: null });
       },
     };
   }

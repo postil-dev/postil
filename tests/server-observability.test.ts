@@ -110,6 +110,38 @@ describe("server operational observability", () => {
     expect(JSON.stringify(records)).not.toContain("private@example.test");
   });
 
+  test("exports heartbeat delivery failures as typed operational errors", async () => {
+    const exporter = new RetainingLogExporter();
+    const observability = new ServerObservability({
+      processGroup: "monitor",
+      environment: {
+        POSTHOG_LOG_CAPTURE: "1",
+        POSTHOG_PROJECT_TOKEN: TOKEN,
+      },
+      now: () => NOW,
+      logExporter: exporter,
+    });
+
+    observability.reportFailure(
+      "monitor_heartbeat_delivery_failed",
+      new Error("private heartbeat endpoint details"),
+    );
+    await observability.shutdown();
+
+    expect(
+      exporter.getFinishedLogRecords().map((record) => record.attributes),
+    ).toEqual([
+      {
+        "event.name": "postil.monitor.heartbeat_delivery.failed",
+        outcome: "failure",
+        "failure.class": "monitor_heartbeat_delivery_failed",
+      },
+    ]);
+    expect(JSON.stringify(exporter.records)).not.toContain(
+      "private heartbeat endpoint details",
+    );
+  });
+
   test("exports only fixed model-incident classifications from hostile objects", async () => {
     const requests: string[] = [];
     const exporter = new RetainingLogExporter();

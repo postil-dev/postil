@@ -434,7 +434,7 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "ILERT_INTEGRATION_KEY",
     purpose:
-      "ilert alert-source integration key that receives monitoring alerts; without it monitoring alerts are logged only",
+      "ilert alert-source integration key that receives monitoring alerts; without it alert delivery fails closed and remains retryable",
     example: "il1agst...",
     scope: ["monitor"],
     optional: true,
