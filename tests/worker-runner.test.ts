@@ -18,7 +18,11 @@ const finiteRetrySchedules: Array<{
 }> = [];
 const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
-const retriedIndefinitely: Array<{ id: number; error: string }> = [];
+const retriedIndefinitely: Array<{
+  id: number;
+  error: string;
+  startedAt?: Date;
+}> = [];
 const shutdownRequeues: number[] = [];
 let claimCalls = 0;
 const claimCapabilities: string[][] = [];
@@ -39,6 +43,8 @@ const customerNotificationEmailFailures: Array<{
   terminal: boolean;
 }> = [];
 let gateStateSyncRun: (() => Promise<void>) | undefined;
+let publicationLifecycleActivated = true;
+let gateJobLeaseActive = true;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
 let webhookDeliveryToLoad:
@@ -57,7 +63,9 @@ const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
-class MockReviewPublicationReconciliationError extends Error {}
+class MockReviewPublicationReconciliationError extends Error {
+  readonly reconciliationStartedAt = new Date("2026-08-27T18:30:00.000Z");
+}
 class MockBoundedJobRetryError extends Error {}
 class MockPermanentJobError extends Error {
   permanent = true;
@@ -70,6 +78,17 @@ class MockGitHubHttpError extends Error {
   ) {
     super(message);
     this.name = "GitHubHttpError";
+  }
+}
+
+class MockHostedInferenceReleaseDarkError extends Error {
+  constructor(readonly releaseSha: string) {
+    super("managed hosted inference release is awaiting activation");
+  }
+}
+class MockPublicationLifecycleReleaseDarkError extends Error {
+  constructor() {
+    super("publication lifecycle release is awaiting activation");
   }
 }
 
@@ -86,6 +105,23 @@ mock.module("@/lib/db", () => ({
   getDb: () => ({}),
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
   schema: {},
+}));
+
+mock.module("@/lib/release-job-rollout", () => ({
+  HostedInferenceReleaseDarkError: MockHostedInferenceReleaseDarkError,
+  PublicationLifecycleReleaseDarkError:
+    MockPublicationLifecycleReleaseDarkError,
+  deferHostedProviderKeyLifecycleForRelease: async () => "deferred",
+  deferHostedReviewForRelease: async () => "deferred",
+  withPublicationLifecycleReleaseActive: async <T>(
+    _pool: unknown,
+    operation: (db: unknown, client: unknown) => Promise<T>,
+  ) => {
+    if (!publicationLifecycleActivated) {
+      throw new MockPublicationLifecycleReleaseDarkError();
+    }
+    return operation({}, {});
+  },
 }));
 
 mock.module("@/lib/operator-alerts", () => ({
@@ -137,6 +173,7 @@ mock.module("@/lib/queue", () => ({
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
     completed.push(job.id);
   },
+  externalSideEffectLeaseActive: async () => gateJobLeaseActive,
   continueClaimedJob: async () => undefined,
   completeWebhookDelivery: async (_pool: unknown, deliveryId: string) => {
     webhookDeliveriesCompleted.push(deliveryId);
@@ -182,8 +219,15 @@ mock.module("@/lib/queue", () => ({
     _pool: unknown,
     job: ClaimedJob,
     error: string,
+    budget?: number | { startedAt?: Date },
   ) => {
-    retriedIndefinitely.push({ id: job.id, error });
+    retriedIndefinitely.push({
+      id: job.id,
+      error,
+      ...(typeof budget === "object" && budget.startedAt
+        ? { startedAt: budget.startedAt }
+        : {}),
+    });
     return "retried";
   },
   requeueJobsOwnedBy: async (
@@ -350,6 +394,8 @@ beforeEach(() => {
   customerNotificationEmailRun = async () => undefined;
   customerNotificationEmailFailures.length = 0;
   gateStateSyncRun = async () => undefined;
+  publicationLifecycleActivated = true;
+  gateJobLeaseActive = true;
   cleanupRun = async () => undefined;
   webhookDeliveryLoadError = undefined;
   webhookDeliveryToLoad = undefined;
@@ -429,7 +475,11 @@ describe("drainQueueOnce", () => {
     await runClaimedJob(reviewJob(9), "worker 0", "worker");
 
     expect(retriedIndefinitely).toEqual([
-      { id: 9, error: "exact terminal checks are not observable yet" },
+      {
+        id: 9,
+        error: "exact terminal checks are not observable yet",
+        startedAt: new Date("2026-08-27T18:30:00.000Z"),
+      },
     ]);
     expect(failed).toEqual([]);
     expect(completed).toEqual([]);
@@ -996,6 +1046,51 @@ describe("drainQueueOnce", () => {
 
     expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
     expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("parks gate synchronization while lifecycle publication is dark", async () => {
+    const job = reviewJob(1);
+    job.kind = "gate-state-sync";
+    job.payload = {
+      reviewId: 7,
+      reviewPublicId: "00000000-0000-4000-8000-000000000007",
+    };
+    publicationLifecycleActivated = false;
+    let called = false;
+    gateStateSyncRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(false);
+    expect(completed).toEqual([]);
+    expect(retriedIndefinitely).toEqual([
+      {
+        id: 1,
+        error: "publication lifecycle release is awaiting activation",
+        startedAt: job.lockedAt,
+      },
+    ]);
+  });
+
+  test("does not publish from a gate claim recovered during activation", async () => {
+    const job = reviewJob(1);
+    job.kind = "gate-state-sync";
+    job.payload = {
+      reviewId: 7,
+      reviewPublicId: "00000000-0000-4000-8000-000000000007",
+    };
+    gateJobLeaseActive = false;
+    let called = false;
+    gateStateSyncRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(false);
     expect(completed).toEqual([1]);
   });
 

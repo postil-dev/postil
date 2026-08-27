@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -23,6 +23,46 @@ import {
   persistReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
 } from "@/lib/review-completion";
+import { withReviewDecisionScopeLock } from "@/lib/finding-approvals";
+import {
+  activatePublicationLifecycleRelease,
+  deactivatePublicationLifecycleRelease,
+  publicationLifecycleReleaseActivated,
+  withPublicationLifecycleReleaseActive,
+} from "@/lib/release-job-rollout";
+
+const realAppAuth = await import("@/lib/github/app-auth");
+const realChecks = await import("@/lib/github/checks");
+const realInstallationSync = await import("@/lib/github/installation-sync");
+const realPublicationThreads = await import("@/lib/github/publication-threads");
+let recoveryThreadObservationCount = 0;
+
+mock.module("@/lib/github/app-auth", () => ({
+  ...realAppAuth,
+  getInstallationToken: async () => "test-token",
+}));
+mock.module("@/lib/github/checks", () => ({
+  ...realChecks,
+  verifyCompletedCheckRun: async () => undefined,
+}));
+mock.module("@/lib/github/installation-sync", () => ({
+  ...realInstallationSync,
+  fetchRepositorySummary: async () => ({
+    id: 1003,
+    full_name: "publication/repo",
+  }),
+}));
+mock.module("@/lib/github/publication-threads", () => ({
+  ...realPublicationThreads,
+  observeGitHubReviewThreads: async () => {
+    recoveryThreadObservationCount += 1;
+    return [];
+  },
+  resolveGitHubReviewThreads: async () => [],
+}));
+mock.module("@/worker/runner", () => ({
+  triggerQueueDrain: () => undefined,
+}));
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -81,19 +121,25 @@ describeDb("publication receipt migration and lifecycle", () => {
   const pool = new Pool({ connectionString: TEST_URL, max: 2 });
   const db = drizzle(pool, { schema });
   let orgId = 0;
+  let installationId = 0;
   let repositoryId = 0;
   const reviewIds: number[] = [];
 
-  async function createRunningReview(headSha: string, sinceSha: string | null = null) {
+  async function createRunningReview(
+    headSha: string,
+    sinceSha: string | null = null,
+    prNumber = 7,
+    track = true,
+  ) {
     const result = await pool.query<{ id: string }>(
       `INSERT INTO reviews
         (repository_id, pr_number, head_sha, base_sha, since_sha, status, trigger_source, queued_at, started_at)
-       VALUES ($1, 7, $2, $3, $4, 'running', 'unknown', now(), now())
+       VALUES ($1, $2, $3, $4, $5, 'running', 'unknown', now(), now())
        RETURNING id`,
-      [repositoryId, headSha, "a".repeat(40), sinceSha],
+      [repositoryId, prNumber, headSha, "a".repeat(40), sinceSha],
     );
     const id = Number(result.rows[0]!.id);
-    reviewIds.push(id);
+    if (track) reviewIds.push(id);
     return id;
   }
 
@@ -153,6 +199,7 @@ describeDb("publication receipt migration and lifecycle", () => {
        RETURNING id`,
       [orgId],
     );
+    installationId = Number(installation.rows[0]!.id);
     const repository = await pool.query<{ id: string }>(
       `INSERT INTO repositories
         (github_repo_id, installation_id, full_name, private, enabled)
@@ -166,6 +213,49 @@ describeDb("publication receipt migration and lifecycle", () => {
   afterAll(async () => {
     await pool.end();
       }, orgId);
+
+  test("completion opts a pre-cutover staged review into lifecycle enforcement", async () => {
+    const reviewEnvelope = envelope({ head: "3".repeat(40) });
+    await pool.query(
+      "ALTER TABLE reviews DISABLE TRIGGER reviews_require_publication_lifecycle",
+    );
+    let reviewId: number;
+    try {
+      const review = await pool.query<{ id: string }>(
+        `INSERT INTO reviews
+          (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+           queued_at, started_at, envelope)
+         VALUES ($1, 69, $2, $3, 'running', 'unknown', now(), now(), $4::jsonb)
+         RETURNING id`,
+        [
+          repositoryId,
+          reviewEnvelope.headSha!,
+          reviewEnvelope.baseSha!,
+          JSON.stringify(reviewEnvelope),
+        ],
+      );
+      reviewId = Number(review.rows[0]!.id);
+    } finally {
+      await pool.query(
+        "ALTER TABLE reviews ENABLE TRIGGER reviews_require_publication_lifecycle",
+      );
+    }
+
+    await pool.query(
+      "UPDATE reviews SET status = 'completed', finished_at = now() WHERE id = $1",
+      [reviewId!],
+    );
+    const lifecycle = await pool.query<{ required: boolean }>(
+      `SELECT publication_lifecycle_required_at IS NOT NULL AS required
+         FROM reviews WHERE id = $1`,
+      [reviewId!],
+    );
+    expect(lifecycle.rows[0]?.required).toBe(true);
+    await pool.query(
+      "UPDATE reviews SET publication_lifecycle_reconciled_at = now() WHERE id = $1",
+      [reviewId!],
+    );
+  });
 
   test("resumes a staged terminal publication after worker interruption without duplicates", async () => {
     const reviewEnvelope = envelope({ head: "9".repeat(40) });
@@ -274,6 +364,351 @@ describeDb("publication receipt migration and lifecycle", () => {
       usage: "1",
       sync_jobs: "1",
     });
+    await pool.query(
+      "UPDATE reviews SET publication_lifecycle_reconciled_at = now() WHERE id = $1",
+      [reviewId],
+    );
+  });
+
+  test.each(["running", "completed"] as const)(
+    "worker recovery reconciles a %s staged review before queuing its gate",
+    async (status) => {
+      const reviewEnvelope = envelope({
+        head: status === "running" ? "7".repeat(40) : "8".repeat(40),
+      });
+      const review = await pool.query<{ id: string; public_id: string }>(
+        `INSERT INTO reviews
+          (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+           queued_at, started_at, finished_at, envelope,
+           publication_lifecycle_reconciled_at,
+           source_org_id, source_installation_id,
+           source_github_installation_id, source_github_repo_id,
+           source_repo_full_name, advisory_check_run_id, gate_check_run_id)
+         VALUES
+          ($1, 71, $2, $3, $4::review_status, 'unknown', now(), now(),
+           CASE WHEN $4::review_status = 'completed' THEN now() ELSE NULL END, $5::jsonb,
+           NULL, $6, $7, 1002, 1003, 'publication/repo', 9101, 9102)
+         RETURNING id, public_id`,
+        [
+          repositoryId,
+          reviewEnvelope.headSha!,
+          reviewEnvelope.baseSha!,
+          status,
+          JSON.stringify(reviewEnvelope),
+          orgId,
+          installationId,
+        ],
+      );
+      const reviewId = Number(review.rows[0]!.id);
+      const observationCountBefore = recoveryThreadObservationCount;
+      const { resumeStagedReviewCompletion } = await import("@/worker/review");
+
+      await expect(
+        resumeStagedReviewCompletion({
+          db,
+          pool,
+          payload: {
+            installationId: 1002,
+            sourceInstallationId: installationId,
+            sourceOrgId: orgId,
+            githubRepoId: 1003,
+            repoFullName: "publication/repo",
+            prNumber: 71,
+            headSha: reviewEnvelope.headSha!,
+            baseSha: reviewEnvelope.baseSha!,
+            recoveryReviewId: reviewId,
+          },
+          installation: { id: installationId, orgId, orgSlug: "publication" },
+          repository: {
+            id: repositoryId,
+            githubRepoId: 1003,
+            fullName: "publication/repo",
+          },
+        }),
+      ).resolves.toBe(true);
+
+      const terminal = await pool.query<{
+        status: string;
+        lifecycle_reconciled: boolean;
+        sync_jobs: string;
+      }>(
+        `SELECT review.status,
+                review.publication_lifecycle_reconciled_at IS NOT NULL AS lifecycle_reconciled,
+                (SELECT count(*) FROM jobs sync
+                  WHERE sync.kind = 'gate-state-sync'
+                    AND (sync.payload->>'reviewId')::bigint = review.id) AS sync_jobs
+           FROM reviews review WHERE review.id = $1`,
+        [reviewId],
+      );
+      expect(terminal.rows[0]).toEqual({
+        status: "completed",
+        lifecycle_reconciled: true,
+        sync_jobs: "1",
+      });
+      expect(recoveryThreadObservationCount).toBe(observationCountBefore + 1);
+    },
+  );
+
+  test("fleet activation preserves legacy reviews and releases only parked gates", async () => {
+    const pendingEnvelope = envelope({ head: "6".repeat(40) });
+    const pending = await pool.query<{ id: string }>(
+      `INSERT INTO reviews
+        (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+         queued_at, started_at, source_org_id, source_installation_id,
+         source_github_installation_id, source_github_repo_id,
+         source_repo_full_name, advisory_check_run_id, gate_check_run_id)
+       VALUES ($1, 74, $2, $3, 'running', 'unknown', now(), now(),
+               $4, $5, 1002, 1003, 'publication/repo', 9201, 9202)
+       RETURNING id`,
+      [
+        repositoryId,
+        pendingEnvelope.headSha!,
+        pendingEnvelope.baseSha!,
+        orgId,
+        installationId,
+      ],
+    );
+    const pendingReviewId = Number(pending.rows[0]!.id);
+    expect(
+      await stageReviewCompletionCandidate(
+        db,
+        {
+          reviewId: pendingReviewId,
+          envelope: pendingEnvelope,
+          configFiles: [],
+          silent: true,
+          gateFailing: false,
+          publicationReceipt: {
+            version: 1,
+            receiptId: "github-review-v1:mixed-fleet-recovery",
+            findings: [],
+          },
+        },
+        orgId,
+      ),
+    ).toMatchObject({ staged: true });
+    expect(
+      await finalizeStagedReviewCompletionWithGateMode(
+        db,
+        {
+          reviewId: pendingReviewId,
+          usage: [
+            {
+              orgId,
+              repositoryId,
+              promptTokens: 1,
+              completionTokens: 1,
+              modelUsed: "test/model",
+              costMicros: 0,
+              billingScope: "analytics",
+            },
+          ],
+          usageAccountingComplete: true,
+          queueGateStateSync: false,
+        },
+        orgId,
+      ),
+    ).toMatchObject({ completed: true });
+
+    const review = await pool.query<{ id: string; public_id: string }>(
+      `INSERT INTO reviews
+        (repository_id, pr_number, head_sha, base_sha, status, started_at,
+         finished_at, publication_lifecycle_reconciled_at)
+       VALUES ($1, 72, $2, $3, 'completed', now(), now(), NULL)
+       RETURNING id, public_id`,
+      [repositoryId, "5".repeat(40), "4".repeat(40)],
+    );
+    const reviewId = Number(review.rows[0]!.id);
+    const gate = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('gate-state-sync', jsonb_build_object(
+         'reviewId', $1::bigint, 'reviewPublicId', $2::text
+       ))
+       RETURNING id`,
+      [reviewId, review.rows[0]!.public_id],
+    );
+    const gateId = Number(gate.rows[0]!.id);
+    const parkedBefore = await pool.query<{
+      parked: boolean;
+      dark_marker: boolean;
+    }>(
+      `SELECT run_after = 'infinity'::timestamptz AS parked,
+              payload ? '_postilPublicationLifecycleDark' AS dark_marker
+         FROM jobs WHERE id = $1`,
+      [gateId],
+    );
+    expect(parkedBefore.rows[0]).toEqual({ parked: true, dark_marker: true });
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'running', locked_at = now(), locked_by = 'abandoned-cutover'
+        WHERE id = $1`,
+      [gateId],
+    );
+
+    expect(await activatePublicationLifecycleRelease(pool)).toMatchObject({
+      activated: true,
+      recoveriesQueued: 1,
+      runningGatesRecovered: 1,
+    });
+    expect(await publicationLifecycleReleaseActivated(pool)).toBe(true);
+    const activated = await pool.query<{
+      lifecycle_reconciled: boolean;
+      parked: boolean;
+      dark_marker: boolean;
+    }>(
+      `SELECT review.publication_lifecycle_reconciled_at IS NOT NULL AS lifecycle_reconciled,
+              job.run_after = 'infinity'::timestamptz AS parked,
+              job.payload ? '_postilPublicationLifecycleDark' AS dark_marker
+         FROM reviews review JOIN jobs job ON job.id = $2
+        WHERE review.id = $1`,
+      [reviewId, gateId],
+    );
+    expect(activated.rows[0]).toEqual({
+      lifecycle_reconciled: false,
+      parked: false,
+      dark_marker: false,
+    });
+    const recovery = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM jobs
+        WHERE kind = 'review'
+          AND status = 'queued'
+          AND payload->>'recoveryReviewId' = $1`,
+      [String(pendingReviewId)],
+    );
+    expect(recovery.rows[0]?.count).toBe("1");
+
+    const liveGate = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, locked_at, locked_by)
+       VALUES ('gate-state-sync', jsonb_build_object(
+         'reviewId', $1::bigint, 'reviewPublicId', $2::text
+       ), 'running', now(), 'live-gate-publisher')
+       RETURNING id`,
+      [reviewId, review.rows[0]!.public_id],
+    );
+    expect(await activatePublicationLifecycleRelease(pool)).toMatchObject({
+      activated: false,
+      runningGatesRecovered: 0,
+    });
+    const repeatedActivation = await pool.query<{ status: string }>(
+      "SELECT status FROM jobs WHERE id = $1",
+      [liveGate.rows[0]!.id],
+    );
+    expect(repeatedActivation.rows[0]?.status).toBe("running");
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'done', locked_at = NULL, locked_by = NULL
+        WHERE id = $1`,
+      [liveGate.rows[0]!.id],
+    );
+
+    let finishPublication!: () => void;
+    const publicationHold = new Promise<void>((resolve) => {
+      finishPublication = resolve;
+    });
+    let publicationLocked!: () => void;
+    const publicationAcquired = new Promise<void>((resolve) => {
+      publicationLocked = resolve;
+    });
+    const publication = withPublicationLifecycleReleaseActive(
+      pool,
+      async () => {
+        publicationLocked();
+        await publicationHold;
+      },
+    );
+    await publicationAcquired;
+    let deactivationFinished = false;
+    const deactivation = deactivatePublicationLifecycleRelease(pool).then(
+      (result) => {
+        deactivationFinished = true;
+        return result;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(deactivationFinished).toBe(false);
+    finishPublication();
+    await publication;
+    await expect(deactivation).resolves.toMatchObject({ deactivated: true });
+    const secondGate = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('gate-state-sync', jsonb_build_object(
+         'reviewId', $1::bigint, 'reviewPublicId', $2::text
+       ))
+       RETURNING id`,
+      [reviewId, review.rows[0]!.public_id],
+    );
+    const parkedAfter = await pool.query<{ parked: boolean }>(
+      "SELECT run_after = 'infinity'::timestamptz AS parked FROM jobs WHERE id = $1",
+      [secondGate.rows[0]!.id],
+    );
+    expect(parkedAfter.rows[0]?.parked).toBe(true);
+    expect(await activatePublicationLifecycleRelease(pool)).toMatchObject({
+      activated: true,
+    });
+  });
+
+  test("pull-request decision lock blocks a newer staged recurrence", async () => {
+    const firstId = await createRunningReview("4".repeat(40), null, 73, false);
+    const secondId = await createRunningReview(
+      "5".repeat(40),
+      "4".repeat(40),
+      73,
+      false,
+    );
+    await pool.query(
+      `UPDATE reviews SET publication_lifecycle_reconciled_at = NULL
+        WHERE id = ANY($1::bigint[])`,
+      [[firstId, secondId]],
+    );
+    let releaseLock!: () => void;
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    let lockAcquired!: () => void;
+    const acquired = new Promise<void>((resolve) => {
+      lockAcquired = resolve;
+    });
+    const locked = withReviewDecisionScopeLock(pool, firstId, async () => {
+      lockAcquired();
+      await holdLock;
+    });
+    await acquired;
+
+    let staged = false;
+    const staging = stageReviewCompletionCandidate(
+      db,
+      {
+        reviewId: secondId,
+        envelope: envelope({ head: "5".repeat(40), findings: [finding("race-id")] }),
+        configFiles: [],
+        silent: false,
+        gateFailing: false,
+        publicationReceipt: {
+          version: 1,
+          receiptId: "github-review-v1:lock-race",
+          findings: [
+            {
+              findingId: "race-id",
+              stableIdentity: true,
+              initialOutcome: "inline",
+              inlineRejected: false,
+              commentId: "8100",
+            },
+          ],
+        },
+      },
+      orgId,
+    ).then((result) => {
+      staged = result.staged;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(staged).toBe(false);
+
+    releaseLock();
+    await locked;
+    await expect(staging).resolves.toMatchObject({ staged: true });
   });
 
   test("persists exact initial channels and reconciles later carried and resolved states", async () => {
@@ -370,6 +805,25 @@ describeDb("publication receipt migration and lifecycle", () => {
       resolveCommentIds: ["8002"],
     });
 
+    await pool.query("UPDATE reviews SET status = 'running' WHERE id = $1", [secondId]);
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002"],
+      resolveCommentIds: [],
+    });
+    await pool.query("UPDATE reviews SET status = 'completed' WHERE id = $1", [secondId]);
+
+    await applyPublicationThreadObservations(db, [
+      { githubCommentId: "8002", state: "outdated" },
+    ]);
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002"],
+      resolveCommentIds: ["8002"],
+    });
+
     await applyPublicationThreadObservations(db, [
       { githubCommentId: "8001", state: "inline" },
     ]);
@@ -381,6 +835,109 @@ describeDb("publication receipt migration and lifecycle", () => {
         )
       ).rows[0]?.current_state,
     ).toBe("carried");
+
+    const thirdId = await createRunningReview("d".repeat(40), "c".repeat(40));
+    await complete(
+      thirdId,
+      envelope({
+        head: "d".repeat(40),
+        since: "c".repeat(40),
+        findings: [finding("resolved-id")],
+      }),
+      {
+        version: 1,
+        receiptId: "github-review-v1:third",
+        reviewId: "9002",
+        findings: [
+          {
+            findingId: "resolved-id",
+            stableIdentity: true,
+            initialOutcome: "inline",
+            inlineRejected: false,
+            commentId: "8003",
+          },
+        ],
+      },
+    );
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002", "8003"],
+      resolveCommentIds: [],
+    });
+
+    await pool.query(
+      `UPDATE reviews
+          SET queued_at = CASE
+            WHEN id = $1 THEN timestamp '2026-08-27 10:00:00+00'
+            WHEN id = $2 THEN timestamp '2026-08-27 11:00:00+00'
+            ELSE timestamp '2026-08-27 09:00:00+00'
+          END
+        WHERE id = ANY($3::bigint[])`,
+      [thirdId, secondId, [firstId, secondId, thirdId]],
+    );
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002", "8003"],
+      resolveCommentIds: ["8002", "8003"],
+    });
+    await pool.query(
+      `UPDATE reviews
+          SET queued_at = now() + CASE
+            WHEN id = $1 THEN interval '-1 minute'
+            WHEN id = $2 THEN interval '-2 minutes'
+            ELSE interval '-3 minutes'
+          END
+        WHERE id = ANY($3::bigint[])`,
+      [thirdId, secondId, [firstId, secondId, thirdId]],
+    );
+
+    await pool.query("UPDATE reviews SET status = 'running' WHERE id = $1", [thirdId]);
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002", "8003"],
+      resolveCommentIds: [],
+    });
+    await pool.query("UPDATE reviews SET status = 'failed' WHERE id = $1", [thirdId]);
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002", "8003"],
+      resolveCommentIds: [],
+    });
+
+    await applyPublicationThreadObservations(db, [
+      { githubCommentId: "8002", state: "deleted" },
+    ]);
+    const fourthId = await createRunningReview("e".repeat(40), "d".repeat(40));
+    await complete(
+      fourthId,
+      envelope({
+        head: "e".repeat(40),
+        since: "d".repeat(40),
+        resolved: [finding("resolved-id")],
+      }),
+      {
+        version: 1,
+        receiptId: "github-review-v1:fourth",
+        findings: [
+          {
+            findingId: "resolved-id",
+            stableIdentity: true,
+            initialOutcome: "resolved",
+            inlineRejected: false,
+          },
+        ],
+      },
+    );
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002", "8003"],
+      resolveCommentIds: ["8002", "8003"],
+    });
 
     await expect(
       pool.query(

@@ -34,6 +34,8 @@ Postil uses Bun, Next.js, and PostgreSQL. Copy `.env.example` to `.env`, point `
 ```sh
 bun install
 bun run db:migrate
+bun run operational:indexes
+bun run jobs:activate-release
 bun run dev
 ```
 

@@ -109,6 +109,16 @@ operational failure, watchdog cleanup, and finding-decision changes. Approvals
 clear eligible kind blockers. Admin dismissals clear severity and kind blockers
 for one non-operational finding on the reviewed commit.
 
+Review completion keeps `postil/gate` pending until Postil reconciles its GitHub
+review threads. The publisher holds the pull-request decision lock while it
+derives terminal thread state from the latest stable finding occurrence,
+observes and resolves the matching GitHub threads, persists those observations,
+and records lifecycle completion. That durable marker queues the gate update.
+The release capability parks gate jobs during fleet replacement, recovers any
+receipt-backed completion that crosses the replacement boundary, and fails
+closed when the lifecycle cannot be verified within its bounded recovery
+budget.
+
 A bounded worker sweep reads the effective default-branch protection and active
 ruleset APIs for each enabled repository. Coverage is `required` only when
 `postil/gate` is bound to this GitHub App. Any-source rules, another App, missing

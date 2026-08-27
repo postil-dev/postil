@@ -1,2 +1,5 @@
 ignore:
   - "drizzle/meta/*_snapshot.json"
+maxFindings: 8
+model:
+  reasoningEffort: none

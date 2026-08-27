@@ -1359,17 +1359,26 @@ export const PUBLICATION_RECONCILIATION_BUDGET_MS = readPositiveIntEnv(
 /**
  * Requeue reconciliation work until its target state is superseded or
  * published, or until `budgetMs` has elapsed since the job was created. Past
- * the budget the job fails permanently instead of requeuing: a forge outage
- * long enough to exceed it needs operator attention, not another retry.
+ * the budget the job fails permanently instead of requeuing. Review
+ * publication recovery supplies the durable review-finish time so queue age
+ * cannot consume the lifecycle budget before reconciliation starts.
  */
 export async function retryJobIndefinitely(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "attempts" | "lockedBy" | "createdAt">,
   error: string,
-  budgetMs: number = PUBLICATION_RECONCILIATION_BUDGET_MS,
+  budget:
+    | number
+    | { budgetMs?: number; startedAt?: Date } = PUBLICATION_RECONCILIATION_BUDGET_MS,
 ): Promise<"retried" | "lost" | "exhausted"> {
   const redactedError = redactAndTruncate(error, 2000);
-  const elapsedMs = Date.now() - job.createdAt.getTime();
+  const budgetMs = typeof budget === "number"
+    ? budget
+    : (budget.budgetMs ?? PUBLICATION_RECONCILIATION_BUDGET_MS);
+  const startedAt = typeof budget === "number"
+    ? job.createdAt
+    : (budget.startedAt ?? job.createdAt);
+  const elapsedMs = Math.max(0, Date.now() - startedAt.getTime());
   if (elapsedMs > budgetMs) {
     const budgetMessage = redactAndTruncate(
       `${error} (reconciliation budget of ${Math.round(budgetMs / 60_000)} minute(s) exhausted after ${Math.round(elapsedMs / 60_000)} minute(s); failing permanently)`,

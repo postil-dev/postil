@@ -310,6 +310,14 @@ export const reviews = pgTable(
     gateSyncLeaseExpiresAt: timestamp("gate_sync_lease_expires_at", {
       withTimezone: true,
     }),
+    publicationLifecycleReconciledAt: timestamp(
+      "publication_lifecycle_reconciled_at",
+      { withTimezone: true },
+    ),
+    publicationLifecycleRequiredAt: timestamp(
+      "publication_lifecycle_required_at",
+      { withTimezone: true },
+    ),
     queuedAt: timestamp("queued_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -323,6 +331,11 @@ export const reviews = pgTable(
     index("reviews_running_started_at_idx")
       .on(t.startedAt)
       .where(sql`${t.status} = 'running'`),
+    index("reviews_publication_lifecycle_pending_idx")
+      .on(t.finishedAt)
+      .where(
+        sql`${t.status} = 'completed' AND ${t.publicationLifecycleRequiredAt} IS NOT NULL AND ${t.publicationLifecycleReconciledAt} IS NULL`,
+      ),
     check(
       "reviews_trigger_source_check",
       sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun')`,

@@ -392,10 +392,30 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "drizzle", "0049_worker_org_concurrency.sql"),
       "utf8",
     );
+    const publicationLifecycleMigration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0058_amused_wolverine.sql"),
+      "utf8",
+    );
 
     expect(migration).toContain('CREATE TABLE "release_steps"');
     expect(migration).not.toContain("CREATE INDEX");
     expect(organizationConcurrencyMigration).not.toContain("CREATE INDEX");
+    expect(publicationLifecycleMigration).toContain(
+      "postil_stage_gate_sync_until_publication_lifecycle_activation",
+    );
+    expect(publicationLifecycleMigration).toContain(
+      "pg_advisory_xact_lock",
+    );
+    expect(publicationLifecycleMigration).not.toContain('UPDATE "reviews"');
+    expect(publicationLifecycleMigration).toContain(
+      "OLD.status IS DISTINCT FROM 'completed'",
+    );
+    expect(publicationLifecycleMigration).toContain(
+      'UPDATE "jobs"\nSET "run_after" = \'infinity\'::timestamptz',
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx"',
+    );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_running_started_at_idx"',
     );

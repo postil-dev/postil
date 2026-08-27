@@ -1160,6 +1160,24 @@ describeDb("postgres job queue", () => {
     expect(await claimJob(pool, "reconciler")).toBeNull();
   });
 
+  test("review publication reconciliation receives a fresh lifecycle budget", async () => {
+    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    await pool.query(
+      "UPDATE jobs SET created_at = now() - interval '2 hours' WHERE id = $1",
+      [id],
+    );
+    const job = await claimJob(pool, "reconciler");
+
+    expect(
+      await retryJobIndefinitely(pool, job!, "GitHub unavailable", {
+        budgetMs: 60 * 60 * 1000,
+        startedAt: new Date(),
+      }),
+    ).toBe("retried");
+    const row = await pool.query("SELECT status FROM jobs WHERE id = $1", [id]);
+    expect(row.rows[0].status).toBe("queued");
+  });
+
   test("failJob {permanent} on an already-failed job returns 'lost' (single-post guard holds)", async () => {
     // The conditional running -> failed UPDATE is shared with the exhausted
     // path, so the permanent path also yields exactly one "failed" winner.

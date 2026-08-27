@@ -1,4 +1,6 @@
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import type { Pool } from "pg";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
@@ -293,10 +295,72 @@ export async function lockActiveReviewState(
   db: Database,
   review: Pick<ReviewForApproval, "githubRepoId" | "prNumber">,
 ): Promise<void> {
-  const identity = [String(review.githubRepoId), String(review.prNumber)].join("\u001f");
+  const identity = reviewDecisionScopeIdentity(review);
   await db.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:review-pr:${identity}`}, 0))`,
   );
+}
+
+function reviewDecisionScopeIdentity(
+  review: Pick<ReviewForApproval, "githubRepoId" | "prNumber">,
+): string {
+  return [String(review.githubRepoId), String(review.prNumber)].join("\u001f");
+}
+
+/** Hold the pull-request decision scope across bounded external reconciliation. */
+export async function withReviewDecisionScopeLock<T>(
+  pool: Pool,
+  reviewId: number,
+  operation: (db: Database) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  const db = drizzle(client, { schema });
+  let pullRequestLocked = false;
+  let reviewLocked = false;
+  let identity: string | undefined;
+  try {
+    const review = (
+      await db
+        .select({
+          githubRepoId: schema.repositories.githubRepoId,
+          prNumber: schema.reviews.prNumber,
+        })
+        .from(schema.reviews)
+        .innerJoin(
+          schema.repositories,
+          eq(schema.repositories.id, schema.reviews.repositoryId),
+        )
+        .where(eq(schema.reviews.id, reviewId))
+        .limit(1)
+    )[0];
+    if (!review?.githubRepoId) {
+      throw new Error("review decision scope is unavailable");
+    }
+    identity = reviewDecisionScopeIdentity(review);
+    await db.execute(
+      sql`SELECT pg_advisory_lock(hashtextextended(${`postil:review-pr:${identity}`}, 0))`,
+    );
+    pullRequestLocked = true;
+    await db.execute(sql`SELECT pg_advisory_lock(${reviewId})`);
+    reviewLocked = true;
+    return await operation(db);
+  } finally {
+    try {
+      if (reviewLocked) {
+        await db.execute(sql`SELECT pg_advisory_unlock(${reviewId})`);
+      }
+    } finally {
+      try {
+        if (pullRequestLocked && identity !== undefined) {
+          await db.execute(
+            sql`SELECT pg_advisory_unlock(hashtextextended(${`postil:review-pr:${identity}`}, 0))`,
+          );
+        }
+      } finally {
+        client.release();
+      }
+    }
+  }
 }
 
 export async function lockReviewDecisionScopeById(

@@ -2,6 +2,7 @@ import { closeDb, getDb, getPool } from "@/lib/db";
 import { finalizeEscalationEmailRetirement } from "@/lib/escalation-email-retirement";
 import {
   activateHostedInferenceRelease,
+  activatePublicationLifecycleRelease,
   activatePrivateReviewAuthorIdentity,
   activateReleaseJobs,
 } from "@/lib/release-job-rollout";
@@ -20,6 +21,8 @@ async function main(): Promise<void> {
     });
     const privateReviewAuthorActivated =
       await activatePrivateReviewAuthorIdentity(getPool());
+    const publicationLifecycle =
+      await activatePublicationLifecycleRelease(getPool());
     const released = await activateReleaseJobs(getPool());
     const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
     const hostedInferenceActivated = releaseSha
@@ -34,6 +37,10 @@ async function main(): Promise<void> {
     console.log(
       `release job kinds activated: released=${released} ` +
         `private_review_author=${privateReviewAuthorActivated ? "activated" : "already_active"} ` +
+        `publication_lifecycle=${publicationLifecycle.activated ? "activated" : "already_active"} ` +
+        `publication_lifecycle_recoveries_queued=${publicationLifecycle.recoveriesQueued} ` +
+        `publication_lifecycle_running_gates_recovered=${publicationLifecycle.runningGatesRecovered} ` +
+        `publication_lifecycle_released=${publicationLifecycle.released} ` +
         `hosted_inference=${hostedInferenceActivated === null ? "unmanaged" : hostedInferenceActivated ? "activated" : "already_active"} ` +
         `self_service_trials_eligible=${selfServiceTrials.eligible} ` +
         `self_service_trials_granted=${selfServiceTrials.granted} ` +

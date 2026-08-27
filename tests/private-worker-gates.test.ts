@@ -94,12 +94,20 @@ describe("private repository worker defense in depth", () => {
   test("private author enforcement activates only after the managed fleet replacement", () => {
     const deploy = readFileSync(".github/workflows/deploy.yml", "utf8");
     const activation = readFileSync("scripts/activate-release-jobs.ts", "utf8");
+    const deactivation = readFileSync(
+      "scripts/deactivate-hosted-inference.ts",
+      "utf8",
+    );
     expect(deploy.indexOf("Deploy managed fleet")).toBeLessThan(
       deploy.indexOf(
         "Verify and activate release capabilities after fleet replacement",
       ),
     );
     expect(activation).toContain("activatePrivateReviewAuthorIdentity");
+    expect(activation.indexOf("activatePublicationLifecycleRelease")).toBeLessThan(
+      activation.indexOf("activateReleaseJobs"),
+    );
+    expect(deactivation).toContain("deactivatePublicationLifecycleRelease");
   });
 
   test("disabled hosted inference stops before reservation, config fetch, or CLI spawn", () => {
@@ -147,6 +155,24 @@ describe("private repository worker defense in depth", () => {
     expect(guardBody).not.toContain("createCheckRun");
     expect(guardBody).not.toContain("postReview");
     expect(guardBody).not.toContain("failCheckRuns");
+  });
+
+  test("release-dark publication lifecycle stops every review before recovery or forge access", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const start = source.indexOf("export async function runReviewJob");
+    const lifecycleGate = source.indexOf(
+      "await publicationLifecycleReleaseActivated(getPool())",
+      start,
+    );
+    const recovery = source.indexOf("await resumeStagedReviewCompletion", start);
+    const token = source.indexOf("getInstallationToken(payload.installationId", start);
+
+    expect(lifecycleGate).toBeGreaterThan(start);
+    expect(lifecycleGate).toBeLessThan(recovery);
+    expect(lifecycleGate).toBeLessThan(token);
+    expect(source.slice(lifecycleGate, recovery)).toContain(
+      "throw new HostedInferenceReleaseDarkError(releaseSha)",
+    );
   });
 
   test("respond honors entitlement and release activation before tokens or provider access", () => {
@@ -268,15 +294,32 @@ describe("private repository worker defense in depth", () => {
       "const completion = await finalizeStagedReviewCompletionWithGateMode",
       verification,
     );
-    const gatePublication = source.indexOf(
-      'reviewLog.line("durable gate synchronization queued from stored review truth")',
+    const lifecycleReconciliation = source.indexOf(
+      "const observationCount = await reconcileReviewPublicationLifecycle",
       finalization,
     );
+    const gatePublication = source.indexOf(
+      'reviewLog.line("durable gate synchronization queued from stored review truth")',
+      lifecycleReconciliation,
+    );
+    const lifecycleHelperStart = source.indexOf(
+      "async function reconcileReviewPublicationLifecycle",
+    );
+    const lifecycleHelperEnd = source.indexOf(
+      "export async function resumeStagedReviewCompletion",
+      lifecycleHelperStart,
+    );
+    const lifecycleHelper = source.slice(lifecycleHelperStart, lifecycleHelperEnd);
 
     expect(staging).toBeGreaterThan(cliCompletion);
     expect(verification).toBeGreaterThan(staging);
     expect(finalization).toBeGreaterThan(verification);
-    expect(gatePublication).toBeGreaterThan(finalization);
+    expect(lifecycleReconciliation).toBeGreaterThan(finalization);
+    expect(gatePublication).toBeGreaterThan(lifecycleReconciliation);
+    expect(lifecycleHelper).toContain("withReviewDecisionScopeLock");
+    expect(lifecycleHelper.indexOf("applyPublicationThreadObservations")).toBeLessThan(
+      lifecycleHelper.indexOf("completeReviewPublicationLifecycle"),
+    );
     expect(source.slice(staging, finalization)).toContain(
       'reviewLog.line("review result and publication receipt staged durably")',
     );
@@ -289,7 +332,10 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(verification, finalization)).toContain(
       "{ cause: error }",
     );
-    expect(source.slice(finalization, gatePublication)).toContain(
+    expect(source.slice(finalization, lifecycleReconciliation)).toContain(
+      "queueGateStateSync: false",
+    );
+    expect(source.slice(lifecycleReconciliation, gatePublication)).toContain(
       'triggerQueueDrain("gate-state-sync")',
     );
   });
@@ -305,7 +351,8 @@ describe("private repository worker defense in depth", () => {
     expect(recovery).toContain('stagedReview.status !== "running"');
     expect(recovery).toContain('stagedReview.status !== "completed"');
     expect(recovery).toContain('if (stagedReview.status === "running")');
-    expect(recovery).toContain("await enqueueGateStateSync(db, stagedReview)");
+    expect(recovery).toContain("queueGateStateSync: false");
+    expect(recovery).toContain("await reconcileReviewPublicationLifecycle");
     expect(recovery).toContain('triggerQueueDrain("gate-state-sync")');
     expect(recovery).toContain("const detailsUrl = reviewDetailsUrl(");
     expect(recovery).toContain("stagedReview.publicId");
@@ -339,9 +386,10 @@ describe("private repository worker defense in depth", () => {
   test("operational review failures durably queue terminal check cleanup", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
-      "} catch (err) {",
+      "  } catch (err) {",
       source.indexOf(
-        'reviewLog.line("publication lifecycle reconciliation deferred")',
+        'reviewLog.line("durable gate synchronization queued from stored review truth")',
+        source.indexOf("export async function runReviewJob"),
       ),
     );
     const catchEnd = source.indexOf("} finally {", catchStart);
@@ -413,8 +461,11 @@ describe("private repository worker defense in depth", () => {
   test("publication verification races preserve superseded review semantics", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
-      "} catch (err) {",
-      source.indexOf('reviewLog.line("publication lifecycle reconciliation deferred")'),
+      "  } catch (err) {",
+      source.indexOf(
+        'reviewLog.line("durable gate synchronization queued from stored review truth")',
+        source.indexOf("export async function runReviewJob"),
+      ),
     );
     const failureUpdate = source.indexOf("const failedRows", catchStart);
     const supersessionRace = source.slice(catchStart, failureUpdate);

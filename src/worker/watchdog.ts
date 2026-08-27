@@ -28,6 +28,10 @@ interface StuckReview {
   publicId: string;
   headSha: string;
   startedAt: Date | null;
+  finishedAt: Date | null;
+  publicationLifecycleRequiredAt: Date | null;
+  publicationLifecycleReconciledAt: Date | null;
+  publicationStagedAt: Date | null;
   advisoryCheckRunId: number | null;
   gateCheckRunId: number | null;
   repoFullName: string;
@@ -40,6 +44,12 @@ const stuckReviewSelection = {
   publicId: schema.reviews.publicId,
   headSha: schema.reviews.headSha,
   startedAt: schema.reviews.startedAt,
+  finishedAt: schema.reviews.finishedAt,
+  publicationLifecycleRequiredAt:
+    schema.reviews.publicationLifecycleRequiredAt,
+  publicationLifecycleReconciledAt:
+    schema.reviews.publicationLifecycleReconciledAt,
+  publicationStagedAt: schema.reviewPublicationReceipts.observedAt,
   advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
   gateCheckRunId: schema.reviews.gateCheckRunId,
   repoFullName: schema.repositories.fullName,
@@ -62,6 +72,10 @@ function stuckReviewQuery(db: Database) {
     .leftJoin(
       schema.organizations,
       eq(schema.organizations.id, schema.installations.orgId),
+    )
+    .leftJoin(
+      schema.reviewPublicationReceipts,
+      eq(schema.reviewPublicationReceipts.reviewId, schema.reviews.id),
     );
 }
 
@@ -72,12 +86,15 @@ function stuckReviewQuery(db: Database) {
  * a normal completion or a superseding push; the loser must not touch the
  * check-runs a second time.
  */
-async function failStuckReview(
+export async function failStuckReview(
   db: Database,
   review: StuckReview,
   message: string,
   now: Date,
-  opts: { publicationIncomplete?: boolean } = {},
+  opts: {
+    publicationIncomplete?: boolean;
+    expectedStatus?: "running" | "completed";
+  } = {},
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const rows = await tx
@@ -86,7 +103,13 @@ async function failStuckReview(
       .where(
         and(
           eq(schema.reviews.id, review.id),
-          eq(schema.reviews.status, "running"),
+          eq(schema.reviews.status, opts.expectedStatus ?? "running"),
+          ...(opts.expectedStatus === "completed"
+            ? [
+                sql`${schema.reviews.publicationLifecycleRequiredAt} IS NOT NULL`,
+                sql`${schema.reviews.publicationLifecycleReconciledAt} IS NULL`,
+              ]
+            : []),
         ),
       )
       .returning({ id: schema.reviews.id });
@@ -128,7 +151,9 @@ async function failStuckReview(
  *    indefinite: a check-run GitHub will never report completed (the CLI
  *    declined to publish, or the forge outage outlasted the budget) would
  *    otherwise stay in_progress forever.
- * 3. Jobs stuck `running` past the deadline (worker died mid-job) are
+ * 3. Completed reviews whose thread lifecycle cannot reconcile within the
+ *    publication budget are failed closed before their gate can publish.
+ * 4. Jobs stuck `running` past the deadline (worker died mid-job) are
  *    requeued while attempts remain, else failed.
  */
 export async function watchdogPass(
@@ -161,18 +186,45 @@ export async function watchdogPass(
     and(
       eq(schema.reviews.status, "running"),
       sql`${schema.reviews.envelope} IS NOT NULL`,
-      lt(schema.reviews.startedAt, reconciliationCutoff),
+      lt(
+        sql`COALESCE(${schema.reviewPublicationReceipts.observedAt}, ${schema.reviews.startedAt})`,
+        reconciliationCutoff,
+      ),
     ),
   );
 
   for (const review of stuckPublications) {
-    const elapsedMs = review.startedAt
-      ? Math.max(0, now.getTime() - review.startedAt.getTime())
+    const publicationStartedAt = review.publicationStagedAt ?? review.startedAt;
+    const elapsedMs = publicationStartedAt
+      ? Math.max(0, now.getTime() - publicationStartedAt.getTime())
       : 0;
-    const message = `${WATCHDOG_ERROR_PREFIX} publication could not be verified within the ${PUBLICATION_RECONCILIATION_BUDGET_MS / 60000} minute reconciliation budget after ${formatElapsed(elapsedMs)} of worker runtime`;
+    const message = `${WATCHDOG_ERROR_PREFIX} publication could not be verified within the ${PUBLICATION_RECONCILIATION_BUDGET_MS / 60000} minute reconciliation budget after ${formatElapsed(elapsedMs)} since staging`;
     if (
       await failStuckReview(db, review, message, now, {
         publicationIncomplete: true,
+      })
+    )
+      killed += 1;
+  }
+
+  const stuckPublicationLifecycles = await stuckReviewQuery(db).where(
+    and(
+      eq(schema.reviews.status, "completed"),
+      sql`${schema.reviews.publicationLifecycleRequiredAt} IS NOT NULL`,
+      sql`${schema.reviews.publicationLifecycleReconciledAt} IS NULL`,
+      lt(schema.reviews.finishedAt, reconciliationCutoff),
+    ),
+  );
+
+  for (const review of stuckPublicationLifecycles) {
+    const elapsedMs = review.finishedAt
+      ? Math.max(0, now.getTime() - review.finishedAt.getTime())
+      : 0;
+    const message = `${WATCHDOG_ERROR_PREFIX} publication lifecycle could not reconcile within the ${PUBLICATION_RECONCILIATION_BUDGET_MS / 60000} minute reconciliation budget after ${formatElapsed(elapsedMs)}`;
+    if (
+      await failStuckReview(db, review, message, now, {
+        publicationIncomplete: true,
+        expectedStatus: "completed",
       })
     )
       killed += 1;
