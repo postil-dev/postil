@@ -371,6 +371,16 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
 
     await applyPublicationThreadObservations(db, [
+      { githubCommentId: "8002", state: "outdated" },
+    ]);
+    expect(
+      await getPullRequestPublicationThreadPlan(db, repositoryId, 7),
+    ).toEqual({
+      commentIds: ["8001", "8002"],
+      resolveCommentIds: ["8002"],
+    });
+
+    await applyPublicationThreadObservations(db, [
       { githubCommentId: "8001", state: "inline" },
     ]);
     expect(

@@ -703,6 +703,36 @@ function reviewUsageFromEnvelope(
   }));
 }
 
+async function reconcileReviewPublicationThreads(input: {
+  db: Database;
+  token: string;
+  repositoryId: number;
+  repoFullName: string;
+  prNumber: number;
+  signal?: AbortSignal;
+}): Promise<number> {
+  const threadPlan = await getPullRequestPublicationThreadPlan(
+    input.db,
+    input.repositoryId,
+    input.prNumber,
+  );
+  const observed = await observeGitHubReviewThreads(
+    input.token,
+    input.repoFullName,
+    input.prNumber,
+    threadPlan.commentIds,
+    input.signal,
+  );
+  const observations = await resolveGitHubReviewThreads(
+    input.token,
+    observed,
+    threadPlan.resolveCommentIds,
+    input.signal,
+  );
+  await applyPublicationThreadObservations(input.db, observations);
+  return observations.length;
+}
+
 async function resumeStagedReviewCompletion(input: {
   db: Database;
   payload: ReviewJobPayload;
@@ -850,6 +880,7 @@ async function resumeStagedReviewCompletion(input: {
           hostedUsageReservationId: reservation?.id ?? null,
           usageAccountingComplete:
             stagedReview.envelope.usageAccountingComplete === true,
+          queueGateStateSync: false,
         },
         installation.orgId,
       );
@@ -859,6 +890,14 @@ async function resumeStagedReviewCompletion(input: {
         );
       }
     }
+    await reconcileReviewPublicationThreads({
+      db,
+      token,
+      repositoryId: repository.id,
+      repoFullName: payload.repoFullName,
+      prNumber: payload.prNumber,
+      signal,
+    });
     await enqueueGateStateSync(db, stagedReview);
     void import("@/worker/runner").then(({ triggerQueueDrain }) =>
       triggerQueueDrain("gate-state-sync"),
@@ -1813,11 +1852,32 @@ export async function runReviewJob(
         usage: receiptUsage,
         hostedUsageReservationId,
         usageAccountingComplete: ingested.usageAccountingComplete,
+        queueGateStateSync: false,
       },
       installation.orgId,
     );
     const completed = completion.completed;
     if (completed) {
+      try {
+        const observationCount = await reconcileReviewPublicationThreads({
+          db,
+          token,
+          repositoryId: repository.id,
+          repoFullName: payload.repoFullName,
+          prNumber: payload.prNumber,
+          signal,
+        });
+        if (observationCount > 0) {
+          reviewLog.line(
+            `publication lifecycle reconciled (${observationCount} GitHub threads)`,
+          );
+        }
+      } catch (error) {
+        throw new ReviewPublicationReconciliationError(
+          `publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
+        );
+      }
+      await enqueueGateStateSync(db, { id: reviewId, publicId });
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
@@ -1861,39 +1921,6 @@ export async function runReviewJob(
       console.warn(
         `review ${reviewId} completed after it was already superseded or failed`,
       );
-    } else {
-      try {
-        const threadPlan = await getPullRequestPublicationThreadPlan(
-          db,
-          repository.id,
-          payload.prNumber,
-        );
-        const observed = await observeGitHubReviewThreads(
-          token,
-          payload.repoFullName,
-          payload.prNumber,
-          threadPlan.commentIds,
-          signal,
-        );
-        const observations = await resolveGitHubReviewThreads(
-          token,
-          observed,
-          threadPlan.resolveCommentIds,
-          signal,
-        );
-        await applyPublicationThreadObservations(db, observations);
-        if (observations.length > 0) {
-          reviewLog.line(
-            `publication lifecycle reconciled (${observations.length} GitHub threads)`,
-          );
-        }
-      } catch (error) {
-        // A transient GitHub lifecycle failure does not invalidate the immutable receipt.
-        console.warn(
-          `review ${reviewId} publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
-        );
-        reviewLog.line("publication lifecycle reconciliation deferred");
-      }
     }
   } catch (err) {
     if (err instanceof CheckRunPublicationError && receiptUsageForRace) {

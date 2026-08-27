@@ -158,6 +158,20 @@ describe("review completion transaction", () => {
     ]);
   });
 
+  test("can defer gate synchronization until forge lifecycle reconciliation", async () => {
+    const state = fakeDb();
+
+    expect(
+      await persistReviewCompletionWithGateMode(
+        state.db,
+        { ...base, queueGateStateSync: false },
+        null,
+      ),
+    ).toMatchObject({ completed: true });
+    expect(state.inserted.filter((row) => row.table === schema.usageEvents)).toHaveLength(1);
+    expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
+  });
+
   test("records no accounting after losing the completion race", async () => {
     const state = fakeDb(false);
     expect(

@@ -426,6 +426,8 @@ export async function getPullRequestPublicationThreadPlan(
 ): Promise<PullRequestPublicationThreadPlan> {
   const rows = await db
     .select({
+      findingId: schema.findingPublications.findingId,
+      stableIdentity: schema.findingPublications.stableIdentity,
       githubCommentId: schema.findingPublications.githubCommentId,
       currentState: schema.findingPublications.currentState,
     })
@@ -435,15 +437,27 @@ export async function getPullRequestPublicationThreadPlan(
       and(
         eq(schema.reviews.repositoryId, repositoryId),
         eq(schema.reviews.prNumber, prNumber),
-        sql`${schema.findingPublications.githubCommentId} IS NOT NULL`,
       ),
     );
   const commentIds = new Set<string>();
   const resolveCommentIds = new Set<string>();
+  // Forge observations can move the published comment row to outdated or
+  // deleted. The receipt row from the later review retains the finding's
+  // terminal state without a comment identity, so resolve by stable finding
+  // identity across both rows instead of consulting only the old comment row.
+  const terminalFindingIds = new Set(
+    rows
+      .filter(
+        (row) =>
+          row.stableIdentity &&
+          (row.currentState === "resolved" || row.currentState === "suppressed"),
+      )
+      .map((row) => row.findingId),
+  );
   for (const row of rows) {
     if (!row.githubCommentId) continue;
     commentIds.add(row.githubCommentId);
-    if (row.currentState === "resolved" || row.currentState === "suppressed") {
+    if (row.stableIdentity && terminalFindingIds.has(row.findingId)) {
       resolveCommentIds.add(row.githubCommentId);
     }
   }

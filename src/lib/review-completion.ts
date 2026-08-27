@@ -28,6 +28,7 @@ interface ReviewCompletionAccountingInput {
   }>;
   hostedUsageReservationId?: string | null;
   usageAccountingComplete: boolean;
+  queueGateStateSync?: boolean;
 }
 
 export interface ReviewCompletionInput extends ReviewCompletionAccountingInput {
@@ -141,14 +142,16 @@ async function persistReviewCompletionAccounting(
     }
   }
   await db.insert(schema.usageEvents).values(persistedUsageRows);
-  await db.insert(schema.jobs).values({
-    kind: "gate-state-sync",
-    payload: {
-      reviewId: input.reviewId,
-      reviewPublicId: review.publicId,
-    },
-    maxAttempts: 5,
-  });
+  if (input.queueGateStateSync !== false) {
+    await db.insert(schema.jobs).values({
+      kind: "gate-state-sync",
+      payload: {
+        reviewId: input.reviewId,
+        reviewPublicId: review.publicId,
+      },
+      maxAttempts: 5,
+    });
+  }
 }
 
 /**

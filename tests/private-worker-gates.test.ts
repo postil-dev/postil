@@ -268,15 +268,25 @@ describe("private repository worker defense in depth", () => {
       "const completion = await finalizeStagedReviewCompletionWithGateMode",
       verification,
     );
+    const lifecycleReconciliation = source.indexOf(
+      "const observationCount = await reconcileReviewPublicationThreads",
+      finalization,
+    );
+    const gateQueue = source.indexOf(
+      "await enqueueGateStateSync(db, { id: reviewId, publicId })",
+      lifecycleReconciliation,
+    );
     const gatePublication = source.indexOf(
       'reviewLog.line("durable gate synchronization queued from stored review truth")',
-      finalization,
+      gateQueue,
     );
 
     expect(staging).toBeGreaterThan(cliCompletion);
     expect(verification).toBeGreaterThan(staging);
     expect(finalization).toBeGreaterThan(verification);
-    expect(gatePublication).toBeGreaterThan(finalization);
+    expect(lifecycleReconciliation).toBeGreaterThan(finalization);
+    expect(gateQueue).toBeGreaterThan(lifecycleReconciliation);
+    expect(gatePublication).toBeGreaterThan(gateQueue);
     expect(source.slice(staging, finalization)).toContain(
       'reviewLog.line("review result and publication receipt staged durably")',
     );
@@ -289,7 +299,10 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(verification, finalization)).toContain(
       "{ cause: error }",
     );
-    expect(source.slice(finalization, gatePublication)).toContain(
+    expect(source.slice(finalization, lifecycleReconciliation)).toContain(
+      "queueGateStateSync: false",
+    );
+    expect(source.slice(lifecycleReconciliation, gatePublication)).toContain(
       'triggerQueueDrain("gate-state-sync")',
     );
   });
@@ -305,6 +318,10 @@ describe("private repository worker defense in depth", () => {
     expect(recovery).toContain('stagedReview.status !== "running"');
     expect(recovery).toContain('stagedReview.status !== "completed"');
     expect(recovery).toContain('if (stagedReview.status === "running")');
+    expect(recovery).toContain("queueGateStateSync: false");
+    expect(recovery.indexOf("await reconcileReviewPublicationThreads")).toBeLessThan(
+      recovery.indexOf("await enqueueGateStateSync(db, stagedReview)"),
+    );
     expect(recovery).toContain("await enqueueGateStateSync(db, stagedReview)");
     expect(recovery).toContain('triggerQueueDrain("gate-state-sync")');
     expect(recovery).toContain("const detailsUrl = reviewDetailsUrl(");
@@ -341,7 +358,7 @@ describe("private repository worker defense in depth", () => {
     const catchStart = source.indexOf(
       "} catch (err) {",
       source.indexOf(
-        'reviewLog.line("publication lifecycle reconciliation deferred")',
+        "await enqueueGateStateSync(db, { id: reviewId, publicId })",
       ),
     );
     const catchEnd = source.indexOf("} finally {", catchStart);
@@ -414,7 +431,7 @@ describe("private repository worker defense in depth", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
       "} catch (err) {",
-      source.indexOf('reviewLog.line("publication lifecycle reconciliation deferred")'),
+      source.indexOf("await enqueueGateStateSync(db, { id: reviewId, publicId })"),
     );
     const failureUpdate = source.indexOf("const failedRows", catchStart);
     const supersessionRace = source.slice(catchStart, failureUpdate);
