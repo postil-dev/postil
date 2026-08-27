@@ -1888,11 +1888,11 @@ export async function runReviewJob(
           );
         }
       } catch (error) {
-        // A transient GitHub read does not invalidate the immutable receipt.
+        // A transient GitHub lifecycle failure does not invalidate the immutable receipt.
         console.warn(
-          `review ${reviewId} publication lifecycle observation deferred: ${redactSecrets(error)}`,
+          `review ${reviewId} publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
         );
-        reviewLog.line("publication lifecycle observation deferred");
+        reviewLog.line("publication lifecycle reconciliation deferred");
       }
     }
   } catch (err) {
