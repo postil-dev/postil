@@ -158,6 +158,37 @@ describe("/api/health/monitor", () => {
 });
 
 describe("production monitor workflow", () => {
+  test("owns a bounded manual alert-stream canary and resolves test alerts", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: Record<
+        string,
+        {
+          if?: string;
+          needs?: string;
+          steps?: Array<{ name?: string; run?: string }>;
+        }
+      >;
+    };
+    const alertStream = workflow.jobs["alert-stream"];
+    expect(alertStream?.needs).toBe("smoke");
+    expect(alertStream?.if).toContain("inputs.test_alert == true");
+    expect(alertStream?.steps?.map((step) => step.name)).toContain(
+      "Preview iLert alert-stream reconciliation",
+    );
+    expect(alertStream?.steps?.map((step) => step.name)).toContain(
+      "Reconcile and verify the iLert alert stream",
+    );
+    expect(workflow.jobs.notify?.if).not.toContain("inputs.test_alert");
+    expect(workflow.jobs.resolve?.if).toContain(
+      "needs.smoke.result == 'success'",
+    );
+    expect(workflow.jobs.resolve?.if).not.toContain("inputs.test_alert");
+  });
+
   test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {
     const source = await readFile(
       new URL("../.github/workflows/production-monitor.yml", import.meta.url),
