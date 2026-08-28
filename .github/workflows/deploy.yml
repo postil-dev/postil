@@ -372,10 +372,14 @@ jobs:
           fi
           unique_release_count=$(printf '%s\n' "${releases[@]}" | sort -u | wc -l)
           if [[ "${unique_release_count}" -ne 1 ]]; then
+            # Re-enabling publication while any target machine remains would
+            # let an unverified mixed fleet publish against restored state.
             echo "The managed fleet is mixed; release capabilities remain dark."
             exit 1
           fi
           if [[ "${target_seen}" -ne 0 ]]; then
+            # The target code reached every managed machine. A failed deploy
+            # needs activation or rollback proof, not prior-state restoration.
             echo "The target release reached the managed fleet; release capabilities remain dark."
             exit 1
           fi

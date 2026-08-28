@@ -296,6 +296,9 @@ describe("release database connection", () => {
     );
     expect(productionMonitorWorkflow).toContain("postil-release-recovery");
     expect(productionMonitorWorkflow).toContain(
+      "needs.release-recovery.result == 'failure' && 'postil-release-recovery' || needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test'",
+    );
+    expect(productionMonitorWorkflow).toContain(
       "bun scripts/run-release-migrations.ts --verify-clear",
     );
     expect(deactivationScript).toContain("resolveDirectDatabaseUrl");

@@ -78,8 +78,10 @@ jobs:
           if [[ "${latest_deploy_run_id}" != "${FAILED_DEPLOY_RUN_ID}" ]]; then
             echo "Taking recovery ownership for the latest deployment run."
           fi
+          # Durable database state is authoritative. No journal plus both
+          # active fleet capabilities means no release preparation remains.
           if bun scripts/run-release-migrations.ts --verify-clear >/dev/null 2>&1; then
-            echo "A newer deployment already cleared release preparation."
+            echo "Release preparation is already active and clear."
             exit 0
           fi
           machines=$(flyctl machine list --app postil-web --json)
@@ -524,7 +526,7 @@ jobs:
         with:
           event-type: ALERT
           summary: ${{ needs.release-recovery.result == 'failure' && 'Postil release recovery failed' || needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
-          alert-key: ${{ needs.release-recovery.result == 'failure' && 'postil-release-recovery' || inputs.test_alert == true && 'postil-production-monitor-test' || 'postil-production-monitor' }}
+          alert-key: ${{ needs.release-recovery.result == 'failure' && 'postil-release-recovery' || needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test' }}
           details: >-
             ${{ needs.release-recovery.result == 'failure'
                 && 'Failed deployment left release recovery unresolved. Run log:'
