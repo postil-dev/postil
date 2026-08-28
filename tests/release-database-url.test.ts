@@ -55,12 +55,18 @@ describe("release database connection", () => {
       POSTIL_DB_POOL_MAX: "2",
     };
     let childEnvironment: Record<string, string | undefined> | undefined;
+    const commands: Array<readonly string[]> = [];
 
-    await runReleaseMigrations(parentEnvironment, (environment) => {
+    await runReleaseMigrations(parentEnvironment, (command, environment) => {
+      commands.push(command);
       childEnvironment = environment;
       return { exited: Promise.resolve(0) };
     });
 
+    expect(commands).toEqual([
+      ["bun", "run", "hosted:deactivate-release"],
+      ["bun", "run", "db:migrate"],
+    ]);
     expect(parentEnvironment.DATABASE_URL).toBe(runtimeUrl);
     expect(childEnvironment?.DATABASE_URL).toBe(new URL(directUrl).toString());
     expect(childEnvironment?.POSTIL_DIRECT_DATABASE_URL).toBeUndefined();
@@ -78,7 +84,7 @@ describe("release database connection", () => {
     try {
       await writeFile(
         fakeBun,
-        `#!${process.execPath}\nawait Bun.write(process.env.POSTIL_TEST_CAPTURE_PATH, JSON.stringify({ arguments: process.argv.slice(2), databaseUrl: process.env.DATABASE_URL, hasDirectDatabaseUrl: "POSTIL_DIRECT_DATABASE_URL" in process.env }));\n`,
+        `#!${process.execPath}\nconst path = process.env.POSTIL_TEST_CAPTURE_PATH; let entries = []; try { entries = JSON.parse(await Bun.file(path).text()); } catch {} entries.push({ arguments: process.argv.slice(2), databaseUrl: process.env.DATABASE_URL, hasDirectDatabaseUrl: "POSTIL_DIRECT_DATABASE_URL" in process.env }); await Bun.write(path, JSON.stringify(entries));\n`,
       );
       await chmod(fakeBun, 0o755);
 
@@ -100,15 +106,20 @@ describe("release database connection", () => {
       const stderr = await new Response(wrapper.stderr).text();
       expect(exitCode, stderr).toBe(0);
 
-      const capture = JSON.parse(await readFile(capturePath, "utf8")) as {
+      const capture = JSON.parse(await readFile(capturePath, "utf8")) as Array<{
         arguments: string[];
         databaseUrl: string;
         hasDirectDatabaseUrl: boolean;
-      };
-      expect(capture.arguments).toEqual(["run", "db:migrate"]);
-      expect(new URL(capture.databaseUrl).port).toBe("5432");
-      expect(new URL(capture.databaseUrl).searchParams.has("pgbouncer")).toBe(false);
-      expect(capture.hasDirectDatabaseUrl).toBe(false);
+      }>;
+      expect(capture.map((entry) => entry.arguments)).toEqual([
+        ["run", "hosted:deactivate-release"],
+        ["run", "db:migrate"],
+      ]);
+      for (const entry of capture) {
+        expect(new URL(entry.databaseUrl).port).toBe("5432");
+        expect(new URL(entry.databaseUrl).searchParams.has("pgbouncer")).toBe(false);
+        expect(entry.hasDirectDatabaseUrl).toBe(false);
+      }
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
@@ -122,10 +133,10 @@ describe("release database connection", () => {
       runReleaseMigrations(environment, () => {
         throw new Error("spawn failed");
       }),
-    ).rejects.toThrow("release database migration could not start");
+    ).rejects.toThrow("release database deactivation could not start");
     await expect(
       runReleaseMigrations(environment, () => ({ exited: Promise.reject(new Error("lost child")) })),
-    ).rejects.toThrow("release database migration status could not be observed");
+    ).rejects.toThrow("release database deactivation status could not be observed");
   });
 
   test("keeps the checked-in release and deploy contracts aligned", async () => {
@@ -139,9 +150,7 @@ describe("release database connection", () => {
       "utf8",
     );
 
-    expect(packageJson.scripts["release:prepare"]).toStartWith(
-      "bun run hosted:deactivate-release && bun run db:migrate:release",
-    );
+    expect(packageJson.scripts["release:prepare"]).toStartWith("bun run db:migrate:release");
     expect(packageJson.scripts["db:migrate:release"]).toBe(
       "bun run scripts/run-release-migrations.ts",
     );
