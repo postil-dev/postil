@@ -33,7 +33,10 @@ import {
   restoreManagedReleasePreparation,
   withPublicationLifecycleReleaseActive,
 } from "@/lib/release-job-rollout";
-import { compensateReleasePreparation } from "../scripts/run-release-migrations";
+import {
+  compensateReleasePreparation,
+  releasePreparationCleared,
+} from "../scripts/run-release-migrations";
 
 const realAppAuth = await import("@/lib/github/app-auth");
 const realChecks = await import("@/lib/github/checks");
@@ -987,6 +990,10 @@ describeDb("publication receipt migration and lifecycle", () => {
     await prepareManagedReleaseCapabilities(pool, releaseSha, true);
 
     expect(
+      await releasePreparationCleared({ DATABASE_URL: TEST_URL! }),
+    ).toBe(false);
+
+    expect(
       await compensateReleasePreparation({
         DATABASE_URL: TEST_URL!,
         POSTIL_RELEASE_SHA: releaseSha,
@@ -1013,9 +1020,12 @@ describeDb("publication receipt migration and lifecycle", () => {
       `hosted-inference-release:${releaseSha}`,
       "publication-lifecycle-fleet-active",
     ]);
+    expect(
+      await releasePreparationCleared({ DATABASE_URL: TEST_URL! }),
+    ).toBe(true);
   });
 
-  test("same-release recovery re-reads a replacement journal under the lifecycle locks", async () => {
+  test("same-release process compensation cannot overwrite a replacement generation", async () => {
     const releaseSha = "6".repeat(40);
     const capabilityNames = [
       "publication-lifecycle-fleet-active",
@@ -1034,42 +1044,85 @@ describeDb("publication receipt migration and lifecycle", () => {
               ($1)`,
       [`hosted-inference-release:${releaseSha}`],
     );
-    await prepareManagedReleaseCapabilities(pool, releaseSha, true);
-
-    let replaced = false;
-    const interceptedPool = {
-      query: async (text: string, values?: readonly unknown[]) => {
-        const result = await pool.query(text, values as never[] | undefined);
-        if (!replaced) {
-          replaced = true;
-          await restoreManagedReleasePreparation(pool, releaseSha);
-          await pool.query(
-            "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
-            [capabilityNames],
-          );
-          await pool.query(
-            `INSERT INTO deployment_capabilities (name)
-             VALUES ('hosted-inference-fleet-active')`,
-          );
-          await prepareManagedReleaseCapabilities(pool, releaseSha, true);
-        }
-        return result;
-      },
-      connect: () => pool.connect(),
-    } as unknown as Pool;
-
+    const original = await prepareManagedReleaseCapabilities(
+      pool,
+      releaseSha,
+      true,
+    );
     expect(
-      await restoreManagedReleasePreparation(interceptedPool, releaseSha),
+      await restoreManagedReleasePreparation(
+        pool,
+        releaseSha,
+        original.generation,
+      ),
     ).toBe(true);
-    const restored = await pool.query<{ name: string }>(
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
+      [capabilityNames],
+    );
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('hosted-inference-fleet-active')`,
+    );
+    const replacement = await prepareManagedReleaseCapabilities(
+      pool,
+      releaseSha,
+      true,
+    );
+
+    await restoreManagedReleaseCapabilities(pool, original);
+    const stillDark = await pool.query<{ name: string }>(
       `SELECT name FROM deployment_capabilities
         WHERE name = ANY($1::text[])
         ORDER BY name`,
       [capabilityNames],
     );
-    expect(restored.rows.map((row) => row.name)).toEqual([
-      "hosted-inference-fleet-active",
+    expect(stillDark.rows.map((row) => row.name)).toEqual([
+      `hosted-inference-dark:${releaseSha}`,
     ]);
+    expect(
+      await restoreManagedReleasePreparation(
+        pool,
+        releaseSha,
+        replacement.generation,
+      ),
+    ).toBe(true);
+    await activatePublicationLifecycleRelease(pool);
+  });
+
+  test("a newer preparation adopts and replaces every superseded journal", async () => {
+    const firstRelease = "4".repeat(40);
+    const secondRelease = "3".repeat(40);
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('publication-lifecycle-fleet-active'),
+              ('hosted-inference-fleet-active')
+       ON CONFLICT (name) DO NOTHING`,
+    );
+    await prepareManagedReleaseCapabilities(pool, firstRelease, true);
+    const second = await prepareManagedReleaseCapabilities(
+      pool,
+      secondRelease,
+      true,
+    );
+    expect(second.capabilities).toEqual([
+      "hosted-inference-fleet-active",
+      "publication-lifecycle-fleet-active",
+    ]);
+    const pending = await pool.query<{ name: string }>(
+      `SELECT name FROM deployment_capabilities
+        WHERE name LIKE 'managed-release-preparation:%:root'`,
+    );
+    expect(pending.rows.map((row) => row.name)).toEqual([
+      `managed-release-preparation:${secondRelease}:${second.generation}:root`,
+    ]);
+    expect(
+      await restoreManagedReleasePreparation(
+        pool,
+        secondRelease,
+        second.generation,
+      ),
+    ).toBe(true);
     await activatePublicationLifecycleRelease(pool);
   });
 

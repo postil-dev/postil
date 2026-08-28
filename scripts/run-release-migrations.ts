@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import {
   type ManagedReleaseCapabilitySnapshot,
   prepareManagedReleaseCapabilities,
-  restoreManagedReleasePreparation,
+  restoreAllManagedReleasePreparations,
   restoreManagedReleaseCapabilities,
 } from "@/lib/release-job-rollout";
 import { resolveDirectDatabaseUrl } from "./resolve-direct-database-url";
@@ -155,7 +155,38 @@ export async function compensateReleasePreparation(
   try {
     const schema = await releaseSchemaState(pool);
     if (!schema.hostedReady) return false;
-    return await restoreManagedReleasePreparation(pool, releaseSha);
+    return (await restoreAllManagedReleasePreparations(pool)) > 0;
+  } finally {
+    await pool.end();
+  }
+}
+
+export async function releasePreparationCleared(
+  environment: Environment = process.env,
+): Promise<boolean> {
+  const databaseEnvironment = releaseMigrationEnvironment(environment);
+  const pool = new Pool({ connectionString: databaseEnvironment.DATABASE_URL });
+  try {
+    const schema = await releaseSchemaState(pool);
+    if (!schema.publicationLifecycleReady) return false;
+    const state = await pool.query<{ ready: boolean }>(
+      `SELECT
+         NOT EXISTS (
+           SELECT 1 FROM deployment_capabilities WHERE name LIKE $1
+         )
+         AND EXISTS (
+           SELECT 1 FROM deployment_capabilities WHERE name = $2
+         )
+         AND EXISTS (
+           SELECT 1 FROM deployment_capabilities WHERE name = $3
+         ) AS ready`,
+      [
+        "managed-release-preparation:%",
+        "publication-lifecycle-fleet-active",
+        "hosted-inference-fleet-active",
+      ],
+    );
+    return state.rows[0]?.ready === true;
   } finally {
     await pool.end();
   }
@@ -222,6 +253,13 @@ if (import.meta.main) {
     console.log(
       `release preparation compensation: ${restored ? "restored" : "not pending"}`,
     );
+    process.exit(0);
+  }
+  if (process.argv[2] === "--verify-clear") {
+    if (!(await releasePreparationCleared())) {
+      throw new Error("release preparation remains pending or fleet capabilities are dark");
+    }
+    console.log("release preparation state is clear and active");
     process.exit(0);
   }
   const controller = new AbortController();

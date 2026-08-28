@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Pool, PoolClient } from "pg";
 
 import type { Database } from "@/lib/db";
@@ -673,6 +675,7 @@ export async function deactivateHostedInferenceRelease(
 
 export interface ManagedReleaseCapabilitySnapshot {
   releaseSha: string;
+  generation: string;
   publicationLifecycleReady: boolean;
   capabilities: string[];
 }
@@ -686,7 +689,10 @@ function managedReleaseCapabilityNames(releaseSha: string): string[] {
   ];
 }
 
-function managedReleasePreparationNames(releaseSha: string): {
+function managedReleasePreparationNames(
+  releaseSha: string,
+  generation: string,
+): {
   root: string;
   publicationReady: string;
   publicationActive: string;
@@ -694,7 +700,7 @@ function managedReleasePreparationNames(releaseSha: string): {
   hostedReleaseActive: string;
   hostedDarkActive: string;
 } {
-  const prefix = `${MANAGED_RELEASE_PREPARATION_PREFIX}${releaseSha}:`;
+  const prefix = `${MANAGED_RELEASE_PREPARATION_PREFIX}${releaseSha}:${generation}:`;
   return {
     root: `${prefix}root`,
     publicationReady: `${prefix}publication-ready`,
@@ -707,9 +713,10 @@ function managedReleasePreparationNames(releaseSha: string): {
 
 function managedReleasePreparationSnapshot(
   releaseSha: string,
+  generation: string,
   names: readonly string[],
 ): ManagedReleaseCapabilitySnapshot | undefined {
-  const journal = managedReleasePreparationNames(releaseSha);
+  const journal = managedReleasePreparationNames(releaseSha, generation);
   const present = new Set(names);
   if (!present.has(journal.root)) return undefined;
   const capabilities: string[] = [];
@@ -727,6 +734,7 @@ function managedReleasePreparationSnapshot(
   }
   return {
     releaseSha,
+    generation,
     publicationLifecycleReady: present.has(journal.publicationReady),
     capabilities,
   };
@@ -738,7 +746,8 @@ async function captureManagedReleaseCapabilities(
   publicationLifecycleReady: boolean,
 ): Promise<ManagedReleaseCapabilitySnapshot> {
   const names = managedReleaseCapabilityNames(releaseSha);
-  const journal = managedReleasePreparationNames(releaseSha);
+  const generation = randomUUID();
+  const journal = managedReleasePreparationNames(releaseSha, generation);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -755,6 +764,7 @@ async function captureManagedReleaseCapabilities(
     );
     const snapshot: ManagedReleaseCapabilitySnapshot = {
       releaseSha,
+      generation,
       publicationLifecycleReady,
       capabilities: existing.rows.map((row) => row.name),
     };
@@ -797,7 +807,7 @@ export async function prepareManagedReleaseCapabilities(
   publicationLifecycleReady: boolean,
 ): Promise<ManagedReleaseCapabilitySnapshot> {
   const normalizedRelease = normalizedReleaseSha(releaseSha);
-  await restoreManagedReleasePreparation(pool, normalizedRelease);
+  await restoreAllManagedReleasePreparations(pool);
   const snapshot = await captureManagedReleaseCapabilities(
     pool,
     normalizedRelease,
@@ -833,43 +843,40 @@ export async function restoreManagedReleaseCapabilities(
   pool: Pool,
   snapshot: ManagedReleaseCapabilitySnapshot,
 ): Promise<void> {
-  await restoreManagedReleaseCapabilitiesInternal(pool, snapshot, false);
+  await restoreManagedReleaseCapabilitiesInternal(pool, snapshot);
 }
 
 async function restoreManagedReleaseCapabilitiesInternal(
   pool: Pool,
   snapshot: ManagedReleaseCapabilitySnapshot,
-  requireJournal: boolean,
 ): Promise<boolean> {
   const names = managedReleaseCapabilityNames(snapshot.releaseSha);
-  const journal = managedReleasePreparationNames(snapshot.releaseSha);
+  const journal = managedReleasePreparationNames(
+    snapshot.releaseSha,
+    snapshot.generation,
+  );
   const journalNames = Object.values(journal);
-  let effectiveSnapshot = snapshot;
   const client = await pool.connect();
   let releaseError: Error | undefined;
   try {
     await client.query("BEGIN");
-    if (requireJournal || snapshot.publicationLifecycleReady) {
-      await lockPublicationLifecycleExclusive(client);
-    }
+    await lockPublicationLifecycleExclusive(client);
     await client.query(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [HOSTED_INFERENCE_LOCK],
     );
-    if (requireJournal) {
-      const durable = await client.query<{ name: string }>(
-        "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[])",
-        [journalNames],
-      );
-      const current = managedReleasePreparationSnapshot(
-        snapshot.releaseSha,
-        durable.rows.map((row) => row.name),
-      );
-      if (!current) {
-        await client.query("COMMIT");
-        return false;
-      }
-      effectiveSnapshot = current;
+    const durable = await client.query<{ name: string }>(
+      "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[])",
+      [journalNames],
+    );
+    const effectiveSnapshot = managedReleasePreparationSnapshot(
+      snapshot.releaseSha,
+      snapshot.generation,
+      durable.rows.map((row) => row.name),
+    );
+    if (!effectiveSnapshot) {
+      await client.query("COMMIT");
+      return false;
     }
     const expected = new Set(names);
     if (
@@ -952,19 +959,52 @@ async function restoreManagedReleaseCapabilitiesInternal(
 export async function restoreManagedReleasePreparation(
   pool: Pool,
   releaseSha: string,
+  generation: string,
 ): Promise<boolean> {
   const normalizedRelease = normalizedReleaseSha(releaseSha);
-  const journal = managedReleasePreparationNames(normalizedRelease);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generation)) {
+    throw new Error("managed release preparation generation is invalid");
+  }
+  const journal = managedReleasePreparationNames(
+    normalizedRelease,
+    generation,
+  );
   const durable = await pool.query<{ name: string }>(
     "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[])",
     [Object.values(journal)],
   );
   const snapshot = managedReleasePreparationSnapshot(
     normalizedRelease,
+    generation,
     durable.rows.map((row) => row.name),
   );
   if (!snapshot) return false;
-  return restoreManagedReleaseCapabilitiesInternal(pool, snapshot, true);
+  return restoreManagedReleaseCapabilitiesInternal(pool, snapshot);
+}
+
+/** Unwind every pending preparation from newest to oldest. */
+export async function restoreAllManagedReleasePreparations(
+  pool: Pool,
+): Promise<number> {
+  const roots = await pool.query<{ name: string }>(
+    `SELECT name
+       FROM deployment_capabilities
+      WHERE name LIKE $1
+        AND name LIKE '%:root'
+      ORDER BY activated_at DESC, name DESC`,
+    [`${MANAGED_RELEASE_PREPARATION_PREFIX}%`],
+  );
+  let restored = 0;
+  for (const row of roots.rows) {
+    const match = row.name.match(
+      /^managed-release-preparation:([0-9a-f]{7,40}):([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):root$/,
+    );
+    if (!match) continue;
+    if (await restoreManagedReleasePreparation(pool, match[1]!, match[2]!)) {
+      restored += 1;
+    }
+  }
+  return restored;
 }
 
 /** Atomically park a claimed hosted review until a verified managed release activates. */

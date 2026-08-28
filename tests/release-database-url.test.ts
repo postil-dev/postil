@@ -148,6 +148,7 @@ describe("release database connection", () => {
     };
     const snapshot = {
       releaseSha: "a".repeat(40),
+      generation: "00000000-0000-4000-8000-000000000001",
       publicationLifecycleReady: true,
       capabilities: [
         "publication-lifecycle-fleet-active",
@@ -188,6 +189,7 @@ describe("release database connection", () => {
     };
     const snapshot = {
       releaseSha: "b".repeat(40),
+      generation: "00000000-0000-4000-8000-000000000002",
       publicationLifecycleReady: true,
       capabilities: ["publication-lifecycle-fleet-active"],
     };
@@ -235,6 +237,7 @@ describe("release database connection", () => {
   test("leaves durable compensation pending when child termination is unobservable", async () => {
     const snapshot = {
       releaseSha: "c".repeat(40),
+      generation: "00000000-0000-4000-8000-000000000003",
       publicationLifecycleReady: true,
       capabilities: ["publication-lifecycle-fleet-active"],
     };
@@ -290,6 +293,10 @@ describe("release database connection", () => {
     );
     expect(productionMonitorWorkflow).toContain(
       "Postil release recovery failed",
+    );
+    expect(productionMonitorWorkflow).toContain("postil-release-recovery");
+    expect(productionMonitorWorkflow).toContain(
+      "bun scripts/run-release-migrations.ts --verify-clear",
     );
     expect(deactivationScript).toContain("resolveDirectDatabaseUrl");
     expect(deactivationScript).toContain("publication_lifecycle_required_at");

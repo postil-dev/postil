@@ -332,6 +332,21 @@ jobs:
         run: |
           set -euo pipefail
           machines=$(flyctl machine list --app postil-web --json)
+          managed_count=$(jq -r '[.[] | select(
+            .config.metadata.fly_process_group == "web" or
+            .config.metadata.fly_process_group == "worker" or
+            .config.metadata.fly_process_group == "monitor"
+          )] | length' <<<"${machines}")
+          started_count=$(jq -r '[.[] | select(
+            .state == "started" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          )] | length' <<<"${machines}")
+          if [[ "${managed_count}" -lt 4 || "${started_count}" -ne "${managed_count}" ]]; then
+            echo "Managed fleet state is incomplete; release capabilities remain dark."
+            exit 1
+          fi
           target_seen=0
           releases=()
           while IFS= read -r id; do
@@ -345,7 +360,6 @@ jobs:
             releases+=("${release}")
             if [[ "${release}" == "${GITHUB_SHA}" ]]; then
               target_seen=1
-              break
             fi
           done < <(jq -r '.[] | select(
             .state == "started" and
@@ -353,17 +367,17 @@ jobs:
              .config.metadata.fly_process_group == "worker" or
              .config.metadata.fly_process_group == "monitor")
           ) | .id' <<<"${machines}")
-          if [[ "${target_seen}" -ne 0 ]]; then
-            echo "A target-release machine is running; release capabilities remain dark."
-            exit 0
-          fi
-          if [[ "${#releases[@]}" -lt 4 ]]; then
+          if [[ "${#releases[@]}" -ne "${managed_count}" ]]; then
             echo "Managed fleet evidence is incomplete; release capabilities remain dark."
             exit 1
           fi
           unique_release_count=$(printf '%s\n' "${releases[@]}" | sort -u | wc -l)
           if [[ "${unique_release_count}" -ne 1 ]]; then
             echo "The managed fleet is mixed; release capabilities remain dark."
+            exit 1
+          fi
+          if [[ "${target_seen}" -ne 0 ]]; then
+            echo "The target release reached the managed fleet; release capabilities remain dark."
             exit 1
           fi
           bun scripts/run-release-migrations.ts --compensate
