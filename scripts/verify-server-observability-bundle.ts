@@ -55,6 +55,9 @@ const server = Bun.spawn(
       NEXT_TELEMETRY_DISABLED: "1",
       NODE_ENV: "production",
       PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+      // Do not pre-seed POSTIL_BOOT_PROBE_READY. The Node instrumentation
+      // hook sets it after startup registration, and the health header below
+      // proves that the built server actually ran that hook.
       POSTIL_BOOT_PROBE: bootProbe,
       POSTIL_PUBLIC_URL: "https://postil.invalid",
       POSTIL_SEALING_KEY: crypto.randomUUID().replaceAll("-", "").repeat(2),
