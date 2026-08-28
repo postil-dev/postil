@@ -1,3 +1,6 @@
+-- Release preparation darkens publication and drains operations tracked by the
+-- v1 durable job and lease protocol before these triggers use the v2 key. The
+-- distinct key prevents obsolete session locks from blocking this protocol.
 CREATE OR REPLACE FUNCTION "postil_require_publication_lifecycle"()
 RETURNS trigger
 LANGUAGE plpgsql

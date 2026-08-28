@@ -45,7 +45,6 @@ function databaseClientError(error: unknown, fallback: string): Error {
 async function lockPublicationLifecycleExclusive(
   client: PoolClient,
 ): Promise<void> {
-  const deadline = Date.now() + PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS;
   const configuredLockTimeout = await client.query<{ lock_timeout: string }>(
     "SHOW lock_timeout",
   );
@@ -55,50 +54,43 @@ async function lockPublicationLifecycleExclusive(
       "publication lifecycle lock timeout configuration is unavailable",
     );
   }
-  while (true) {
-    const acquired = await client.query<{ acquired: boolean }>(
-      "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired",
+  await client.query("SAVEPOINT publication_lifecycle_lock_attempt");
+  try {
+    // Keep one exclusive request continuously queued. Trigger try-locks then
+    // defer new producers without a polling gap that could starve the drain.
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [
+      `${PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS}ms`,
+    ]);
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [PUBLICATION_LIFECYCLE_LOCK],
     );
-    if (acquired.rows[0]?.acquired === true) return;
-
-    await client.query("SAVEPOINT publication_lifecycle_lock_attempt");
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [
+      lockTimeout,
+    ]);
+    await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
+  } catch (error) {
     try {
-      // A bounded blocking request enters PostgreSQL's lock queue. Trigger
-      // try-locks then defer new producers instead of extending this drain.
-      await client.query("SET LOCAL lock_timeout = '250ms'");
-      await client.query(
-        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-        [PUBLICATION_LIFECYCLE_LOCK],
-      );
-      await client.query("SELECT set_config('lock_timeout', $1, true)", [
-        lockTimeout,
-      ]);
+      await client.query("ROLLBACK TO SAVEPOINT publication_lifecycle_lock_attempt");
       await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
-      return;
-    } catch (error) {
-      try {
-        await client.query("ROLLBACK TO SAVEPOINT publication_lifecycle_lock_attempt");
-        await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [
-            databaseClientError(error, "publication lifecycle lock attempt failed"),
-            databaseClientError(
-              cleanupError,
-              "publication lifecycle lock savepoint cleanup failed",
-            ),
-          ],
-          "publication lifecycle lock attempt and savepoint cleanup failed",
-        );
-      }
-      if ((error as { code?: string }).code !== "55P03") throw error;
-      if (Date.now() >= deadline) {
-        throw new Error(
-          "publication lifecycle lock did not quiesce within 30 seconds",
-        );
-      }
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [
+          databaseClientError(error, "publication lifecycle lock attempt failed"),
+          databaseClientError(
+            cleanupError,
+            "publication lifecycle lock savepoint cleanup failed",
+          ),
+        ],
+        "publication lifecycle lock attempt and savepoint cleanup failed",
+      );
     }
+    if ((error as { code?: string }).code === "55P03") {
+      throw new Error(
+        "publication lifecycle lock did not quiesce within 30 seconds",
+      );
+    }
+    throw error;
   }
 }
 

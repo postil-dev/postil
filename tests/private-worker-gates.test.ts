@@ -224,8 +224,9 @@ describe("private repository worker defense in depth", () => {
     expect(shared).not.toContain("pg_advisory_lock_shared");
     expect(shared).not.toContain("pg_advisory_unlock_shared");
     expect(activation).toContain("lockPublicationLifecycleExclusive(client)");
-    expect(exclusiveLock).toContain("pg_try_advisory_xact_lock");
-    expect(exclusiveLock).toContain("lock_timeout = '250ms'");
+    expect(exclusiveLock).toContain("pg_advisory_xact_lock");
+    expect(exclusiveLock).not.toContain("pg_try_advisory_xact_lock");
+    expect(exclusiveLock).toContain("PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS");
     expect(exclusiveLock).toContain("set_config('lock_timeout', $1, true)");
     expect(exclusiveLock).toContain("ROLLBACK TO SAVEPOINT");
     expect(exclusiveLock).not.toContain("pg_terminate_backend");
