@@ -107,7 +107,11 @@ describe("private repository worker defense in depth", () => {
     expect(activation.indexOf("activatePublicationLifecycleRelease")).toBeLessThan(
       activation.indexOf("activateReleaseJobs"),
     );
-    expect(deactivation).toContain("deactivatePublicationLifecycleRelease");
+    expect(deactivation).toContain("prepareManagedReleaseCapabilities");
+    expect(deactivation).not.toContain(
+      "deactivatePublicationLifecycleRelease",
+    );
+    expect(deactivation).not.toContain("deactivateHostedInferenceRelease");
   });
 
   test("disabled hosted inference stops before reservation, config fetch, or CLI spawn", () => {

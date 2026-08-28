@@ -1,8 +1,9 @@
 import { closeDb, getPool } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import {
-  deactivateHostedInferenceRelease,
-  deactivatePublicationLifecycleRelease,
+  HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
+  prepareManagedReleaseCapabilities,
+  PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY,
 } from "@/lib/release-job-rollout";
 import { resolveDirectDatabaseUrl } from "./resolve-direct-database-url";
 
@@ -38,23 +39,27 @@ async function main(): Promise<void> {
       console.log("managed release preparation skipped until the database schema exists");
       return;
     }
-    const publicationLifecycle = schema.rows[0].publicationLifecycleReady
-      ? await deactivatePublicationLifecycleRelease(getPool())
-      : { deactivated: false, parked: 0 };
-    const publicationLifecycleState = !schema.rows[0].publicationLifecycleReady
-      ? "schema not installed"
-      : publicationLifecycle.deactivated
-        ? "prior activation removed"
-        : "already dark";
-    const deactivated = await deactivateHostedInferenceRelease(
+    const preparation = await prepareManagedReleaseCapabilities(
       getPool(),
       releaseSha,
+      schema.rows[0].publicationLifecycleReady,
+    );
+    const publicationLifecycleWasActive = preparation.capabilities.includes(
+      PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY,
+    );
+    const publicationLifecycleState = !schema.rows[0].publicationLifecycleReady
+      ? "schema not installed"
+      : publicationLifecycleWasActive
+        ? "prior activation removed"
+        : "already dark";
+    const hostedInferenceWasActive = preparation.capabilities.includes(
+      HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
     );
     console.log(
-      `managed hosted inference prepared dark: ${deactivated ? "prior activation removed" : "already dark"}`,
+      `managed hosted inference prepared dark: ${hostedInferenceWasActive ? "prior activation removed" : "already dark"}; recovery generation=${preparation.generation}`,
     );
     console.log(
-      `publication lifecycle prepared dark: ${publicationLifecycleState}; parked=${publicationLifecycle.parked}`,
+      `publication lifecycle prepared dark: ${publicationLifecycleState}`,
     );
   } finally {
     await closeDb();

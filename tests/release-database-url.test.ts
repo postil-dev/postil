@@ -347,6 +347,13 @@ describe("release database connection", () => {
     );
     expect(deactivationScript).toContain("resolveDirectDatabaseUrl");
     expect(deactivationScript).toContain("publication_lifecycle_required_at");
+    expect(deactivationScript).toContain("prepareManagedReleaseCapabilities");
+    expect(deactivationScript).not.toContain(
+      "deactivateHostedInferenceRelease",
+    );
+    expect(deactivationScript).not.toContain(
+      "deactivatePublicationLifecycleRelease",
+    );
     expect(deactivationScript.indexOf("process.env.DATABASE_URL =")).toBeLessThan(
       deactivationScript.indexOf("getPool().query"),
     );

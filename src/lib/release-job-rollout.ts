@@ -175,8 +175,10 @@ export async function deactivatePublicationLifecycleRelease(
   let releaseError: Error | undefined;
   let transactionOpen = false;
   try {
-    // Darken before draining so a legacy publisher that has not passed the
-    // capability check cannot begin while admitted operations finish.
+    // Managed release preparation records a durable recovery journal before
+    // this drain begins. Darken before draining so a legacy publisher that
+    // has not passed the capability check cannot begin while admitted
+    // operations finish; interruption remains fail-closed and recoverable.
     await client.query("BEGIN");
     transactionOpen = true;
     const initial = await darkenPublicationLifecycle(client);
