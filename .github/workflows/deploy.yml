@@ -333,11 +333,11 @@ jobs:
         run: |
           set -euo pipefail
           machines=$(flyctl machine list --app postil-web --json)
-          managed_count=$(jq -r '[.[] | select(
-            .config.metadata.fly_process_group == "web" or
-            .config.metadata.fly_process_group == "worker" or
-            .config.metadata.fly_process_group == "monitor"
-          )] | length' <<<"${machines}")
+          if ! fleet_summary=$(jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}"); then
+            echo "Managed fleet topology is invalid; release capabilities remain dark."
+            exit 1
+          fi
+          managed_count=$(jq -r '.managed_count' <<<"${fleet_summary}")
           started_count=$(jq -r '[.[] | select(
             .state == "started" and
             (.config.metadata.fly_process_group == "web" or

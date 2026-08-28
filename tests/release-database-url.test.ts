@@ -300,6 +300,9 @@ describe("release database connection", () => {
     expect(deployWorkflow).toContain(
       "Restore capabilities when release preparation failed before replacement",
     );
+    expect(
+      deployWorkflow.split("jq -ce -f scripts/verify-managed-fleet.jq").length - 1,
+    ).toBeGreaterThanOrEqual(2);
     expect(deployWorkflow).toContain("bun scripts/run-release-migrations.ts --compensate");
     expect(productionMonitorWorkflow).toContain('workflows: ["deploy"]');
     expect(deployWorkflowConfig.concurrency).toEqual({
