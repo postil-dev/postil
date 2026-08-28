@@ -27,7 +27,9 @@ import { withReviewDecisionScopeLock } from "@/lib/finding-approvals";
 import {
   activatePublicationLifecycleRelease,
   deactivatePublicationLifecycleRelease,
+  prepareManagedReleaseCapabilities,
   publicationLifecycleReleaseActivated,
+  restoreManagedReleaseCapabilities,
   withPublicationLifecycleReleaseActive,
 } from "@/lib/release-job-rollout";
 
@@ -719,6 +721,68 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
   });
 
+  test("queued lifecycle acquisition restores the transaction lock timeout", async () => {
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('publication-lifecycle-fleet-active')
+       ON CONFLICT (name) DO NOTHING`,
+    );
+    const holderPool = new Pool({ connectionString: TEST_URL, max: 1 });
+    const transitionPool = new Pool({ connectionString: TEST_URL, max: 1 });
+    const rowLockPool = new Pool({ connectionString: TEST_URL, max: 1 });
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    let holderAcquired!: () => void;
+    const acquired = new Promise<void>((resolve) => {
+      holderAcquired = resolve;
+    });
+    const holder = withPublicationLifecycleReleaseActive(
+      holderPool,
+      async () => {
+        holderAcquired();
+        await holderReleased;
+      },
+    );
+    const rowLock = await rowLockPool.connect();
+    try {
+      await acquired;
+      await rowLock.query("BEGIN");
+      await rowLock.query(
+        `SELECT name FROM deployment_capabilities
+          WHERE name = 'publication-lifecycle-fleet-active'
+          FOR UPDATE`,
+      );
+      const deactivation = deactivatePublicationLifecycleRelease(
+        transitionPool,
+      ).then(
+        (result) => ({ result, error: undefined }),
+        (error: unknown) => ({ result: undefined, error }),
+      );
+      await Bun.sleep(50);
+      releaseHolder();
+      await holder;
+      await Bun.sleep(400);
+      await rowLock.query("COMMIT");
+
+      const outcome = await deactivation;
+      expect(outcome.error).toBeUndefined();
+      expect(outcome.result).toMatchObject({ deactivated: true });
+    } finally {
+      releaseHolder();
+      await holder.catch(() => undefined);
+      await rowLock.query("ROLLBACK").catch(() => undefined);
+      rowLock.release();
+      await Promise.all([
+        holderPool.end(),
+        transitionPool.end(),
+        rowLockPool.end(),
+      ]);
+      await activatePublicationLifecycleRelease(pool);
+    }
+  });
+
   test("deactivation retires an idle transaction-pool backend and its leaked session state", async () => {
     const stalePool = new Pool({
       connectionString: TEST_URL,
@@ -771,6 +835,78 @@ describeDb("publication receipt migration and lifecycle", () => {
       await stalePool.end();
       await activatePublicationLifecycleRelease(pool);
     }
+  });
+
+  test("failed release preparation restores the exact fleet capabilities", async () => {
+    const releaseSha = "8".repeat(40);
+    const capabilityNames = [
+      "publication-lifecycle-fleet-active",
+      "hosted-inference-fleet-active",
+      `hosted-inference-release:${releaseSha}`,
+      `hosted-inference-dark:${releaseSha}`,
+    ];
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
+      [capabilityNames],
+    );
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('publication-lifecycle-fleet-active'),
+              ('hosted-inference-fleet-active'),
+              ($1)`,
+      [`hosted-inference-release:${releaseSha}`],
+    );
+    const gate = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('gate-state-sync', '{"reviewId":1,"reviewPublicId":"release-compensation"}'::jsonb)
+       RETURNING id`,
+    );
+
+    const snapshot = await prepareManagedReleaseCapabilities(
+      pool,
+      releaseSha,
+      true,
+    );
+    expect(
+      (
+        await pool.query<{ name: string }>(
+          "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[]) ORDER BY name",
+          [capabilityNames],
+        )
+      ).rows.map((row) => row.name),
+    ).toEqual([`hosted-inference-dark:${releaseSha}`]);
+    expect(
+      (
+        await pool.query<{ parked: boolean }>(
+          "SELECT run_after = 'infinity'::timestamptz AS parked FROM jobs WHERE id = $1",
+          [gate.rows[0]!.id],
+        )
+      ).rows[0]?.parked,
+    ).toBe(true);
+
+    await restoreManagedReleaseCapabilities(pool, snapshot);
+    expect(
+      (
+        await pool.query<{ name: string }>(
+          "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[]) ORDER BY name",
+          [capabilityNames],
+        )
+      ).rows.map((row) => row.name),
+    ).toEqual([
+      "hosted-inference-fleet-active",
+      `hosted-inference-release:${releaseSha}`,
+      "publication-lifecycle-fleet-active",
+    ]);
+    expect(
+      (
+        await pool.query<{ due: boolean; dark: boolean }>(
+          `SELECT run_after <= now() AS due,
+                  payload ? '_postilPublicationLifecycleDark' AS dark
+             FROM jobs WHERE id = $1`,
+          [gate.rows[0]!.id],
+        )
+      ).rows[0],
+    ).toEqual({ due: true, dark: false });
   });
 
   test("a gate committed after the activation sweep self-heals", async () => {

@@ -226,6 +226,7 @@ describe("private repository worker defense in depth", () => {
     expect(activation).toContain("lockPublicationLifecycleExclusive(client)");
     expect(exclusiveLock).toContain("pg_try_advisory_xact_lock");
     expect(exclusiveLock).toContain("lock_timeout = '250ms'");
+    expect(exclusiveLock).toContain("set_config('lock_timeout', $1, true)");
     expect(exclusiveLock).toContain("ROLLBACK TO SAVEPOINT");
     expect(exclusiveLock).toContain("pg_terminate_backend");
     expect(exclusiveLock).toContain("publication lifecycle lock did not quiesce");

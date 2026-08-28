@@ -42,6 +42,15 @@ async function lockPublicationLifecycleExclusive(
   client: PoolClient,
 ): Promise<void> {
   const deadline = Date.now() + PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS;
+  const configuredLockTimeout = await client.query<{ lock_timeout: string }>(
+    "SHOW lock_timeout",
+  );
+  const lockTimeout = configuredLockTimeout.rows[0]?.lock_timeout;
+  if (lockTimeout === undefined) {
+    throw new Error(
+      "publication lifecycle lock timeout configuration is unavailable",
+    );
+  }
   while (true) {
     const acquired = await client.query<{ acquired: boolean }>(
       "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired",
@@ -89,6 +98,9 @@ async function lockPublicationLifecycleExclusive(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
         [PUBLICATION_LIFECYCLE_LOCK],
       );
+      await client.query("SELECT set_config('lock_timeout', $1, true)", [
+        lockTimeout,
+      ]);
       await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
       return;
     } catch (error) {
@@ -616,6 +628,137 @@ export async function deactivateHostedInferenceRelease(
     throw error;
   } finally {
     client.release();
+  }
+}
+
+export interface ManagedReleaseCapabilitySnapshot {
+  releaseSha: string;
+  publicationLifecycleReady: boolean;
+  capabilities: string[];
+}
+
+function managedReleaseCapabilityNames(releaseSha: string): string[] {
+  return [
+    PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY,
+    HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
+    hostedInferenceCapability(releaseSha),
+    hostedInferenceDarkCapability(releaseSha),
+  ];
+}
+
+/** Darken one release and retain the exact capability state for compensation. */
+export async function prepareManagedReleaseCapabilities(
+  pool: Pool,
+  releaseSha: string,
+  publicationLifecycleReady: boolean,
+): Promise<ManagedReleaseCapabilitySnapshot> {
+  const normalizedRelease = normalizedReleaseSha(releaseSha);
+  const names = managedReleaseCapabilityNames(normalizedRelease);
+  const existing = await pool.query<{ name: string }>(
+    "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[]) ORDER BY name",
+    [names],
+  );
+  const snapshot: ManagedReleaseCapabilitySnapshot = {
+    releaseSha: normalizedRelease,
+    publicationLifecycleReady,
+    capabilities: existing.rows.map((row) => row.name),
+  };
+  try {
+    if (publicationLifecycleReady) {
+      await deactivatePublicationLifecycleRelease(pool);
+    }
+    await deactivateHostedInferenceRelease(pool, normalizedRelease);
+    return snapshot;
+  } catch (error) {
+    try {
+      await restoreManagedReleaseCapabilities(pool, snapshot);
+    } catch (restoreError) {
+      throw new AggregateError(
+        [
+          databaseClientError(error, "managed release deactivation failed"),
+          databaseClientError(
+            restoreError,
+            "managed release capability compensation failed",
+          ),
+        ],
+        "managed release deactivation and capability compensation failed",
+      );
+    }
+    throw error;
+  }
+}
+
+/** Restore only the release capabilities changed during preparation. */
+export async function restoreManagedReleaseCapabilities(
+  pool: Pool,
+  snapshot: ManagedReleaseCapabilitySnapshot,
+): Promise<void> {
+  const names = managedReleaseCapabilityNames(snapshot.releaseSha);
+  const expected = new Set(names);
+  if (
+    snapshot.capabilities.some((name) => !expected.has(name)) ||
+    new Set(snapshot.capabilities).size !== snapshot.capabilities.length
+  ) {
+    throw new Error("managed release capability snapshot is invalid");
+  }
+  const publicationWasActive = snapshot.capabilities.includes(
+    PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY,
+  );
+  const client = await pool.connect();
+  let releaseError: Error | undefined;
+  try {
+    await client.query("BEGIN");
+    if (snapshot.publicationLifecycleReady) {
+      await lockPublicationLifecycleExclusive(client);
+    }
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [HOSTED_INFERENCE_LOCK],
+    );
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
+      [names],
+    );
+    if (snapshot.capabilities.length > 0) {
+      await client.query(
+        `INSERT INTO deployment_capabilities (name)
+         SELECT unnest($1::text[])`,
+        [snapshot.capabilities],
+      );
+    }
+    if (snapshot.publicationLifecycleReady && publicationWasActive) {
+      await client.query(
+        `UPDATE jobs
+            SET run_after = now(), payload = payload - $1
+          WHERE kind = 'gate-state-sync'
+            AND status = 'queued'
+            AND payload ? $1`,
+        [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "managed release capability compensation rollback failed",
+      );
+      throw new AggregateError(
+        [
+          databaseClientError(
+            error,
+            "managed release capability compensation failed",
+          ),
+          releaseError,
+        ],
+        "managed release capability compensation and rollback failed",
+      );
+    }
+    throw error;
+  } finally {
+    client.release(releaseError);
   }
 }
 

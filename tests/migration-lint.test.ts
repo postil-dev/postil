@@ -384,6 +384,10 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "scripts", "ensure-operational-indexes.ts"),
       "utf8",
     );
+    const releasePreparationScript = await readFile(
+      join(import.meta.dir, "..", "scripts", "run-release-migrations.ts"),
+      "utf8",
+    );
     const packageJson = JSON.parse(
       await readFile(join(import.meta.dir, "..", "package.json"), "utf8"),
     ) as { scripts: Record<string, string> };
@@ -496,8 +500,14 @@ describe("migration lint", () => {
       'CREATE TABLE IF NOT EXISTS "release_steps"',
     );
     expect(releaseScript).toContain("INSERT INTO release_steps");
-    expect(packageJson.scripts["release:prepare"]).toContain(
-      "operational:indexes",
+    expect(packageJson.scripts["release:prepare"]).toBe(
+      "bun run db:migrate:release",
+    );
+    expect(releasePreparationScript).toContain(
+      '["bun", "run", "operational:indexes"]',
+    );
+    expect(releasePreparationScript).toContain(
+      '["bun", "run", "notifications:quiesce"]',
     );
   });
 

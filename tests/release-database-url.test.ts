@@ -64,8 +64,9 @@ describe("release database connection", () => {
     });
 
     expect(commands).toEqual([
-      ["bun", "run", "hosted:deactivate-release"],
       ["bun", "run", "db:migrate"],
+      ["bun", "run", "operational:indexes"],
+      ["bun", "run", "notifications:quiesce"],
     ]);
     expect(parentEnvironment.DATABASE_URL).toBe(runtimeUrl);
     expect(childEnvironment?.DATABASE_URL).toBe(new URL(directUrl).toString());
@@ -112,8 +113,9 @@ describe("release database connection", () => {
         hasDirectDatabaseUrl: boolean;
       }>;
       expect(capture.map((entry) => entry.arguments)).toEqual([
-        ["run", "hosted:deactivate-release"],
         ["run", "db:migrate"],
+        ["run", "operational:indexes"],
+        ["run", "notifications:quiesce"],
       ]);
       for (const entry of capture) {
         expect(new URL(entry.databaseUrl).port).toBe("5432");
@@ -133,10 +135,50 @@ describe("release database connection", () => {
       runReleaseMigrations(environment, () => {
         throw new Error("spawn failed");
       }),
-    ).rejects.toThrow("release database deactivation could not start");
+    ).rejects.toThrow("release database migration could not start");
     await expect(
       runReleaseMigrations(environment, () => ({ exited: Promise.reject(new Error("lost child")) })),
-    ).rejects.toThrow("release database deactivation status could not be observed");
+    ).rejects.toThrow("release database migration status could not be observed");
+  });
+
+  test("restores the captured capability state when any database preparation step fails", async () => {
+    const environment = {
+      DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
+      POSTIL_RELEASE_SHA: "a".repeat(40),
+    };
+    const snapshot = {
+      releaseSha: "a".repeat(40),
+      publicationLifecycleReady: true,
+      capabilities: [
+        "publication-lifecycle-fleet-active",
+        "hosted-inference-fleet-active",
+      ],
+    };
+    const commands: string[][] = [];
+    const restored: unknown[] = [];
+
+    await expect(
+      runReleaseMigrations(
+        environment,
+        (command) => {
+          commands.push([...command]);
+          return {
+            exited: Promise.resolve(
+              command.includes("operational:indexes") ? 17 : 0,
+            ),
+          };
+        },
+        async () => snapshot,
+        async (_databaseEnvironment, captured) => {
+          restored.push(captured);
+        },
+      ),
+    ).rejects.toThrow("release operational indexes failed with status 17");
+    expect(commands).toEqual([
+      ["bun", "run", "db:migrate"],
+      ["bun", "run", "operational:indexes"],
+    ]);
+    expect(restored).toEqual([snapshot]);
   });
 
   test("keeps the checked-in release and deploy contracts aligned", async () => {
@@ -150,7 +192,9 @@ describe("release database connection", () => {
       "utf8",
     );
 
-    expect(packageJson.scripts["release:prepare"]).toStartWith("bun run db:migrate:release");
+    expect(packageJson.scripts["release:prepare"]).toBe(
+      "bun run db:migrate:release",
+    );
     expect(packageJson.scripts["db:migrate:release"]).toBe(
       "bun run scripts/run-release-migrations.ts",
     );
