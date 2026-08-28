@@ -192,6 +192,43 @@ export async function releasePreparationCleared(
   }
 }
 
+export async function pendingReleasePreparationTargets(
+  environment: Environment = process.env,
+): Promise<string[]> {
+  const databaseEnvironment = releaseMigrationEnvironment(environment);
+  const pool = new Pool({ connectionString: databaseEnvironment.DATABASE_URL });
+  try {
+    const schema = await releaseSchemaState(pool);
+    if (!schema.hostedReady) return [];
+    const roots = await pool.query<{ name: string }>(
+      `SELECT name
+         FROM deployment_capabilities
+        WHERE name LIKE $1
+          AND name LIKE '%:root'
+        ORDER BY activated_at DESC, name DESC`,
+      ["managed-release-preparation:%"],
+    );
+    const targets: string[] = [];
+    const seen = new Set<string>();
+    for (const row of roots.rows) {
+      const match = row.name.match(
+        /^managed-release-preparation:([0-9a-f]{7,40}):[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:root$/,
+      );
+      if (!match) {
+        throw new Error("managed release preparation journal is malformed");
+      }
+      const releaseSha = match[1]!;
+      if (!seen.has(releaseSha)) {
+        seen.add(releaseSha);
+        targets.push(releaseSha);
+      }
+    }
+    return targets;
+  } finally {
+    await pool.end();
+  }
+}
+
 async function runReleaseDatabaseCommand(
   command: readonly string[],
   label: string,
@@ -260,6 +297,11 @@ if (import.meta.main) {
       throw new Error("release preparation remains pending or fleet capabilities are dark");
     }
     console.log("release preparation state is clear and active");
+    process.exit(0);
+  }
+  if (process.argv[2] === "--pending-releases") {
+    const targets = await pendingReleasePreparationTargets();
+    if (targets.length > 0) process.stdout.write(`${targets.join("\n")}\n`);
     process.exit(0);
   }
   const controller = new AbortController();

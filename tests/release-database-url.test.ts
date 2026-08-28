@@ -322,12 +322,21 @@ describe("release database connection", () => {
       queue: "max",
       "cancel-in-progress": false,
     });
-    expect(productionMonitorWorkflow).toContain("latest_deploy_run_id");
     expect(productionMonitorWorkflow).toContain(
-      "A newer deployment run owns release recovery.",
+      "bun scripts/run-release-migrations.ts --pending-releases",
     );
     expect(productionMonitorWorkflow).toContain(
-      'recovery_target_sha="${POSTIL_RELEASE_SHA}"',
+      "A newer release preparation owns recovery.",
+    );
+    expect(productionMonitorWorkflow).not.toContain("latest_deploy_run_id");
+    expect(productionMonitorWorkflow).toContain(
+      "github.event_name != 'workflow_run'",
+    );
+    expect(productionMonitorWorkflow).toContain(
+      "needs.release-recovery.outputs.recovered == 'true'",
+    );
+    expect(productionMonitorWorkflow).toContain(
+      'recovery_target_sha="${recovery_targets[0]}"',
     );
     expect(productionMonitorWorkflow).toContain(
       "needs: [smoke, release-recovery]",

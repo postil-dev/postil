@@ -35,6 +35,7 @@ import {
 } from "@/lib/release-job-rollout";
 import {
   compensateReleasePreparation,
+  pendingReleasePreparationTargets,
   releasePreparationCleared,
 } from "../scripts/run-release-migrations";
 
@@ -1095,6 +1096,10 @@ describeDb("publication receipt migration and lifecycle", () => {
     await prepareManagedReleaseCapabilities(pool, releaseSha, true);
 
     expect(
+      await pendingReleasePreparationTargets({ DATABASE_URL: TEST_URL! }),
+    ).toEqual([releaseSha]);
+
+    expect(
       await releasePreparationCleared({ DATABASE_URL: TEST_URL! }),
     ).toBe(false);
 
@@ -1128,6 +1133,9 @@ describeDb("publication receipt migration and lifecycle", () => {
     expect(
       await releasePreparationCleared({ DATABASE_URL: TEST_URL! }),
     ).toBe(true);
+    expect(
+      await pendingReleasePreparationTargets({ DATABASE_URL: TEST_URL! }),
+    ).toEqual([]);
   });
 
   test("same-release process compensation cannot overwrite a replacement generation", async () => {
