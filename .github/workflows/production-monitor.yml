@@ -583,7 +583,7 @@ jobs:
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
         run: bun run scripts/reconcile-ilert-alert-stream.ts --dry-run
-      - name: Reconcile and verify the iLert alert stream
+      - name: Reconcile, deliver, and resolve the unique iLert canary
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
         run: bun run scripts/reconcile-ilert-alert-stream.ts --canary
@@ -664,6 +664,9 @@ jobs:
           summary: Postil release recovery cleared
           alert-key: postil-release-recovery
 
+  # The alert-stream job resolves its unique canary before it succeeds. This
+  # resolver owns only the stable production-monitor alert key, so a manual
+  # canary must not close a production incident.
   resolve:
     name: Resolve external alert
     needs: smoke

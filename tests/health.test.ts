@@ -214,7 +214,7 @@ describe("production monitor workflow", () => {
       "Preview iLert alert-stream reconciliation",
     );
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
-      "Reconcile and verify the iLert alert stream",
+      "Reconcile, deliver, and resolve the unique iLert canary",
     );
     expect(workflow.jobs.notify?.if).not.toContain("inputs.test_alert");
     expect(workflow.jobs.resolve?.if).toContain(
