@@ -18,17 +18,34 @@ async function main(): Promise<void> {
       directDatabaseUrl: process.env.POSTIL_DIRECT_DATABASE_URL,
     });
     delete process.env.POSTIL_DIRECT_DATABASE_URL;
-    const schemaReady = await getPool().query<{ ready: boolean }>(
-      `SELECT to_regclass('public.deployment_capabilities') IS NOT NULL
-          AND to_regclass('public.jobs') IS NOT NULL AS ready`,
+    const schema = await getPool().query<{
+      hostedReady: boolean;
+      publicationLifecycleReady: boolean;
+    }>(
+      `SELECT
+         to_regclass('public.deployment_capabilities') IS NOT NULL AS "hostedReady",
+         to_regclass('public.deployment_capabilities') IS NOT NULL
+           AND to_regclass('public.jobs') IS NOT NULL
+           AND EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'reviews'
+                AND column_name = 'publication_lifecycle_required_at'
+           ) AS "publicationLifecycleReady"`,
     );
-    if (schemaReady.rows[0]?.ready !== true) {
+    if (schema.rows[0]?.hostedReady !== true) {
       console.log("managed release preparation skipped until the database schema exists");
       return;
     }
-    const publicationLifecycle = await deactivatePublicationLifecycleRelease(
-      getPool(),
-    );
+    const publicationLifecycle = schema.rows[0].publicationLifecycleReady
+      ? await deactivatePublicationLifecycleRelease(getPool())
+      : { deactivated: false, parked: 0 };
+    const publicationLifecycleState = !schema.rows[0].publicationLifecycleReady
+      ? "schema not installed"
+      : publicationLifecycle.deactivated
+        ? "prior activation removed"
+        : "already dark";
     const deactivated = await deactivateHostedInferenceRelease(
       getPool(),
       releaseSha,
@@ -37,7 +54,7 @@ async function main(): Promise<void> {
       `managed hosted inference prepared dark: ${deactivated ? "prior activation removed" : "already dark"}`,
     );
     console.log(
-      `publication lifecycle prepared dark: ${publicationLifecycle.deactivated ? "prior activation removed" : "already dark"}; parked=${publicationLifecycle.parked}`,
+      `publication lifecycle prepared dark: ${publicationLifecycleState}; parked=${publicationLifecycle.parked}`,
     );
   } finally {
     await closeDb();

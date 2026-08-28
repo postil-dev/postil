@@ -1,7 +1,8 @@
--- Legacy transaction-pool workers can leave the session-level lifecycle lock
--- attached to an idle Supavisor backend after the logical client returns to
--- the pool. Retire only those exact idle holders before replacing the lock
--- protocol. Active sessions and every unrelated advisory lock remain untouched.
+-- Transaction-pool workers can leave session state attached to an idle
+-- Supavisor backend after the logical client returns to the pool. A backend
+-- selected by the exact lifecycle lock has no active query, so terminating it
+-- intentionally discards all leaked session state on that backend. Active
+-- sessions and backends without the exact lifecycle lock remain untouched.
 DO $$
 DECLARE
   lifecycle_locked boolean := false;

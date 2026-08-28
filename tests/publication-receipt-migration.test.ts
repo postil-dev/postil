@@ -719,7 +719,7 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
   });
 
-  test("deactivation retires an idle transaction-pool session lock", async () => {
+  test("deactivation retires an idle transaction-pool backend and its leaked session state", async () => {
     const stalePool = new Pool({
       connectionString: TEST_URL,
       max: 1,
@@ -734,6 +734,10 @@ describeDb("publication receipt migration and lifecycle", () => {
         "SELECT pg_advisory_lock_shared(hashtextextended($1, 0))",
         ["postil:publication-lifecycle-release"],
       );
+      await holder.query(
+        "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+        ["postil:test-leaked-session-state"],
+      );
 
       expect(await deactivatePublicationLifecycleRelease(pool)).toMatchObject({
         deactivated: true,
@@ -745,6 +749,17 @@ describeDb("publication receipt migration and lifecycle", () => {
       expect(termination?.message).toContain(
         "terminating connection due to administrator command",
       );
+      const leakedState = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND classid::bigint = (
+              (hashtextextended($1, 0) >> 32) & 4294967295
+            )
+            AND objid::bigint = (hashtextextended($1, 0) & 4294967295)`,
+        ["postil:test-leaked-session-state"],
+      );
+      expect(leakedState.rows[0]?.count).toBe("0");
     } finally {
       await holder
         .query(

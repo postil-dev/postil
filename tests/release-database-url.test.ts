@@ -148,6 +148,7 @@ describe("release database connection", () => {
     expect(deployWorkflow).toContain('staged+="DATABASE_URL=${DATABASE_URL}"');
     expect(deployWorkflow).not.toContain("POSTIL_DIRECT_DATABASE_URL");
     expect(deactivationScript).toContain("resolveDirectDatabaseUrl");
+    expect(deactivationScript).toContain("publication_lifecycle_required_at");
     expect(deactivationScript.indexOf("process.env.DATABASE_URL =")).toBeLessThan(
       deactivationScript.indexOf("getPool().query"),
     );
