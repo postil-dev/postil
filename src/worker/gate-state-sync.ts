@@ -39,16 +39,20 @@ interface DesiredGateState {
 
 export async function runGateStateSyncJob(
   payload: GateStateSyncJobPayload,
-  options: { githubTimeoutMs?: number } = {},
+  options: { githubTimeoutMs?: number; db?: Database } = {},
 ): Promise<void> {
+  const db = options.db ?? getDb();
   if (isOrganizationPayload(payload)) {
     validateOrganizationPayload(payload);
-    await runOrganizationGateStateSyncBatch(payload);
+    await runOrganizationGateStateSyncBatch(payload, db);
     return;
   }
   validateReviewPayload(payload);
-  const db = getDb();
   const leaseId = randomUUID();
+  // Publication reconciliation takes the review advisory lock before
+  // updating this row. Keep the same order while the lifecycle wrapper holds
+  // the outer transaction so the publisher lease cannot invert those locks.
+  await lockReviewApprovalState(db, payload.reviewId);
   if (!(await acquireGatePublisherLease(db, payload, leaseId))) return;
   try {
     for (let iteration = 0; iteration < 8; iteration += 1) {
@@ -134,6 +138,10 @@ async function loadDesiredGateState(
         engineGateFailing: schema.reviews.engineGateFailing,
         gateFailing: schema.reviews.gateFailing,
         gateCheckRunId: schema.reviews.gateCheckRunId,
+        publicationLifecycleReconciledAt:
+          schema.reviews.publicationLifecycleReconciledAt,
+        publicationLifecycleRequiredAt:
+          schema.reviews.publicationLifecycleRequiredAt,
         repoFullName: schema.repositories.fullName,
         repositoryEnabled: schema.repositories.enabled,
         orgId: schema.installations.orgId,
@@ -170,7 +178,10 @@ async function loadDesiredGateState(
     (row.status !== "completed" && row.status !== "failed") ||
     !row.repositoryEnabled ||
     row.installationSuspended ||
-    !row.gateCheckRunId
+    !row.gateCheckRunId ||
+    (row.status === "completed" &&
+      row.publicationLifecycleRequiredAt &&
+      !row.publicationLifecycleReconciledAt)
   ) return null;
 
   const latest = (
@@ -248,6 +259,10 @@ async function loadDesiredGateState(
     summary,
     detailsUrl,
     headSha: row.headSha,
+    publicationLifecycleReconciledAt:
+      row.publicationLifecycleReconciledAt?.toISOString() ?? null,
+    publicationLifecycleRequiredAt:
+      row.publicationLifecycleRequiredAt?.toISOString() ?? null,
   });
   return {
     review,
@@ -264,8 +279,8 @@ async function loadDesiredGateState(
 
 async function runOrganizationGateStateSyncBatch(
   payload: OrganizationGateStateSyncJobPayload,
+  db: Database,
 ): Promise<void> {
-  const db = getDb();
   const cursorDate = payload.cursor ? new Date(payload.cursor.queuedAt) : null;
   const result = await db.execute(sql<{
     reviewId: string;

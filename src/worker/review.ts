@@ -29,9 +29,12 @@ import {
   isEnvelopeOperationallyUnavailable,
   type Envelope,
 } from "@/lib/envelope";
-import { enqueueGateStateSync } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
+import { withReviewDecisionScopeLock } from "@/lib/finding-approvals";
+import {
+  observeGitHubReviewThreads,
+  resolveGitHubReviewThreads,
+} from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
@@ -92,6 +95,7 @@ import {
 } from "@/lib/large-review-resume";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
 import {
+  completeReviewPublicationLifecycle,
   finalizeStagedReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
   type ReviewCompletionInput,
@@ -106,7 +110,10 @@ import {
   HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
   PUBLICATION_INELIGIBLE_MESSAGE,
 } from "@/lib/review-outcome";
-import { HostedInferenceReleaseDarkError } from "@/lib/release-job-rollout";
+import {
+  HostedInferenceReleaseDarkError,
+  publicationLifecycleReleaseActivated,
+} from "@/lib/release-job-rollout";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
   consumePrivateWorkerRehearsalAfterStaging,
@@ -114,7 +121,7 @@ import {
 } from "@/lib/private-worker-rehearsal";
 import {
   applyPublicationThreadObservations,
-  getPullRequestPublicationCommentIds,
+  getPullRequestPublicationThreadPlan,
   readPublicationReceipt,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
@@ -145,7 +152,10 @@ export class WorkerShutdownError extends OperationalError {
 }
 
 export class ReviewPublicationReconciliationError extends OperationalError {
-  constructor(message = "review publication reconciliation is pending") {
+  constructor(
+    message = "review publication reconciliation is pending",
+    readonly reconciliationStartedAt = new Date(),
+  ) {
     super(message);
     this.name = "ReviewPublicationReconciliationError";
   }
@@ -700,14 +710,57 @@ function reviewUsageFromEnvelope(
   }));
 }
 
-async function resumeStagedReviewCompletion(input: {
+async function reconcileReviewPublicationLifecycle(input: {
+  pool: import("pg").Pool;
+  token: string;
+  reviewId: number;
+  reviewPublicId: string;
+  repositoryId: number;
+  repoFullName: string;
+  prNumber: number;
+  signal?: AbortSignal;
+}): Promise<number> {
+  return withReviewDecisionScopeLock(
+    input.pool,
+    input.reviewId,
+    async (lockedDb) => {
+      const threadPlan = await getPullRequestPublicationThreadPlan(
+        lockedDb,
+        input.repositoryId,
+        input.prNumber,
+      );
+      const observed = await observeGitHubReviewThreads(
+        input.token,
+        input.repoFullName,
+        input.prNumber,
+        threadPlan.commentIds,
+        input.signal,
+      );
+      const observations = await resolveGitHubReviewThreads(
+        input.token,
+        observed,
+        threadPlan.resolveCommentIds,
+        input.signal,
+      );
+      await applyPublicationThreadObservations(lockedDb, observations);
+      await completeReviewPublicationLifecycle(lockedDb, {
+        reviewId: input.reviewId,
+        reviewPublicId: input.reviewPublicId,
+      });
+      return observations.length;
+    },
+  );
+}
+
+export async function resumeStagedReviewCompletion(input: {
   db: Database;
+  pool: import("pg").Pool;
   payload: ReviewJobPayload;
   installation: { id: number; orgId: number | null; orgSlug: string | null };
   repository: { id: number; githubRepoId: number; fullName: string };
   signal?: AbortSignal;
 }): Promise<boolean> {
-  const { db, payload, installation, repository, signal } = input;
+  const { db, pool, payload, installation, repository, signal } = input;
   const trigger = normalizeReviewTriggerContext(payload.trigger);
   const selection = {
     id: schema.reviews.id,
@@ -725,12 +778,18 @@ async function resumeStagedReviewCompletion(input: {
     envelope: schema.reviews.envelope,
     advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
     gateCheckRunId: schema.reviews.gateCheckRunId,
+    finishedAt: schema.reviews.finishedAt,
+    publicationStagedAt: schema.reviewPublicationReceipts.observedAt,
   };
   const stagedReview = payload.recoveryReviewId
     ? (
         await db
           .select(selection)
           .from(schema.reviews)
+          .leftJoin(
+            schema.reviewPublicationReceipts,
+            eq(schema.reviewPublicationReceipts.reviewId, schema.reviews.id),
+          )
           .where(eq(schema.reviews.id, payload.recoveryReviewId))
           .limit(1)
       )[0]
@@ -738,6 +797,10 @@ async function resumeStagedReviewCompletion(input: {
         await db
           .select(selection)
           .from(schema.reviews)
+          .leftJoin(
+            schema.reviewPublicationReceipts,
+            eq(schema.reviewPublicationReceipts.reviewId, schema.reviews.id),
+          )
           .where(
             and(
               eq(schema.reviews.repositoryId, repository.id),
@@ -812,6 +875,8 @@ async function resumeStagedReviewCompletion(input: {
     stagedReview.publicId,
     installation.orgSlug,
   );
+  const reconciliationStartedAt =
+    stagedReview.finishedAt ?? stagedReview.publicationStagedAt ?? new Date();
   try {
     await verifyCompletedCheckRun(
       token,
@@ -847,6 +912,7 @@ async function resumeStagedReviewCompletion(input: {
           hostedUsageReservationId: reservation?.id ?? null,
           usageAccountingComplete:
             stagedReview.envelope.usageAccountingComplete === true,
+          queueGateStateSync: false,
         },
         installation.orgId,
       );
@@ -856,7 +922,16 @@ async function resumeStagedReviewCompletion(input: {
         );
       }
     }
-    await enqueueGateStateSync(db, stagedReview);
+    await reconcileReviewPublicationLifecycle({
+      pool,
+      token,
+      reviewId: stagedReview.id,
+      reviewPublicId: stagedReview.publicId,
+      repositoryId: repository.id,
+      repoFullName: payload.repoFullName,
+      prNumber: payload.prNumber,
+      signal,
+    });
     void import("@/worker/runner").then(({ triggerQueueDrain }) =>
       triggerQueueDrain("gate-state-sync"),
     );
@@ -864,7 +939,11 @@ async function resumeStagedReviewCompletion(input: {
     return true;
   } catch (error) {
     if (signal?.aborted) throw new WorkerShutdownError();
-    throw new ReviewPublicationReconciliationError(redactSecrets(error));
+    if (error instanceof ReviewPublicationReconciliationError) throw error;
+    throw new ReviewPublicationReconciliationError(
+      redactSecrets(error),
+      reconciliationStartedAt,
+    );
   }
 }
 
@@ -980,9 +1059,17 @@ export async function runReviewJob(
       `review job cannot start: repository ${payload.repoFullName} is missing`,
     );
   }
+  const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+  if (
+    releaseSha &&
+    !(await publicationLifecycleReleaseActivated(getPool()))
+  ) {
+    throw new HostedInferenceReleaseDarkError(releaseSha);
+  }
   if (
     await resumeStagedReviewCompletion({
       db,
+      pool: getPool(),
       payload,
       installation,
       repository,
@@ -1188,6 +1275,10 @@ export async function runReviewJob(
     sinceSha: forceFullReview ? null : (baseline?.headSha ?? null),
     triggerSource: trigger.source,
     triggerContext: trigger,
+    // The database marks the review as lifecycle-gated when its publication
+    // envelope is staged. Keep reconciliation absent until GitHub confirms
+    // the terminal thread state.
+    publicationLifecycleReconciledAt: null,
     queuedAt: timing.queuedAt,
     startedAt: timing.startedAt,
   };
@@ -1810,11 +1901,39 @@ export async function runReviewJob(
         usage: receiptUsage,
         hostedUsageReservationId,
         usageAccountingComplete: ingested.usageAccountingComplete,
+        queueGateStateSync: false,
       },
       installation.orgId,
     );
     const completed = completion.completed;
     if (completed) {
+      const reconciliationStartedAt = new Date();
+      try {
+        const observationCount = await reconcileReviewPublicationLifecycle({
+          pool: getPool(),
+          token,
+          reviewId,
+          reviewPublicId: publicId,
+          repositoryId: repository.id,
+          repoFullName: payload.repoFullName,
+          prNumber: payload.prNumber,
+          signal,
+        });
+        if (observationCount > 0) {
+          reviewLog.line(
+            `publication lifecycle reconciled (${observationCount} GitHub threads)`,
+          );
+        }
+      } catch (error) {
+        // Required-conversation rules make terminal Postil thread state part
+        // of publishing the verdict. Keep the merge gate pending here; the
+        // runner retries this staged, already-accounted review through
+        // resumeStagedReviewCompletion without rerunning inference.
+        throw new ReviewPublicationReconciliationError(
+          `publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
+          reconciliationStartedAt,
+        );
+      }
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
@@ -1858,33 +1977,6 @@ export async function runReviewJob(
       console.warn(
         `review ${reviewId} completed after it was already superseded or failed`,
       );
-    } else {
-      try {
-        const commentIds = await getPullRequestPublicationCommentIds(
-          db,
-          repository.id,
-          payload.prNumber,
-        );
-        const observations = await observeGitHubReviewThreads(
-          token,
-          payload.repoFullName,
-          payload.prNumber,
-          commentIds,
-          signal,
-        );
-        await applyPublicationThreadObservations(db, observations);
-        if (observations.length > 0) {
-          reviewLog.line(
-            `publication lifecycle reconciled (${observations.length} GitHub threads)`,
-          );
-        }
-      } catch (error) {
-        // A transient GitHub read does not invalidate the immutable receipt.
-        console.warn(
-          `review ${reviewId} publication lifecycle observation deferred: ${redactSecrets(error)}`,
-        );
-        reviewLog.line("publication lifecycle observation deferred");
-      }
     }
   } catch (err) {
     if (err instanceof CheckRunPublicationError && receiptUsageForRace) {

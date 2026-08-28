@@ -41,7 +41,7 @@ jobs:
           # every valid concurrent index.
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP TABLE release_steps'
           bun run operational:indexes
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM release_steps WHERE name = 'operational-indexes-v5'" | grep -qx 1
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM release_steps WHERE name = 'operational-indexes-v6'" | grep -qx 1
           bun run jobs:activate-release
         env:
           PGHOST: localhost
@@ -69,6 +69,10 @@ jobs:
         env:
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
       - run: bun test tests/watchdog.test.ts
+        env:
+          POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      - name: Verify publication lifecycle locking on fresh Postgres
+        run: bun test --isolate tests/publication-receipt-migration.test.ts
         env:
           POSTIL_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
       - name: Verify self-service billing on fresh Postgres

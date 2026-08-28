@@ -3,7 +3,10 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
+import {
+  observeGitHubReviewThreads,
+  resolveGitHubReviewThreads,
+} from "@/lib/github/publication-threads";
 import {
   parsePublicationReceipt,
   readPublicationReceipt,
@@ -461,6 +464,7 @@ describe("GitHub publication thread observations", () => {
                       id: "thread-11",
                       isResolved: true,
                       isOutdated: false,
+                      viewerCanResolve: false,
                       comments: {
                         nodes: [{ databaseId: 11 }, { databaseId: 91 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -470,6 +474,7 @@ describe("GitHub publication thread observations", () => {
                       id: "thread-12",
                       isResolved: false,
                       isOutdated: true,
+                      viewerCanResolve: false,
                       comments: {
                         nodes: [{ databaseId: 12 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -479,6 +484,7 @@ describe("GitHub publication thread observations", () => {
                       id: "thread-13",
                       isResolved: false,
                       isOutdated: false,
+                      viewerCanResolve: true,
                       comments: {
                         nodes: [{ databaseId: 13 }, { databaseId: 92 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -497,9 +503,24 @@ describe("GitHub publication thread observations", () => {
     expect(
       await observeGitHubReviewThreads("token", "owner/repo", 4, ["11", "12", "13", "14"]),
     ).toEqual([
-      { githubCommentId: "11", state: "resolved" },
-      { githubCommentId: "12", state: "outdated" },
-      { githubCommentId: "13", state: "inline" },
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-11",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
+      {
+        githubCommentId: "12",
+        githubThreadId: "thread-12",
+        state: "outdated",
+        viewerCanResolve: false,
+      },
+      {
+        githubCommentId: "13",
+        githubThreadId: "thread-13",
+        state: "inline",
+        viewerCanResolve: true,
+      },
       { githubCommentId: "14", state: "deleted" },
     ]);
   });
@@ -519,6 +540,7 @@ describe("GitHub publication thread observations", () => {
                     id: "thread-paged",
                     isResolved: true,
                     isOutdated: false,
+                    viewerCanResolve: false,
                     comments: {
                       nodes: [{ databaseId: 91 }],
                       pageInfo: { hasNextPage: true, endCursor: "comment-page-2" },
@@ -544,12 +566,113 @@ describe("GitHub publication thread observations", () => {
     }) as unknown as typeof fetch;
 
     expect(await observeGitHubReviewThreads("token", "owner/repo", 4, ["11"])).toEqual([
-      { githubCommentId: "11", state: "resolved" },
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-paged",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[1]?.variables).toEqual({
       threadId: "thread-paged",
       commentsCursor: "comment-page-2",
     });
+  });
+
+  test("resolves only Postil-owned threads whose durable finding state is terminal", async () => {
+    const requestedThreadIds: string[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as {
+        variables?: { threadId?: string };
+      };
+      const threadId = request.variables?.threadId;
+      if (!threadId) throw new Error("test mutation omitted thread identity");
+      requestedThreadIds.push(threadId);
+      return new Response(JSON.stringify({
+        data: {
+          resolveReviewThread: {
+            thread: { id: threadId, isResolved: true },
+          },
+        },
+      }));
+    }) as unknown as typeof fetch;
+
+    const observations = [
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-11",
+        state: "outdated",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "12",
+        githubThreadId: "thread-12",
+        state: "inline",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "13",
+        githubThreadId: "thread-13",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
+      { githubCommentId: "14", state: "deleted" },
+      {
+        githubCommentId: "15",
+        githubThreadId: "thread-15",
+        state: "outdated",
+        viewerCanResolve: false,
+      },
+    ] as const;
+
+    const reconciled = await resolveGitHubReviewThreads(
+      "token",
+      observations.slice(0, -1),
+      ["11", "13", "14"],
+    );
+
+    expect(requestedThreadIds).toEqual(["thread-11"]);
+    expect(reconciled).toEqual([
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-11",
+        state: "resolved",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "12",
+        githubThreadId: "thread-12",
+        state: "inline",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "13",
+        githubThreadId: "thread-13",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
+      { githubCommentId: "14", state: "deleted" },
+    ]);
+    await expect(
+      resolveGitHubReviewThreads("token", [...observations], ["15"]),
+    ).rejects.toThrow("cannot resolve an outdated Postil review thread");
+  });
+
+  test("fails closed when GitHub cannot resolve a still-active terminal thread", async () => {
+    await expect(
+      resolveGitHubReviewThreads(
+        "token",
+        [
+          {
+            githubCommentId: "16",
+            githubThreadId: "thread-16",
+            state: "inline",
+            viewerCanResolve: false,
+          },
+        ],
+        ["16"],
+      ),
+    ).rejects.toThrow("cannot resolve an active Postil review thread");
   });
 });

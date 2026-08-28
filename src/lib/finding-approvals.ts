@@ -1,7 +1,9 @@
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import type { Pool } from "pg";
 
-import type { Database } from "@/lib/db";
-import { schema } from "@/lib/db";
+import { type Database, schema } from "@/lib/db";
+import { withPinnedDatabaseTransaction } from "@/lib/db-transaction";
+import { lockPublicationLifecycleShared } from "@/lib/publication-lifecycle-lock";
 import {
   computeEffectiveGate,
   envelopeSchema,
@@ -293,9 +295,35 @@ export async function lockActiveReviewState(
   db: Database,
   review: Pick<ReviewForApproval, "githubRepoId" | "prNumber">,
 ): Promise<void> {
-  const identity = [String(review.githubRepoId), String(review.prNumber)].join("\u001f");
+  const identity = reviewDecisionScopeIdentity(review);
   await db.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:review-pr:${identity}`}, 0))`,
+  );
+}
+
+function reviewDecisionScopeIdentity(
+  review: Pick<ReviewForApproval, "githubRepoId" | "prNumber">,
+): string {
+  return [String(review.githubRepoId), String(review.prNumber)].join("\u001f");
+}
+
+/** Hold the pull-request decision scope across bounded external reconciliation. */
+export async function withReviewDecisionScopeLock<T>(
+  pool: Pool,
+  reviewId: number,
+  operation: (db: Database) => Promise<T>,
+): Promise<T> {
+  return withPinnedDatabaseTransaction(
+    pool,
+    "review decision scope",
+    async (transaction) => {
+      // The production provider transaction-pools connections. Transaction
+      // advisory locks remain attached to the backend for this bounded
+      // reconciliation and release automatically on commit or rollback.
+      await lockPublicationLifecycleShared(transaction);
+      await lockReviewDecisionScopeById(transaction, reviewId);
+      return operation(transaction);
+    },
   );
 }
 

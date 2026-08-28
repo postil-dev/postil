@@ -1,5 +1,13 @@
+import { randomUUID } from "node:crypto";
+
 import type { Pool, PoolClient } from "pg";
 
+import type { Database } from "@/lib/db";
+import { withPinnedDatabaseTransaction } from "@/lib/db-transaction";
+import {
+  lockPublicationLifecycleShared,
+  PUBLICATION_LIFECYCLE_LOCK,
+} from "@/lib/publication-lifecycle-lock";
 import { OPENROUTER_EXACT_LIMIT_MAX_MICROS } from "@/lib/openrouter-management-adapter";
 import {
   HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
@@ -19,9 +27,401 @@ export const PRIVATE_REVIEW_AUTHOR_CAPABILITY = "private-review-author-v1";
 const PRIVATE_REVIEW_AUTHOR_LOCK = "postil:private-review-author-v1";
 const HOSTED_INFERENCE_CAPABILITY_PREFIX = "hosted-inference-release:";
 const HOSTED_INFERENCE_DARK_PREFIX = "hosted-inference-dark:";
+const MANAGED_RELEASE_PREPARATION_PREFIX = "managed-release-preparation:";
 export const HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY =
   "hosted-inference-fleet-active";
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
+export const PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY =
+  "publication-lifecycle-fleet-active";
+const PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY =
+  "_postilPublicationLifecycleDark";
+const PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS = 30_000;
+const LEGACY_PUBLICATION_DRAIN_TIMEOUT_MS = 120_000;
+
+function databaseClientError(error: unknown, fallback: string): Error {
+  return error instanceof Error ? error : new Error(fallback);
+}
+
+async function lockPublicationLifecycleExclusive(
+  client: PoolClient,
+): Promise<void> {
+  const configuredLockTimeout = await client.query<{ lock_timeout: string }>(
+    "SHOW lock_timeout",
+  );
+  const lockTimeout = configuredLockTimeout.rows[0]?.lock_timeout;
+  if (lockTimeout === undefined) {
+    throw new Error(
+      "publication lifecycle lock timeout configuration is unavailable",
+    );
+  }
+  await client.query("SAVEPOINT publication_lifecycle_lock_attempt");
+  try {
+    // Keep one exclusive request continuously queued. Trigger try-locks then
+    // defer new producers without a polling gap that could starve the drain.
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [
+      `${PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS}ms`,
+    ]);
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [PUBLICATION_LIFECYCLE_LOCK],
+    );
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [
+      lockTimeout,
+    ]);
+    await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK TO SAVEPOINT publication_lifecycle_lock_attempt");
+      await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [
+          databaseClientError(error, "publication lifecycle lock attempt failed"),
+          databaseClientError(
+            cleanupError,
+            "publication lifecycle lock savepoint cleanup failed",
+          ),
+        ],
+        "publication lifecycle lock attempt and savepoint cleanup failed",
+      );
+    }
+    if ((error as { code?: string }).code === "55P03") {
+      throw new Error(
+        "publication lifecycle lock did not quiesce within 30 seconds",
+      );
+    }
+    throw error;
+  }
+}
+
+async function waitForLegacyPublicationLifecycleOperations(
+  client: PoolClient,
+): Promise<void> {
+  const deadline = Date.now() + LEGACY_PUBLICATION_DRAIN_TIMEOUT_MS;
+  while (true) {
+    const active = await client.query<{ active: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM jobs
+          WHERE kind = 'gate-state-sync'
+            AND status = 'running'
+       ) OR EXISTS (
+         SELECT 1 FROM reviews
+          WHERE gate_sync_lease_id IS NOT NULL
+            AND gate_sync_lease_expires_at >= clock_timestamp()
+       ) AS active`,
+    );
+    if (active.rows[0]?.active !== true) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "legacy publication lifecycle operations did not quiesce within 120 seconds",
+      );
+    }
+    await client.query("SELECT pg_sleep(0.1)");
+  }
+}
+
+export class PublicationLifecycleReleaseDarkError extends Error {
+  override name = "PublicationLifecycleReleaseDarkError";
+
+  constructor() {
+    super("publication lifecycle release is awaiting activation");
+  }
+}
+
+export async function publicationLifecycleReleaseActivated(
+  pool: Pool,
+): Promise<boolean> {
+  const result = await pool.query<{ active: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM deployment_capabilities WHERE name = $1
+     ) AS active`,
+    [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+  );
+  return result.rows[0]?.active === true;
+}
+
+/** Keep gate publication inside the active lifecycle release boundary. */
+export async function withPublicationLifecycleReleaseActive<T>(
+  pool: Pool,
+  operation: (db: Database, client: PoolClient) => Promise<T>,
+): Promise<T> {
+  return withPinnedDatabaseTransaction(
+    pool,
+    "publication lifecycle gate",
+    async (transaction, client) => {
+      // Use one transaction for the release lock, leases, nested job staging,
+      // and convergence writes. Trigger lock requests are then reentrant on
+      // the same backend even when deactivation is already waiting.
+      await lockPublicationLifecycleShared(transaction);
+      const active = await client.query<{ active: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM deployment_capabilities WHERE name = $1
+         ) AS active`,
+        [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+      );
+      if (active.rows[0]?.active !== true) {
+        throw new PublicationLifecycleReleaseDarkError();
+      }
+      return operation(transaction, client);
+    },
+  );
+}
+
+/** Park every gate while a mixed-version fleet can still enqueue old work. */
+export async function deactivatePublicationLifecycleRelease(
+  pool: Pool,
+): Promise<{ deactivated: boolean; parked: number }> {
+  const client = await pool.connect();
+  let releaseError: Error | undefined;
+  let transactionOpen = false;
+  try {
+    // Managed release preparation records a durable recovery journal before
+    // this drain begins. The first commit removes the active capability, so
+    // the database trigger parks every new gate job before the exclusive lock
+    // is requested. Admitted legacy operations can then drain without a gap
+    // that lets another active publisher enter; interruption remains
+    // fail-closed and recoverable.
+    await client.query("BEGIN");
+    transactionOpen = true;
+    const initial = await darkenPublicationLifecycle(client);
+    await client.query("COMMIT");
+    transactionOpen = false;
+
+    await client.query("BEGIN");
+    transactionOpen = true;
+    await waitForLegacyPublicationLifecycleOperations(client);
+    await lockPublicationLifecycleExclusive(client);
+    const fenced = await darkenPublicationLifecycle(client);
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return {
+      deactivated: initial.deactivated || fenced.deactivated,
+      parked: initial.parked + fenced.parked,
+    };
+  } catch (error) {
+    const primaryError = databaseClientError(
+      error,
+      "publication lifecycle deactivation failed",
+    );
+    if (!transactionOpen) {
+      // A failed BEGIN leaves the backend state uncertain. Do not return that
+      // client to the pool where a later operation could inherit the failure.
+      releaseError = primaryError;
+      throw primaryError;
+    }
+    if (transactionOpen) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        releaseError = databaseClientError(
+          rollbackError,
+          "publication lifecycle deactivation rollback failed",
+        );
+        throw new AggregateError(
+          [
+            primaryError,
+            releaseError,
+          ],
+          "publication lifecycle deactivation and rollback failed",
+        );
+      }
+    }
+    // A successful rollback leaves the client reusable. releaseError is set
+    // only when BEGIN or rollback leaves the backend state uncertain.
+    throw primaryError;
+  } finally {
+    client.release(releaseError);
+  }
+}
+
+async function darkenPublicationLifecycle(
+  client: PoolClient,
+): Promise<{ deactivated: boolean; parked: number }> {
+  const deactivated = await client.query(
+    "DELETE FROM deployment_capabilities WHERE name = $1",
+    [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+  );
+  const parked = await client.query(
+    `UPDATE jobs
+        SET run_after = 'infinity'::timestamptz,
+            payload = jsonb_set(
+              payload,
+              ARRAY[$1]::text[],
+              'true'::jsonb,
+              true
+            )
+      WHERE kind = 'gate-state-sync'
+        AND status = 'queued'
+        AND (
+          run_after <> 'infinity'::timestamptz
+          OR NOT (payload ? $1)
+        )`,
+    [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+  );
+  return {
+    deactivated: (deactivated.rowCount ?? 0) > 0,
+    parked: parked.rowCount ?? 0,
+  };
+}
+
+/** Queue mixed-fleet recovery and release gates after homogeneous-fleet proof. */
+export async function activatePublicationLifecycleRelease(
+  pool: Pool,
+): Promise<{
+  activated: boolean;
+  recoveriesQueued: number;
+  runningGatesRecovered: number;
+  released: number;
+}> {
+  const client = await pool.connect();
+  let releaseError: Error | undefined;
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    await lockPublicationLifecycleExclusive(client);
+    const invalid = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM reviews AS review
+         LEFT JOIN repositories AS repository
+           ON repository.id = review.repository_id
+         LEFT JOIN installations AS installation
+           ON installation.id = repository.installation_id
+        WHERE review.status = 'completed'
+          AND review.publication_lifecycle_required_at IS NOT NULL
+          AND review.publication_lifecycle_reconciled_at IS NULL
+          AND (
+            review.envelope IS NULL
+            OR review.finished_at IS NULL
+            OR review.advisory_check_run_id IS NULL
+            OR review.gate_check_run_id IS NULL
+            OR review.source_org_id IS NULL
+            OR review.source_installation_id IS NULL
+            OR review.source_github_installation_id IS NULL
+            OR review.source_github_repo_id IS NULL
+            OR review.source_repo_full_name IS NULL
+            OR installation.id IS NULL
+            OR review.source_org_id IS DISTINCT FROM installation.org_id
+            OR review.source_installation_id IS DISTINCT FROM installation.id
+            OR review.source_github_installation_id IS DISTINCT FROM installation.github_installation_id
+            OR review.source_github_repo_id IS DISTINCT FROM repository.github_repo_id
+            OR review.source_repo_full_name IS DISTINCT FROM repository.full_name
+            OR NOT EXISTS (
+              SELECT 1 FROM review_publication_receipts AS receipt
+               WHERE receipt.review_id = review.id
+            )
+          )`,
+    );
+    const invalidCount = Number(invalid.rows[0]?.count ?? "0");
+    if (invalidCount > 0) {
+      throw new Error(
+        `publication lifecycle activation found ${invalidCount} unrecoverable completed reviews`,
+      );
+    }
+    const recoveries = await client.query(
+      `INSERT INTO jobs (kind, payload, max_attempts)
+       SELECT
+         'review',
+         jsonb_strip_nulls(jsonb_build_object(
+           'installationId', review.source_github_installation_id,
+           'sourceInstallationId', review.source_installation_id,
+           'sourceOrgId', review.source_org_id,
+           'githubRepoId', review.source_github_repo_id,
+           'repoFullName', review.source_repo_full_name,
+           'repositoryPrivate', repository.private,
+           'prNumber', review.pr_number,
+           'authorGithubId', review.author_github_id,
+           'authorLogin', review.author_login,
+           'headSha', review.head_sha,
+           'baseSha', review.base_sha,
+           'trigger', COALESCE(
+             review.trigger_context,
+             jsonb_build_object('source', review.trigger_source)
+           ),
+           'recoveryReviewId', review.id
+         )),
+         5
+       FROM reviews AS review
+       INNER JOIN repositories AS repository
+         ON repository.id = review.repository_id
+       WHERE review.status = 'completed'
+         AND review.publication_lifecycle_required_at IS NOT NULL
+         AND review.publication_lifecycle_reconciled_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1
+             FROM jobs AS active_recovery
+            WHERE active_recovery.kind = 'review'
+              AND active_recovery.status IN ('queued', 'running')
+              AND active_recovery.payload->>'recoveryReviewId' = review.id::text
+         )`,
+    );
+    const activated = await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
+    );
+    const runningGates = (activated.rowCount ?? 0) > 0
+      ? await client.query(
+          `UPDATE jobs
+              SET status = 'queued',
+                  locked_at = NULL,
+                  locked_by = NULL,
+                  run_after = now(),
+                  payload = payload - $1,
+                  last_error = concat_ws(
+                    ' ', NULLIF(last_error, ''),
+                    '[release: recovered abandoned gate publisher]'
+                  )
+            WHERE kind = 'gate-state-sync'
+              AND status = 'running'`,
+          [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+        )
+      : { rowCount: 0 };
+    const released = await client.query(
+      `UPDATE jobs
+          SET run_after = now(), payload = payload - $1
+        WHERE kind = 'gate-state-sync'
+          AND status = 'queued'
+          AND payload ? $1`,
+      [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+    );
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return {
+      activated: (activated.rowCount ?? 0) > 0,
+      recoveriesQueued: recoveries.rowCount ?? 0,
+      runningGatesRecovered: runningGates.rowCount ?? 0,
+      released: released.rowCount ?? 0,
+    };
+  } catch (error) {
+    const primaryError = databaseClientError(
+      error,
+      "publication lifecycle activation failed",
+    );
+    if (!transactionOpen) {
+      releaseError = primaryError;
+      throw primaryError;
+    }
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "publication lifecycle activation rollback failed",
+      );
+      throw new AggregateError(
+        [primaryError, releaseError],
+        "publication lifecycle activation and rollback failed",
+      );
+    }
+    // A successful rollback leaves the client reusable. releaseError is set
+    // only when BEGIN or rollback leaves the backend state uncertain.
+    throw primaryError;
+  } finally {
+    client.release(releaseError);
+  }
+}
 
 function normalizedReleaseSha(releaseSha: string): string {
   const normalized = releaseSha.trim().toLowerCase();
@@ -240,6 +640,10 @@ export async function activateHostedInferenceRelease(
       "DELETE FROM deployment_capabilities WHERE name LIKE $1",
       [`${HOSTED_INFERENCE_DARK_PREFIX}%`],
     );
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name LIKE $1",
+      [`${MANAGED_RELEASE_PREPARATION_PREFIX}%`],
+    );
     await client.query("COMMIT");
     return (activated.rowCount ?? 0) > 0;
   } catch (error) {
@@ -284,6 +688,444 @@ export async function deactivateHostedInferenceRelease(
     throw error;
   } finally {
     client.release();
+  }
+}
+
+export interface ManagedReleaseCapabilitySnapshot {
+  releaseSha: string;
+  generation: string;
+  publicationLifecycleReady: boolean;
+  capabilities: string[];
+}
+
+function managedReleaseCapabilityNames(releaseSha: string): string[] {
+  return [
+    PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY,
+    HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
+    hostedInferenceCapability(releaseSha),
+    hostedInferenceDarkCapability(releaseSha),
+  ];
+}
+
+function managedReleasePreparationNames(
+  releaseSha: string,
+  generation: string,
+): {
+  root: string;
+  publicationReady: string;
+  publicationActive: string;
+  hostedFleetActive: string;
+  hostedReleaseActive: string;
+  hostedDarkActive: string;
+} {
+  const prefix = `${MANAGED_RELEASE_PREPARATION_PREFIX}${releaseSha}:${generation}:`;
+  return {
+    root: `${prefix}root`,
+    publicationReady: `${prefix}publication-ready`,
+    publicationActive: `${prefix}publication-active`,
+    hostedFleetActive: `${prefix}hosted-fleet-active`,
+    hostedReleaseActive: `${prefix}hosted-release-active`,
+    hostedDarkActive: `${prefix}hosted-dark-active`,
+  };
+}
+
+function managedReleasePreparationSnapshot(
+  releaseSha: string,
+  generation: string,
+  names: readonly string[],
+): ManagedReleaseCapabilitySnapshot | undefined {
+  const journal = managedReleasePreparationNames(releaseSha, generation);
+  const present = new Set(names);
+  if (!present.has(journal.root)) return undefined;
+  const capabilities: string[] = [];
+  if (present.has(journal.publicationActive)) {
+    capabilities.push(PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY);
+  }
+  if (present.has(journal.hostedFleetActive)) {
+    capabilities.push(HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY);
+  }
+  if (present.has(journal.hostedReleaseActive)) {
+    capabilities.push(hostedInferenceCapability(releaseSha));
+  }
+  if (present.has(journal.hostedDarkActive)) {
+    capabilities.push(hostedInferenceDarkCapability(releaseSha));
+  }
+  return {
+    releaseSha,
+    generation,
+    publicationLifecycleReady: present.has(journal.publicationReady),
+    capabilities,
+  };
+}
+
+async function captureAndDarkenManagedReleaseCapabilities(
+  pool: Pool,
+  releaseSha: string,
+  publicationLifecycleReady: boolean,
+): Promise<ManagedReleaseCapabilitySnapshot> {
+  const names = managedReleaseCapabilityNames(releaseSha);
+  const generation = randomUUID();
+  const journal = managedReleasePreparationNames(releaseSha, generation);
+  const client = await pool.connect();
+  let releaseError: Error | undefined;
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    await lockPublicationLifecycleExclusive(client);
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [HOSTED_INFERENCE_LOCK],
+    );
+    // Adopt abandoned generations under the same locks and transaction that
+    // immediately captures and darkens the replacement. Their desired state
+    // is never committed as active while the fleet may still be mixed.
+    await restoreAllManagedReleasePreparationsOnClient(client);
+    const existing = await client.query<{ name: string }>(
+      "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[]) ORDER BY name",
+      [names],
+    );
+    const snapshot: ManagedReleaseCapabilitySnapshot = {
+      releaseSha,
+      generation,
+      publicationLifecycleReady,
+      capabilities: existing.rows.map((row) => row.name),
+    };
+    const journalNames = [
+      journal.root,
+      ...(publicationLifecycleReady ? [journal.publicationReady] : []),
+      ...(snapshot.capabilities.includes(PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY)
+        ? [journal.publicationActive]
+        : []),
+      ...(snapshot.capabilities.includes(HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY)
+        ? [journal.hostedFleetActive]
+        : []),
+      ...(snapshot.capabilities.includes(hostedInferenceCapability(releaseSha))
+        ? [journal.hostedReleaseActive]
+        : []),
+      ...(snapshot.capabilities.includes(hostedInferenceDarkCapability(releaseSha))
+        ? [journal.hostedDarkActive]
+        : []),
+    ];
+    await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       SELECT unnest($1::text[])
+       ON CONFLICT (name) DO UPDATE SET activated_at = now()`,
+      [journalNames],
+    );
+    if (publicationLifecycleReady) {
+      await darkenPublicationLifecycle(client);
+    }
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [hostedInferenceCapability(releaseSha)],
+    );
+    await client.query(
+      "DELETE FROM deployment_capabilities WHERE name = $1",
+      [HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY],
+    );
+    await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [hostedInferenceDarkCapability(releaseSha)],
+    );
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return snapshot;
+  } catch (error) {
+    const primaryError = databaseClientError(
+      error,
+      "managed release capability capture failed",
+    );
+    if (!transactionOpen) {
+      releaseError = primaryError;
+      throw primaryError;
+    }
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "managed release capability capture rollback failed",
+      );
+      throw new AggregateError(
+        [primaryError, releaseError],
+        "managed release capability capture and rollback failed",
+      );
+    }
+    throw primaryError;
+  } finally {
+    client.release(releaseError);
+  }
+}
+
+/** Darken one release and retain the exact capability state for compensation. */
+export async function prepareManagedReleaseCapabilities(
+  pool: Pool,
+  releaseSha: string,
+  publicationLifecycleReady: boolean,
+): Promise<ManagedReleaseCapabilitySnapshot> {
+  const normalizedRelease = normalizedReleaseSha(releaseSha);
+  const snapshot = await captureAndDarkenManagedReleaseCapabilities(
+    pool,
+    normalizedRelease,
+    publicationLifecycleReady,
+  );
+  try {
+    if (publicationLifecycleReady) {
+      await deactivatePublicationLifecycleRelease(pool);
+    }
+    return snapshot;
+  } catch (error) {
+    try {
+      await restoreManagedReleaseCapabilities(pool, snapshot);
+    } catch (restoreError) {
+      throw new AggregateError(
+        [
+          databaseClientError(error, "managed release deactivation failed"),
+          databaseClientError(
+            restoreError,
+            "managed release capability compensation failed",
+          ),
+        ],
+        "managed release deactivation and capability compensation failed",
+      );
+    }
+    throw error;
+  }
+}
+
+/** Restore only the release capabilities changed during preparation. */
+export async function restoreManagedReleaseCapabilities(
+  pool: Pool,
+  snapshot: ManagedReleaseCapabilitySnapshot,
+): Promise<void> {
+  await restoreManagedReleaseCapabilitiesInternal(pool, snapshot);
+}
+
+async function restoreManagedReleaseCapabilitiesInternal(
+  pool: Pool,
+  snapshot: ManagedReleaseCapabilitySnapshot,
+): Promise<boolean> {
+  const client = await pool.connect();
+  let releaseError: Error | undefined;
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    await lockPublicationLifecycleExclusive(client);
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [HOSTED_INFERENCE_LOCK],
+    );
+    const restored = await restoreManagedReleaseCapabilitiesOnClient(
+      client,
+      snapshot,
+    );
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return restored;
+  } catch (error) {
+    const primaryError = databaseClientError(
+      error,
+      "managed release capability compensation failed",
+    );
+    if (!transactionOpen) {
+      releaseError = primaryError;
+      throw primaryError;
+    }
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "managed release capability compensation rollback failed",
+      );
+      throw new AggregateError(
+        [primaryError, releaseError],
+        "managed release capability compensation and rollback failed",
+      );
+    }
+    throw primaryError;
+  } finally {
+    client.release(releaseError);
+  }
+}
+
+async function restoreManagedReleaseCapabilitiesOnClient(
+  client: PoolClient,
+  snapshot: ManagedReleaseCapabilitySnapshot,
+): Promise<boolean> {
+  const names = managedReleaseCapabilityNames(snapshot.releaseSha);
+  const journal = managedReleasePreparationNames(
+    snapshot.releaseSha,
+    snapshot.generation,
+  );
+  const journalNames = Object.values(journal);
+  const durable = await client.query<{ name: string }>(
+    "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[])",
+    [journalNames],
+  );
+  const effectiveSnapshot = managedReleasePreparationSnapshot(
+    snapshot.releaseSha,
+    snapshot.generation,
+    durable.rows.map((row) => row.name),
+  );
+  if (!effectiveSnapshot) return false;
+  const expected = new Set(names);
+  if (
+    effectiveSnapshot.capabilities.some((name) => !expected.has(name)) ||
+    new Set(effectiveSnapshot.capabilities).size !==
+      effectiveSnapshot.capabilities.length
+  ) {
+    throw new Error("managed release capability snapshot is invalid");
+  }
+  const publicationWasActive = effectiveSnapshot.capabilities.includes(
+    PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY,
+  );
+  await client.query(
+    "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
+    [names],
+  );
+  if (effectiveSnapshot.capabilities.length > 0) {
+    await client.query(
+      `INSERT INTO deployment_capabilities (name)
+       SELECT unnest($1::text[])`,
+      [effectiveSnapshot.capabilities],
+    );
+  }
+  if (effectiveSnapshot.publicationLifecycleReady && publicationWasActive) {
+    await client.query(
+      `UPDATE jobs
+          SET run_after = now(), payload = payload - $1
+        WHERE kind = 'gate-state-sync'
+          AND status = 'queued'
+          AND payload ? $1`,
+      [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
+    );
+  }
+  if (
+    effectiveSnapshot.capabilities.includes(
+      HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
+    )
+  ) {
+    await client.query(
+      `UPDATE jobs
+          SET run_after = now(), payload = payload - 'releaseDarkSha'
+        WHERE kind IN ('review', $1)
+          AND status = 'queued'
+          AND run_after = 'infinity'::timestamptz
+          AND payload ? 'releaseDarkSha'`,
+      [HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND],
+    );
+  }
+  await client.query(
+    "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
+    [journalNames],
+  );
+  return true;
+}
+
+async function restoreAllManagedReleasePreparationsOnClient(
+  client: PoolClient,
+): Promise<number> {
+  const roots = await client.query<{ name: string }>(
+    `SELECT name
+       FROM deployment_capabilities
+      WHERE name LIKE $1
+        AND name LIKE '%:root'
+      ORDER BY activated_at DESC, name DESC`,
+    [`${MANAGED_RELEASE_PREPARATION_PREFIX}%`],
+  );
+  let restored = 0;
+  for (const row of roots.rows) {
+    const match = row.name.match(
+      /^managed-release-preparation:([0-9a-f]{7,40}):([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):root$/,
+    );
+    if (!match) continue;
+    const candidate: ManagedReleaseCapabilitySnapshot = {
+      releaseSha: match[1]!,
+      generation: match[2]!,
+      publicationLifecycleReady: false,
+      capabilities: [],
+    };
+    if (await restoreManagedReleaseCapabilitiesOnClient(client, candidate)) {
+      restored += 1;
+    }
+  }
+  return restored;
+}
+
+export async function restoreManagedReleasePreparation(
+  pool: Pool,
+  releaseSha: string,
+  generation: string,
+): Promise<boolean> {
+  const normalizedRelease = normalizedReleaseSha(releaseSha);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(generation)) {
+    throw new Error("managed release preparation generation is invalid");
+  }
+  const journal = managedReleasePreparationNames(
+    normalizedRelease,
+    generation,
+  );
+  const durable = await pool.query<{ name: string }>(
+    "SELECT name FROM deployment_capabilities WHERE name = ANY($1::text[])",
+    [Object.values(journal)],
+  );
+  const snapshot = managedReleasePreparationSnapshot(
+    normalizedRelease,
+    generation,
+    durable.rows.map((row) => row.name),
+  );
+  if (!snapshot) return false;
+  return restoreManagedReleaseCapabilitiesInternal(pool, snapshot);
+}
+
+/** Unwind every pending preparation from newest to oldest. */
+export async function restoreAllManagedReleasePreparations(
+  pool: Pool,
+): Promise<number> {
+  const client = await pool.connect();
+  let releaseError: Error | undefined;
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    await lockPublicationLifecycleExclusive(client);
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [HOSTED_INFERENCE_LOCK],
+    );
+    const restored = await restoreAllManagedReleasePreparationsOnClient(client);
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return restored;
+  } catch (error) {
+    const primaryError = databaseClientError(
+      error,
+      "managed release preparation recovery failed",
+    );
+    if (!transactionOpen) {
+      releaseError = primaryError;
+      throw primaryError;
+    }
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(
+        rollbackError,
+        "managed release preparation recovery rollback failed",
+      );
+      throw new AggregateError(
+        [primaryError, releaseError],
+        "managed release preparation recovery and rollback failed",
+      );
+    }
+    throw primaryError;
+  } finally {
+    client.release(releaseError);
   }
 }
 

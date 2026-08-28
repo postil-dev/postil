@@ -3,7 +3,10 @@ import { describe, expect, test } from "bun:test";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import type { Envelope } from "@/lib/envelope";
-import { persistReviewCompletionWithGateMode } from "@/lib/review-completion";
+import {
+  completeReviewPublicationLifecycle,
+  persistReviewCompletionWithGateMode,
+} from "@/lib/review-completion";
 
 function fakeDb(reviewUpdated = true): {
   db: Database;
@@ -156,6 +159,32 @@ describe("review completion transaction", () => {
       { ...sameModelUsage[0], reviewId: 7, triggerSource: "requested_review" },
       { ...sameModelUsage[1], reviewId: 7, triggerSource: "requested_review" },
     ]);
+  });
+
+  test("can defer gate synchronization until forge lifecycle reconciliation", async () => {
+    const state = fakeDb();
+
+    expect(
+      await persistReviewCompletionWithGateMode(
+        state.db,
+        { ...base, queueGateStateSync: false },
+        null,
+      ),
+    ).toMatchObject({ completed: true });
+    expect(state.inserted.filter((row) => row.table === schema.usageEvents)).toHaveLength(1);
+    expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(0);
+  });
+
+  test("marks lifecycle reconciliation and queues the gate in one transaction", async () => {
+    const state = fakeDb();
+
+    await completeReviewPublicationLifecycle(state.db, {
+      reviewId: 7,
+      reviewPublicId: "review-public-id",
+    });
+
+    expect(state.transactions).toBe(1);
+    expect(state.inserted.filter((row) => row.table === schema.jobs)).toHaveLength(1);
   });
 
   test("records no accounting after losing the completion race", async () => {

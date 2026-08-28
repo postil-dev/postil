@@ -29,13 +29,42 @@ beforeEach(() => {
 
 describe("/api/health", () => {
   test("is cheap process liveness and does not need database configuration", async () => {
+    const previousBootProbe = process.env.POSTIL_BOOT_PROBE;
+    const previousDatabaseUrl = process.env.DATABASE_URL;
     delete process.env.DATABASE_URL;
+    delete process.env.POSTIL_BOOT_PROBE;
 
-    const response = await livenessRoute.GET();
+    try {
+      const response = await livenessRoute.GET();
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "web" });
-    expect(queryCount).toBe(0);
+      expect(response.status).toBe(200);
+      expect(response.headers.has("x-postil-boot-probe")).toBe(false);
+      expect(await response.json()).toEqual({ ok: true, service: "web" });
+      expect(queryCount).toBe(0);
+    } finally {
+      restoreEnvironmentVariable("DATABASE_URL", previousDatabaseUrl);
+      restoreEnvironmentVariable("POSTIL_BOOT_PROBE", previousBootProbe);
+    }
+  });
+
+  test("echoes the build boot-probe nonce only after instrumentation marks readiness", async () => {
+    const previousBootProbe = process.env.POSTIL_BOOT_PROBE;
+    const previousBootProbeReady = process.env.POSTIL_BOOT_PROBE_READY;
+    delete process.env.POSTIL_BOOT_PROBE_READY;
+    process.env.POSTIL_BOOT_PROBE = "probe-123";
+    try {
+      const unregisteredResponse = await livenessRoute.GET();
+      expect(unregisteredResponse.headers.has("x-postil-boot-probe")).toBe(false);
+
+      process.env.POSTIL_BOOT_PROBE_READY = "probe-123";
+      const response = await livenessRoute.GET();
+
+      expect(response.headers.get("x-postil-boot-probe")).toBe("probe-123");
+      expect(await response.json()).toEqual({ ok: true, service: "web" });
+    } finally {
+      restoreEnvironmentVariable("POSTIL_BOOT_PROBE", previousBootProbe);
+      restoreEnvironmentVariable("POSTIL_BOOT_PROBE_READY", previousBootProbeReady);
+    }
   });
 
   test("does not import the database module", async () => {
@@ -48,6 +77,11 @@ describe("/api/health", () => {
     expect(source).not.toMatch(/\bget(Db|Pool)\b/);
   });
 });
+
+function restoreEnvironmentVariable(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 describe("/api/health/dependencies", () => {
   test("returns 200 when the database probe succeeds", async () => {

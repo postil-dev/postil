@@ -1,6 +1,9 @@
 name: Production monitor
 
 on:
+  workflow_run:
+    workflows: ["deploy"]
+    types: [completed]
   schedule:
     # Requested every 15 minutes; GitHub throttles scheduled workflows, so
     # observed cadence is best-effort (often hourly or worse). This workflow
@@ -20,12 +23,155 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-monitor
+  # Deployment-completion monitors keep independent workflow owners, while
+  # scheduled checks serialize together. Every recovery attempt then joins the
+  # same bounded FIFO queue as deploys, so it observes an idle managed fleet.
+  group: ${{ github.event_name == 'workflow_run' && format('production-monitor-deploy-{0}', github.event.workflow_run.id) || 'production-monitor' }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
+  release-recovery:
+    name: Recover abandoned release preparation
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'success' }}
+    concurrency:
+      group: fly-deploy
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    outputs:
+      clear: ${{ steps.verified.outputs.clear }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Find durable release preparation
+        id: preparation
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          pending_releases="$(bun scripts/run-release-migrations.ts --pending-releases)"
+          if [[ -z "${pending_releases}" ]]; then
+            if bun scripts/run-release-migrations.ts --verify-clear >/dev/null 2>&1; then
+              echo "Release preparation is already active and clear."
+              echo "present=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            echo "Release capabilities are dark without a recovery journal."
+            exit 1
+          fi
+          {
+            echo "present=true"
+            echo "targets<<POSTIL_RELEASES"
+            printf '%s\n' "${pending_releases}"
+            echo "POSTIL_RELEASES"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Install checksum-pinned flyctl
+        if: ${{ steps.preparation.outputs.present == 'true' }}
+        env:
+          FLYCTL_VERSION: 0.4.71
+          FLYCTL_LINUX_X86_64_SHA256: a782dceed173d215c000ab94e2b08623c22267edff6d90ebe3010b3f9b671dc2
+        run: |
+          set -euo pipefail
+          archive="flyctl_${FLYCTL_VERSION}_Linux_x86_64.tar.gz"
+          url="https://github.com/superfly/flyctl/releases/download/v${FLYCTL_VERSION}/${archive}"
+          temporary_directory="$(mktemp -d)"
+          trap 'rm -rf "${temporary_directory}"' EXIT
+          curl --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --output "${temporary_directory}/${archive}" "${url}"
+          printf '%s  %s\n' "${FLYCTL_LINUX_X86_64_SHA256}" "${temporary_directory}/${archive}" \
+            | sha256sum --check --strict
+          tar -xzf "${temporary_directory}/${archive}" -C "${temporary_directory}" flyctl
+          install -m 0755 "${temporary_directory}/flyctl" "${RUNNER_TEMP}/flyctl"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+      - name: Restore only an unchanged prior fleet
+        id: restore
+        if: ${{ steps.preparation.outputs.present == 'true' }}
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EVENT_RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
+          PENDING_RELEASES: ${{ steps.preparation.outputs.targets }}
+        run: |
+          set -euo pipefail
+          mapfile -t recovery_targets <<<"${PENDING_RELEASES}"
+          recovery_target_sha="${recovery_targets[0]}"
+          if [[ -n "${EVENT_RELEASE_SHA}" && "${recovery_target_sha}" != "${EVENT_RELEASE_SHA}" ]]; then
+            echo "A newer release preparation owns recovery."
+            echo "superseded=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          machines=$(flyctl machine list --app postil-web --json)
+          if ! fleet_summary=$(jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}"); then
+            echo "Managed fleet topology is invalid; release capabilities remain dark."
+            exit 1
+          fi
+          managed_count=$(jq -r '.managed_count' <<<"${fleet_summary}")
+          started_count=$(jq -r '[.[] | select(
+            .state == "started" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          )] | length' <<<"${machines}")
+          if [[ "${managed_count}" -lt 4 || "${started_count}" -ne "${managed_count}" ]]; then
+            echo "Managed fleet state is incomplete; release capabilities remain dark."
+            exit 1
+          fi
+          releases=()
+          target_seen=0
+          while IFS= read -r id; do
+            # The flyctl execution timeout bounds every individual machine
+            # probe; workflow timeout remains the independent outer bound.
+            release=$(flyctl machine exec "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
+              --app postil-web --timeout 15 2>/dev/null)
+            if [[ ! "${release}" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "A managed machine did not report a valid release; capabilities remain dark."
+              exit 1
+            fi
+            releases+=("${release}")
+            for pending_release in "${recovery_targets[@]}"; do
+              if [[ "${release}" == "${pending_release}" ]]; then
+                target_seen=1
+              fi
+            done
+          done < <(jq -r '.[] | select(
+            .config.metadata.fly_process_group == "web" or
+            .config.metadata.fly_process_group == "worker" or
+            .config.metadata.fly_process_group == "monitor"
+          ) | .id' <<<"${machines}")
+          unique_release_count=$(printf '%s\n' "${releases[@]}" | sort -u | wc -l)
+          if [[ "${#releases[@]}" -ne "${managed_count}" || "${unique_release_count}" -ne 1 ]]; then
+            echo "The managed fleet is mixed; release capabilities remain dark."
+            exit 1
+          fi
+          if [[ "${target_seen}" -ne 0 ]]; then
+            echo "A pending release reached the managed fleet; capabilities remain dark."
+            exit 1
+          fi
+          POSTIL_RELEASE_SHA="${recovery_target_sha}" \
+            bun scripts/run-release-migrations.ts --compensate
+      - name: Verify release recovery is clear
+        id: verified
+        if: ${{ always() && !cancelled() && steps.preparation.outcome == 'success' && steps.restore.outcome != 'failure' && steps.restore.outputs.superseded != 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          bun scripts/run-release-migrations.ts --verify-clear
+          echo "clear=true" >> "${GITHUB_OUTPUT}"
+
   smoke:
     name: Smoke check production
+    if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -448,8 +594,8 @@ jobs:
   # runs into one alert, and the resolve job auto-closes it on recovery.
   notify:
     name: Raise external alert
-    needs: smoke
-    if: ${{ always() && needs.smoke.result == 'failure' }}
+    needs: [smoke, release-recovery]
+    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') }}
     permissions:
       contents: read
       id-token: write
@@ -470,14 +616,53 @@ jobs:
         uses: ./.github/actions/ilert-event
         with:
           event-type: ALERT
-          summary: Postil production monitor failed
-          alert-key: postil-production-monitor
+          summary: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'Postil release recovery failed' || 'Postil production monitor failed' }}
+          alert-key: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'postil-release-recovery' || 'postil-production-monitor' }}
           details: >-
-            Production checks failed. Run log:
+            ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled')
+                && 'Release preparation remains unresolved. Run log:'
+                || 'Production checks failed. Run log:' }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
-          # The production check is already the signal, so record an alerting
-          # delivery gap without replacing the original failure.
-          require-delivery: false
+          # A routine monitor failure records an alerting gap without masking
+          # the original signal. Recovery failure requires delivery because it
+          # validates the fail-safe notification path.
+          require-delivery: ${{ needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' }}
+
+  resolve-release-recovery:
+    name: Resolve release recovery alert
+    needs: release-recovery
+    if: ${{ always() && (needs.release-recovery.outputs.clear == 'true' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')) }}
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Verify release state is active and clear
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: bun scripts/run-release-migrations.ts --verify-clear
+      - name: Load alerting secret from Infisical
+        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /postil
+      - name: Resolve ilert release recovery alert
+        uses: ./.github/actions/ilert-event
+        with:
+          event-type: RESOLVE
+          summary: Postil release recovery cleared
+          alert-key: postil-release-recovery
 
   resolve:
     name: Resolve external alert

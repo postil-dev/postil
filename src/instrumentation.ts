@@ -6,16 +6,15 @@ import type { Instrumentation } from "next";
  * of failing later on the first request. Skipped during `next build`, which
  * must not require a live environment.
  */
-export function register(): void {
+export async function register(): Promise<void> {
   if (process.env.NEXT_PHASE === "phase-production-build") return;
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
-  if (process.env.POSTIL_SKIP_ENV_VALIDATION === "1") return;
-  const { registerNodeInstrumentation } = require("./instrumentation-node") as typeof import("./instrumentation-node");
+  const { registerNodeInstrumentation } = await import("./instrumentation-node");
   registerNodeInstrumentation();
 }
 
-export const onRequestError: Instrumentation.onRequestError = (error) => {
+export const onRequestError: Instrumentation.onRequestError = async (error) => {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
-  const { reportNodeRequestError } = require("./instrumentation-node") as typeof import("./instrumentation-node");
+  const { reportNodeRequestError } = await import("./instrumentation-node");
   reportNodeRequestError(error);
 };

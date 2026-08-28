@@ -384,6 +384,10 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "scripts", "ensure-operational-indexes.ts"),
       "utf8",
     );
+    const releasePreparationScript = await readFile(
+      join(import.meta.dir, "..", "scripts", "run-release-migrations.ts"),
+      "utf8",
+    );
     const packageJson = JSON.parse(
       await readFile(join(import.meta.dir, "..", "package.json"), "utf8"),
     ) as { scripts: Record<string, string> };
@@ -392,10 +396,51 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "drizzle", "0049_worker_org_concurrency.sql"),
       "utf8",
     );
+    const publicationLifecycleMigration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0058_amused_wolverine.sql"),
+      "utf8",
+    );
+    const publicationLifecycleRepairMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0059_publication_lifecycle_nonblocking_triggers.sql",
+      ),
+      "utf8",
+    );
 
     expect(migration).toContain('CREATE TABLE "release_steps"');
     expect(migration).not.toContain("CREATE INDEX");
     expect(organizationConcurrencyMigration).not.toContain("CREATE INDEX");
+    expect(publicationLifecycleMigration).toContain(
+      "postil_stage_gate_sync_until_publication_lifecycle_activation",
+    );
+    expect(publicationLifecycleMigration).toContain(
+      "pg_advisory_xact_lock",
+    );
+    expect(publicationLifecycleMigration).not.toContain('UPDATE "reviews"');
+    expect(publicationLifecycleMigration).toContain(
+      "OLD.status IS DISTINCT FROM 'completed'",
+    );
+    expect(publicationLifecycleMigration).toContain(
+      'UPDATE "jobs"\nSET "run_after" = \'infinity\'::timestamptz',
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_terminate_backend",
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_advisory_lock(",
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_advisory_unlock(",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "hashtextextended('postil:publication-lifecycle-release-v2', 0)",
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx"',
+    );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_running_started_at_idx"',
     );
@@ -425,8 +470,14 @@ describe("migration lint", () => {
       'CREATE TABLE IF NOT EXISTS "release_steps"',
     );
     expect(releaseScript).toContain("INSERT INTO release_steps");
-    expect(packageJson.scripts["release:prepare"]).toContain(
-      "operational:indexes",
+    expect(packageJson.scripts["release:prepare"]).toBe(
+      "bun run db:migrate:release",
+    );
+    expect(releasePreparationScript).toContain(
+      '["bun", "run", "operational:indexes"]',
+    );
+    expect(releasePreparationScript).toContain(
+      '["bun", "run", "notifications:quiesce"]',
     );
   });
 

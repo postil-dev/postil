@@ -19,6 +19,7 @@ let tokenReleaseResolve: (() => void) | null = null;
 let tokenEntered = Promise.resolve();
 let tokenRelease = Promise.resolve();
 let loseLeaseAfterCheck = false;
+let operationOrder: string[] = [];
 
 const row = {
   id: 7,
@@ -31,6 +32,8 @@ const row = {
   engineGateFailing: true,
   gateFailing: true,
   gateCheckRunId: 99,
+  publicationLifecycleRequiredAt: new Date() as Date | null,
+  publicationLifecycleReconciledAt: new Date() as Date | null,
   repoFullName: "acme/repo",
   repositoryEnabled: true,
   orgId: 20,
@@ -76,6 +79,7 @@ function updateChain() {
     },
     returning() {
       if ("gateSyncLeaseId" in values) {
+        operationOrder.push("lease");
         if (leaseHeld) return Promise.resolve([]);
         leaseHeld = true;
       }
@@ -112,6 +116,10 @@ mock.module("@/lib/db", () => ({
       engineGateFailing: "reviews.engine_gate_failing",
       gateFailing: "reviews.gate_failing",
       gateCheckRunId: "reviews.gate_check_run_id",
+      publicationLifecycleReconciledAt:
+        "reviews.publication_lifecycle_reconciled_at",
+      publicationLifecycleRequiredAt:
+        "reviews.publication_lifecycle_required_at",
       gateSyncLeaseId: "reviews.gate_sync_lease_id",
       gateSyncLeaseExpiresAt: "reviews.gate_sync_lease_expires_at",
       queuedAt: "reviews.queued_at",
@@ -157,6 +165,7 @@ mock.module("@/lib/finding-approvals", () => ({
   hasNewerCompletedReviewForHead: async () => false,
   lockReviewApprovalState: async () => {
     lockCalls += 1;
+    operationOrder.push("lock");
   },
   parseEnvelopeForApprovals: () => ({ version: 1 }),
   updateStoredEffectiveGate: async (
@@ -227,6 +236,9 @@ beforeEach(() => {
   leaseHeld = false;
   blockToken = false;
   loseLeaseAfterCheck = false;
+  operationOrder = [];
+  row.publicationLifecycleReconciledAt = new Date();
+  row.publicationLifecycleRequiredAt = new Date();
   tokenEntered = new Promise<void>((resolve) => {
     tokenEnteredResolve = resolve;
   });
@@ -236,10 +248,30 @@ beforeEach(() => {
 });
 
 describe("durable gate state synchronization", () => {
+  test("does not publish before review-thread lifecycle reconciliation", async () => {
+    row.publicationLifecycleReconciledAt = null;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls).toEqual([]);
+    expect(storedStates).toEqual([]);
+  });
+
+  test("publishes a legacy completion that predates lifecycle enforcement", async () => {
+    row.publicationLifecycleRequiredAt = null;
+    row.publicationLifecycleReconciledAt = null;
+
+    await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
+
+    expect(checkCalls).toHaveLength(1);
+    expect(storedStates).toEqual([false]);
+  });
+
   test("recomputes state under an advisory lock before publishing", async () => {
     await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
 
-    expect(lockCalls).toBe(2);
+    expect(lockCalls).toBe(3);
+    expect(operationOrder.slice(0, 2)).toEqual(["lock", "lease"]);
     expect(storedStates).toEqual([false]);
     expect(checkCalls).toEqual([
       {
@@ -266,7 +298,7 @@ describe("durable gate state synchronization", () => {
     effectiveFailing = true;
     await runGateStateSyncJob({ reviewId: 7, reviewPublicId: row.publicId });
 
-    expect(lockCalls).toBe(3);
+    expect(lockCalls).toBe(5);
     expect(storedStates).toEqual([true]);
     expect(checkCalls.map((call) => call.conclusion)).toEqual(["success", "failure"]);
     expect(checkCalls[1]?.detailsUrl).toBe(
@@ -355,6 +387,6 @@ describe("durable gate state synchronization", () => {
     ).rejects.toThrow();
 
     expect(transactionsFinalized).toBe(1);
-    expect(lockCalls).toBe(1);
+    expect(lockCalls).toBe(2);
   });
 });

@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { closeDb, getPool } from "@/lib/db";
 
-const RELEASE_STEP = "operational-indexes-v5";
+const RELEASE_STEP = "operational-indexes-v6";
 const RELEASE_LOCK_NAMESPACE = 1_349_481_332;
 const RELEASE_LOCK_OPERATION = 1_768_704_356;
 const RELEASE_LOCK_WAIT_MS = 15 * 60 * 1_000;
@@ -15,6 +15,20 @@ interface OperationalIndex {
 }
 
 const OPERATIONAL_INDEXES: OperationalIndex[] = [
+  {
+    name: "reviews_publication_lifecycle_pending_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx" ON "reviews" ("finished_at") WHERE "status" = \'completed\' AND "publication_lifecycle_required_at" IS NOT NULL AND "publication_lifecycle_reconciled_at" IS NULL',
+    definitionFragments: [
+      "public.reviews",
+      "finished_at",
+      "where",
+      "status",
+      "completed",
+      "publication_lifecycle_required_at is not null",
+      "publication_lifecycle_reconciled_at is null",
+    ],
+  },
   {
     name: "cli_tokens_refresh_session_idx",
     createSql:

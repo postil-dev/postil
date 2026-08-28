@@ -94,12 +94,25 @@ describe("private repository worker defense in depth", () => {
   test("private author enforcement activates only after the managed fleet replacement", () => {
     const deploy = readFileSync(".github/workflows/deploy.yml", "utf8");
     const activation = readFileSync("scripts/activate-release-jobs.ts", "utf8");
+    const deactivation = readFileSync(
+      "scripts/deactivate-hosted-inference.ts",
+      "utf8",
+    );
     expect(deploy.indexOf("Deploy managed fleet")).toBeLessThan(
       deploy.indexOf(
         "Verify and activate release capabilities after fleet replacement",
       ),
     );
     expect(activation).toContain("activatePrivateReviewAuthorIdentity");
+    expect(activation.indexOf("activatePublicationLifecycleRelease")).toBeLessThan(
+      activation.indexOf("activateReleaseJobs"),
+    );
+    expect(deactivation).toContain("standalone release deactivation is unsupported");
+    expect(deactivation).not.toContain("prepareManagedReleaseCapabilities");
+    expect(deactivation).not.toContain(
+      "deactivatePublicationLifecycleRelease",
+    );
+    expect(deactivation).not.toContain("deactivateHostedInferenceRelease");
   });
 
   test("disabled hosted inference stops before reservation, config fetch, or CLI spawn", () => {
@@ -147,6 +160,115 @@ describe("private repository worker defense in depth", () => {
     expect(guardBody).not.toContain("createCheckRun");
     expect(guardBody).not.toContain("postReview");
     expect(guardBody).not.toContain("failCheckRuns");
+  });
+
+  test("release-dark publication lifecycle stops every review before recovery or forge access", () => {
+    const source = readFileSync("src/worker/review.ts", "utf8");
+    const start = source.indexOf("export async function runReviewJob");
+    const lifecycleGate = source.indexOf(
+      "await publicationLifecycleReleaseActivated(getPool())",
+      start,
+    );
+    const recovery = source.indexOf("await resumeStagedReviewCompletion", start);
+    const token = source.indexOf("getInstallationToken(payload.installationId", start);
+
+    expect(lifecycleGate).toBeGreaterThan(start);
+    expect(lifecycleGate).toBeLessThan(recovery);
+    expect(lifecycleGate).toBeLessThan(token);
+    expect(source.slice(lifecycleGate, recovery)).toContain(
+      "throw new HostedInferenceReleaseDarkError(releaseSha)",
+    );
+  });
+
+  test("publication lifecycle exclusion uses transaction-scoped advisory locks", () => {
+    const rollout = readFileSync("src/lib/release-job-rollout.ts", "utf8");
+    const sharedStart = rollout.indexOf(
+      "export async function withPublicationLifecycleReleaseActive",
+    );
+    const sharedEnd = rollout.indexOf(
+      "export async function deactivatePublicationLifecycleRelease",
+      sharedStart,
+    );
+    const activationStart = rollout.indexOf(
+      "export async function activatePublicationLifecycleRelease",
+    );
+    const activationEnd = rollout.indexOf(
+      "function normalizedReleaseSha",
+      activationStart,
+    );
+    const decisions = readFileSync("src/lib/finding-approvals.ts", "utf8");
+    const database = readFileSync("src/lib/db-transaction.ts", "utf8");
+    const lifecycleLock = readFileSync(
+      "src/lib/publication-lifecycle-lock.ts",
+      "utf8",
+    );
+    const exclusiveLockStart = rollout.indexOf(
+      "async function lockPublicationLifecycleExclusive",
+    );
+    const exclusiveLockEnd = rollout.indexOf(
+      "export class PublicationLifecycleReleaseDarkError",
+      exclusiveLockStart,
+    );
+    const deactivationStart = rollout.indexOf(
+      "export async function deactivatePublicationLifecycleRelease",
+    );
+    const deactivationEnd = rollout.indexOf(
+      "async function darkenPublicationLifecycle",
+      deactivationStart,
+    );
+    const decisionStart = decisions.indexOf(
+      "export async function withReviewDecisionScopeLock",
+    );
+    const decisionEnd = decisions.indexOf(
+      "export async function lockReviewDecisionScopeById",
+      decisionStart,
+    );
+
+    const shared = rollout.slice(sharedStart, sharedEnd);
+    const activation = rollout.slice(activationStart, activationEnd);
+    const exclusiveLock = rollout.slice(exclusiveLockStart, exclusiveLockEnd);
+    const deactivation = rollout.slice(deactivationStart, deactivationEnd);
+    const decision = decisions.slice(decisionStart, decisionEnd);
+    expect(lifecycleLock).toContain("pg_advisory_xact_lock_shared");
+    expect(shared).toContain("withPinnedDatabaseTransaction");
+    expect(shared).toContain("lockPublicationLifecycleShared(transaction)");
+    expect(shared).toContain("operation(transaction, client)");
+    expect(shared).not.toContain("drizzle(pool");
+    expect(shared).not.toContain("pg_advisory_lock_shared");
+    expect(shared).not.toContain("pg_advisory_unlock_shared");
+    expect(activation).toContain("lockPublicationLifecycleExclusive(client)");
+    expect(exclusiveLock).toContain("pg_advisory_xact_lock");
+    expect(exclusiveLock).not.toContain("pg_try_advisory_xact_lock");
+    expect(exclusiveLock).toContain("PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS");
+    expect(exclusiveLock).toContain("set_config('lock_timeout', $1, true)");
+    expect(exclusiveLock).toContain("ROLLBACK TO SAVEPOINT");
+    expect(exclusiveLock).not.toContain("pg_terminate_backend");
+    expect(rollout).toContain(
+      "waitForLegacyPublicationLifecycleOperations(client)",
+    );
+    expect(
+      deactivation.indexOf("waitForLegacyPublicationLifecycleOperations(client)"),
+    ).toBeLessThan(
+      deactivation.indexOf("lockPublicationLifecycleExclusive(client)"),
+    );
+    expect(rollout).toContain("kind = 'gate-state-sync'");
+    expect(rollout).toContain("status = 'running'");
+    expect(exclusiveLock).not.toContain("pg_stat_activity");
+    expect(exclusiveLock).toContain("publication lifecycle lock did not quiesce");
+    expect(activation).toContain("client.release(releaseError)");
+    expect(activation).not.toContain('query("ROLLBACK").catch');
+    expect(activation).not.toContain("pg_advisory_unlock");
+    expect(decision).toContain("withPinnedDatabaseTransaction");
+    expect(decision).toContain("lockPublicationLifecycleShared(transaction)");
+    expect(decision).toContain("lockReviewDecisionScopeById");
+    expect(decision.indexOf("lockPublicationLifecycleShared(transaction)")).toBeLessThan(
+      decision.indexOf("lockReviewDecisionScopeById"),
+    );
+    expect(decision).not.toContain("pg_advisory_lock(");
+    expect(decision).not.toContain("pg_advisory_unlock(");
+    expect(database).toContain("clientDatabase.transaction");
+    expect(database).toContain("client.release(releaseError)");
+    expect(database).toContain("bodyFailed && error === bodyError");
   });
 
   test("respond honors entitlement and release activation before tokens or provider access", () => {
@@ -268,15 +390,32 @@ describe("private repository worker defense in depth", () => {
       "const completion = await finalizeStagedReviewCompletionWithGateMode",
       verification,
     );
-    const gatePublication = source.indexOf(
-      'reviewLog.line("durable gate synchronization queued from stored review truth")',
+    const lifecycleReconciliation = source.indexOf(
+      "const observationCount = await reconcileReviewPublicationLifecycle",
       finalization,
     );
+    const gatePublication = source.indexOf(
+      'reviewLog.line("durable gate synchronization queued from stored review truth")',
+      lifecycleReconciliation,
+    );
+    const lifecycleHelperStart = source.indexOf(
+      "async function reconcileReviewPublicationLifecycle",
+    );
+    const lifecycleHelperEnd = source.indexOf(
+      "export async function resumeStagedReviewCompletion",
+      lifecycleHelperStart,
+    );
+    const lifecycleHelper = source.slice(lifecycleHelperStart, lifecycleHelperEnd);
 
     expect(staging).toBeGreaterThan(cliCompletion);
     expect(verification).toBeGreaterThan(staging);
     expect(finalization).toBeGreaterThan(verification);
-    expect(gatePublication).toBeGreaterThan(finalization);
+    expect(lifecycleReconciliation).toBeGreaterThan(finalization);
+    expect(gatePublication).toBeGreaterThan(lifecycleReconciliation);
+    expect(lifecycleHelper).toContain("withReviewDecisionScopeLock");
+    expect(lifecycleHelper.indexOf("applyPublicationThreadObservations")).toBeLessThan(
+      lifecycleHelper.indexOf("completeReviewPublicationLifecycle"),
+    );
     expect(source.slice(staging, finalization)).toContain(
       'reviewLog.line("review result and publication receipt staged durably")',
     );
@@ -289,7 +428,10 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(verification, finalization)).toContain(
       "{ cause: error }",
     );
-    expect(source.slice(finalization, gatePublication)).toContain(
+    expect(source.slice(finalization, lifecycleReconciliation)).toContain(
+      "queueGateStateSync: false",
+    );
+    expect(source.slice(lifecycleReconciliation, gatePublication)).toContain(
       'triggerQueueDrain("gate-state-sync")',
     );
   });
@@ -305,7 +447,8 @@ describe("private repository worker defense in depth", () => {
     expect(recovery).toContain('stagedReview.status !== "running"');
     expect(recovery).toContain('stagedReview.status !== "completed"');
     expect(recovery).toContain('if (stagedReview.status === "running")');
-    expect(recovery).toContain("await enqueueGateStateSync(db, stagedReview)");
+    expect(recovery).toContain("queueGateStateSync: false");
+    expect(recovery).toContain("await reconcileReviewPublicationLifecycle");
     expect(recovery).toContain('triggerQueueDrain("gate-state-sync")');
     expect(recovery).toContain("const detailsUrl = reviewDetailsUrl(");
     expect(recovery).toContain("stagedReview.publicId");
@@ -339,9 +482,10 @@ describe("private repository worker defense in depth", () => {
   test("operational review failures durably queue terminal check cleanup", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
-      "} catch (err) {",
+      "  } catch (err) {",
       source.indexOf(
-        'reviewLog.line("publication lifecycle observation deferred")',
+        'reviewLog.line("durable gate synchronization queued from stored review truth")',
+        source.indexOf("export async function runReviewJob"),
       ),
     );
     const catchEnd = source.indexOf("} finally {", catchStart);
@@ -413,8 +557,11 @@ describe("private repository worker defense in depth", () => {
   test("publication verification races preserve superseded review semantics", () => {
     const source = readFileSync("src/worker/review.ts", "utf8");
     const catchStart = source.indexOf(
-      "} catch (err) {",
-      source.indexOf('reviewLog.line("publication lifecycle observation deferred")'),
+      "  } catch (err) {",
+      source.indexOf(
+        'reviewLog.line("durable gate synchronization queued from stored review truth")',
+        source.indexOf("export async function runReviewJob"),
+      ),
     );
     const failureUpdate = source.indexOf("const failedRows", catchStart);
     const supersessionRace = source.slice(catchStart, failureUpdate);
