@@ -23,7 +23,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-monitor
+  # Deployment-completion monitors keep independent workflow owners, while
+  # scheduled checks serialize together. The recovery job then joins the same
+  # bounded FIFO queue as deploys, so no pending recovery is replaced.
+  group: ${{ github.event_name == 'workflow_run' && format('production-monitor-deploy-{0}', github.event.workflow_run.id) || 'production-monitor' }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -32,6 +36,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}
     concurrency:
       group: fly-deploy
+      queue: max
       cancel-in-progress: false
     permissions:
       actions: read
@@ -504,7 +509,7 @@ jobs:
   notify:
     name: Raise external alert
     needs: [smoke, release-recovery]
-    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || inputs.test_alert == true) }}
+    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || inputs.test_alert == true) }}
     permissions:
       contents: read
       id-token: write
@@ -525,10 +530,10 @@ jobs:
         uses: ./.github/actions/ilert-event
         with:
           event-type: ALERT
-          summary: ${{ needs.release-recovery.result == 'failure' && 'Postil release recovery failed' || needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
-          alert-key: ${{ needs.release-recovery.result == 'failure' && 'postil-release-recovery' || needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test' }}
+          summary: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'Postil release recovery failed' || needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
+          alert-key: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'postil-release-recovery' || needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test' }}
           details: >-
-            ${{ needs.release-recovery.result == 'failure'
+            ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled')
                 && 'Failed deployment left release recovery unresolved. Run log:'
                 || needs.smoke.result == 'failure'
                 && 'Production checks failed. Run log:'
@@ -537,7 +542,7 @@ jobs:
           # A routine monitor failure records an alerting gap without masking
           # the original signal. Recovery failure and test events require
           # delivery because they validate the fail-safe notification path.
-          require-delivery: ${{ inputs.test_alert == true || needs.release-recovery.result == 'failure' }}
+          require-delivery: ${{ inputs.test_alert == true || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' }}
 
   resolve-release-recovery:
     name: Resolve release recovery alert

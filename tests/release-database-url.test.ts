@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse } from "yaml";
 
 import { resolveDirectDatabaseUrl } from "../scripts/resolve-direct-database-url";
 import {
@@ -268,6 +269,21 @@ describe("release database connection", () => {
       join(root, ".github", "workflows", "production-monitor.yml"),
       "utf8",
     );
+    const deployWorkflowConfig = parse(deployWorkflow) as {
+      concurrency: { group: string; queue: string; "cancel-in-progress": boolean };
+    };
+    const productionMonitorConfig = parse(productionMonitorWorkflow) as {
+      concurrency: { group: string; queue: string; "cancel-in-progress": boolean };
+      jobs: {
+        "release-recovery": {
+          concurrency: {
+            group: string;
+            queue: string;
+            "cancel-in-progress": boolean;
+          };
+        };
+      };
+    };
     const deactivationScript = await readFile(
       join(root, "scripts", "deactivate-hosted-inference.ts"),
       "utf8",
@@ -286,7 +302,26 @@ describe("release database connection", () => {
     );
     expect(deployWorkflow).toContain("bun scripts/run-release-migrations.ts --compensate");
     expect(productionMonitorWorkflow).toContain('workflows: ["deploy"]');
-    expect(productionMonitorWorkflow).toContain("group: fly-deploy");
+    expect(deployWorkflowConfig.concurrency).toEqual({
+      group: "fly-deploy",
+      queue: "max",
+      "cancel-in-progress": false,
+    });
+    expect(productionMonitorConfig.concurrency.queue).toBe("max");
+    expect(productionMonitorConfig.concurrency["cancel-in-progress"]).toBe(false);
+    expect(productionMonitorConfig.concurrency.group).toContain(
+      "production-monitor-deploy-{0}",
+    );
+    expect(productionMonitorConfig.concurrency.group).toContain(
+      "github.event.workflow_run.id",
+    );
+    expect(
+      productionMonitorConfig.jobs["release-recovery"].concurrency,
+    ).toEqual({
+      group: "fly-deploy",
+      queue: "max",
+      "cancel-in-progress": false,
+    });
     expect(productionMonitorWorkflow).toContain("latest_deploy_run_id");
     expect(productionMonitorWorkflow).toContain(
       "needs: [smoke, release-recovery]",
@@ -296,7 +331,10 @@ describe("release database connection", () => {
     );
     expect(productionMonitorWorkflow).toContain("postil-release-recovery");
     expect(productionMonitorWorkflow).toContain(
-      "needs.release-recovery.result == 'failure' && 'postil-release-recovery' || needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test'",
+      "needs.release-recovery.result == 'cancelled') && 'postil-release-recovery'",
+    );
+    expect(productionMonitorWorkflow).toContain(
+      "needs.release-recovery.result == 'cancelled'",
     );
     expect(productionMonitorWorkflow).toContain(
       "bun scripts/run-release-migrations.ts --verify-clear",

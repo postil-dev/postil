@@ -124,6 +124,27 @@ function envelope(input: {
   };
 }
 
+describe("publication lifecycle database client safety", () => {
+  test("discards a client when transaction start fails", async () => {
+    const beginError = new Error("transaction start failed");
+    const releasedWith: Array<Error | undefined> = [];
+    const client = {
+      query: async () => {
+        throw beginError;
+      },
+      release: (error?: Error) => releasedWith.push(error),
+    };
+    const pool = {
+      connect: async () => client,
+    } as unknown as Pool;
+
+    await expect(deactivatePublicationLifecycleRelease(pool)).rejects.toBe(
+      beginError,
+    );
+    expect(releasedWith).toEqual([beginError]);
+  });
+});
+
 describeDb("publication receipt migration and lifecycle", () => {
   const pool = new Pool({ connectionString: TEST_URL, max: 2 });
   const db = drizzle(pool, { schema });
@@ -833,6 +854,61 @@ describeDb("publication receipt migration and lifecycle", () => {
     }
   });
 
+  test("legacy drain does not hold the lifecycle-v2 exclusive lock", async () => {
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('publication-lifecycle-fleet-active')
+       ON CONFLICT (name) DO NOTHING`,
+    );
+    const legacyJob = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, status, locked_at, locked_by)
+       VALUES (
+         'gate-state-sync',
+         '{"reviewId":1,"reviewPublicId":"legacy-drain-order"}'::jsonb,
+         'running', now(), 'legacy-worker'
+       )
+       RETURNING id`,
+    );
+    const deactivation = deactivatePublicationLifecycleRelease(pool);
+    const observer = await pool.connect();
+    let darkVisible = false;
+    let sharedLockAcquired = false;
+    try {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const active = await observer.query<{ active: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM deployment_capabilities
+              WHERE name = 'publication-lifecycle-fleet-active'
+           ) AS active`,
+        );
+        darkVisible = active.rows[0]?.active === false;
+        if (darkVisible) break;
+        await Bun.sleep(25);
+      }
+      await observer.query("BEGIN");
+      const probe = await observer.query<{ acquired: boolean }>(
+        `SELECT pg_try_advisory_xact_lock_shared(
+           hashtextextended($1, 0)
+         ) AS acquired`,
+        ["postil:publication-lifecycle-release-v2"],
+      );
+      sharedLockAcquired = probe.rows[0]?.acquired === true;
+    } finally {
+      await observer.query("ROLLBACK").catch(() => undefined);
+      await observer.query(
+        `UPDATE jobs
+            SET status = 'done', locked_at = NULL, locked_by = NULL
+          WHERE id = $1`,
+        [legacyJob.rows[0]!.id],
+      );
+      observer.release();
+    }
+    await expect(deactivation).resolves.toMatchObject({ deactivated: true });
+    expect(darkVisible).toBe(true);
+    expect(sharedLockAcquired).toBe(true);
+    await activatePublicationLifecycleRelease(pool);
+  });
+
   test("deactivation drains a durable legacy publication operation without trusting backend state", async () => {
     const legacyPool = new Pool({ connectionString: TEST_URL, max: 1 });
     const holder = await legacyPool.connect();
@@ -1099,12 +1175,89 @@ describeDb("publication receipt migration and lifecycle", () => {
               ('hosted-inference-fleet-active')
        ON CONFLICT (name) DO NOTHING`,
     );
-    await prepareManagedReleaseCapabilities(pool, firstRelease, true);
-    const second = await prepareManagedReleaseCapabilities(
+    const gate = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('gate-state-sync', '{"reviewId":1,"reviewPublicId":"atomic-adoption"}'::jsonb)
+       RETURNING id`,
+    );
+    const first = await prepareManagedReleaseCapabilities(
       pool,
-      secondRelease,
+      firstRelease,
       true,
     );
+    await pool.query(
+      "DROP TRIGGER IF EXISTS test_pause_replacement_journal ON deployment_capabilities",
+    );
+    await pool.query("DROP FUNCTION IF EXISTS test_pause_replacement_journal()");
+    await pool.query(`
+      CREATE FUNCTION test_pause_replacement_journal()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.name LIKE 'managed-release-preparation:${secondRelease}:%:root' THEN
+          PERFORM pg_sleep(0.75);
+        END IF;
+        RETURN NEW;
+      END
+      $$
+    `);
+    await pool.query(`
+      CREATE TRIGGER test_pause_replacement_journal
+      BEFORE INSERT ON deployment_capabilities
+      FOR EACH ROW EXECUTE FUNCTION test_pause_replacement_journal()
+    `);
+    let second!: Awaited<ReturnType<typeof prepareManagedReleaseCapabilities>>;
+    try {
+      const replacement = prepareManagedReleaseCapabilities(
+        pool,
+        secondRelease,
+        true,
+      );
+      let barrierReached = false;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const barrier = await pool.query<{ waiting: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity
+              WHERE pid <> pg_backend_pid()
+                AND state = 'active'
+                AND wait_event = 'PgSleep'
+                AND query LIKE '%ON CONFLICT (name) DO UPDATE SET activated_at = now()%'
+           ) AS waiting`,
+        );
+        barrierReached = barrier.rows[0]?.waiting === true;
+        if (barrierReached) break;
+        await Bun.sleep(25);
+      }
+      const visibleDuringAdoption = await pool.query<{ name: string }>(
+        `SELECT name FROM deployment_capabilities
+          WHERE name = ANY($1::text[])
+             OR name LIKE 'managed-release-preparation:%:root'
+          ORDER BY name`,
+        [[
+          "publication-lifecycle-fleet-active",
+          "hosted-inference-fleet-active",
+        ]],
+      );
+      expect(barrierReached).toBe(true);
+      expect(visibleDuringAdoption.rows.map((row) => row.name)).toEqual([
+        `managed-release-preparation:${firstRelease}:${first.generation}:root`,
+      ]);
+      const gateDuringAdoption = await pool.query<{
+        parked: boolean;
+        dark: boolean;
+      }>(
+        `SELECT run_after = 'infinity'::timestamptz AS parked,
+                payload ? '_postilPublicationLifecycleDark' AS dark
+           FROM jobs WHERE id = $1`,
+        [gate.rows[0]!.id],
+      );
+      expect(gateDuringAdoption.rows[0]).toEqual({ parked: true, dark: true });
+      second = await replacement;
+    } finally {
+      await pool.query(
+        "DROP TRIGGER IF EXISTS test_pause_replacement_journal ON deployment_capabilities",
+      );
+      await pool.query("DROP FUNCTION IF EXISTS test_pause_replacement_journal()");
+    }
     expect(second.capabilities).toEqual([
       "hosted-inference-fleet-active",
       "publication-lifecycle-fleet-active",
@@ -1123,6 +1276,13 @@ describeDb("publication receipt migration and lifecycle", () => {
         second.generation,
       ),
     ).toBe(true);
+    const restoredGate = await pool.query<{ due: boolean; dark: boolean }>(
+      `SELECT run_after <= now() AS due,
+              payload ? '_postilPublicationLifecycleDark' AS dark
+         FROM jobs WHERE id = $1`,
+      [gate.rows[0]!.id],
+    );
+    expect(restoredGate.rows[0]).toEqual({ due: true, dark: false });
     await activatePublicationLifecycleRelease(pool);
   });
 

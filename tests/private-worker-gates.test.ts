@@ -204,6 +204,13 @@ describe("private repository worker defense in depth", () => {
       "export class PublicationLifecycleReleaseDarkError",
       exclusiveLockStart,
     );
+    const deactivationStart = rollout.indexOf(
+      "export async function deactivatePublicationLifecycleRelease",
+    );
+    const deactivationEnd = rollout.indexOf(
+      "async function darkenPublicationLifecycle",
+      deactivationStart,
+    );
     const decisionStart = decisions.indexOf(
       "export async function withReviewDecisionScopeLock",
     );
@@ -215,6 +222,7 @@ describe("private repository worker defense in depth", () => {
     const shared = rollout.slice(sharedStart, sharedEnd);
     const activation = rollout.slice(activationStart, activationEnd);
     const exclusiveLock = rollout.slice(exclusiveLockStart, exclusiveLockEnd);
+    const deactivation = rollout.slice(deactivationStart, deactivationEnd);
     const decision = decisions.slice(decisionStart, decisionEnd);
     expect(lifecycleLock).toContain("pg_advisory_xact_lock_shared");
     expect(shared).toContain("withPinnedDatabaseTransaction");
@@ -232,6 +240,11 @@ describe("private repository worker defense in depth", () => {
     expect(exclusiveLock).not.toContain("pg_terminate_backend");
     expect(rollout).toContain(
       "waitForLegacyPublicationLifecycleOperations(client)",
+    );
+    expect(
+      deactivation.indexOf("waitForLegacyPublicationLifecycleOperations(client)"),
+    ).toBeLessThan(
+      deactivation.indexOf("lockPublicationLifecycleExclusive(client)"),
     );
     expect(rollout).toContain("kind = 'gate-state-sync'");
     expect(rollout).toContain("status = 'running'");

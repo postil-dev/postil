@@ -13,6 +13,7 @@ on:
 
 concurrency:
   group: fly-deploy
+  queue: max
   cancel-in-progress: false
 
 permissions:
