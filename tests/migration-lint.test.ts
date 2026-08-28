@@ -396,6 +396,15 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "drizzle", "0058_amused_wolverine.sql"),
       "utf8",
     );
+    const publicationLifecycleRepairMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0059_publication_lifecycle_nonblocking_triggers.sql",
+      ),
+      "utf8",
+    );
 
     expect(migration).toContain('CREATE TABLE "release_steps"');
     expect(migration).not.toContain("CREATE INDEX");
@@ -412,6 +421,36 @@ describe("migration lint", () => {
     );
     expect(publicationLifecycleMigration).toContain(
       'UPDATE "jobs"\nSET "run_after" = \'infinity\'::timestamptz',
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "PERFORM pg_terminate_backend(stale_pid)",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "activity.application_name = 'Supavisor'",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "activity.state = 'idle'",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "activity.datname = current_database()",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "activity.usename = current_user",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "clock_timestamp() + interval '30 seconds'",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "PERFORM pg_stat_clear_snapshot()",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "active legacy publication lifecycle lock did not quiesce",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "advisory.pid <> pg_backend_pid()",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "hashtextextended('postil:publication-lifecycle-release', 0)",
     );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx"',
