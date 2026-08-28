@@ -107,7 +107,8 @@ describe("private repository worker defense in depth", () => {
     expect(activation.indexOf("activatePublicationLifecycleRelease")).toBeLessThan(
       activation.indexOf("activateReleaseJobs"),
     );
-    expect(deactivation).toContain("prepareManagedReleaseCapabilities");
+    expect(deactivation).toContain("standalone release deactivation is unsupported");
+    expect(deactivation).not.toContain("prepareManagedReleaseCapabilities");
     expect(deactivation).not.toContain(
       "deactivatePublicationLifecycleRelease",
     );

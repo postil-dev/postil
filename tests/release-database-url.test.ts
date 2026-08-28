@@ -333,7 +333,10 @@ describe("release database connection", () => {
       "github.event_name != 'workflow_run'",
     );
     expect(productionMonitorWorkflow).toContain(
-      "needs.release-recovery.outputs.recovered == 'true'",
+      "needs.release-recovery.outputs.clear == 'true'",
+    );
+    expect(productionMonitorWorkflow).toContain(
+      "jq -ce -f scripts/verify-managed-fleet.jq",
     );
     expect(productionMonitorWorkflow).toContain(
       'recovery_target_sha="${recovery_targets[0]}"',
@@ -354,17 +357,15 @@ describe("release database connection", () => {
     expect(productionMonitorWorkflow).toContain(
       "bun scripts/run-release-migrations.ts --verify-clear",
     );
-    expect(deactivationScript).toContain("resolveDirectDatabaseUrl");
-    expect(deactivationScript).toContain("publication_lifecycle_required_at");
-    expect(deactivationScript).toContain("prepareManagedReleaseCapabilities");
+    expect(deactivationScript).toContain(
+      "standalone release deactivation is unsupported",
+    );
+    expect(deactivationScript).not.toContain("prepareManagedReleaseCapabilities");
     expect(deactivationScript).not.toContain(
       "deactivateHostedInferenceRelease",
     );
     expect(deactivationScript).not.toContain(
       "deactivatePublicationLifecycleRelease",
-    );
-    expect(deactivationScript.indexOf("process.env.DATABASE_URL =")).toBeLessThan(
-      deactivationScript.indexOf("getPool().query"),
     );
   });
 });
