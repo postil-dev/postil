@@ -21,6 +21,7 @@ import {
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import { recoverRespondDeliveryJobs } from "@/lib/respond-delivery";
+import { recoverAbandonedManagedReleasePreparations } from "@/lib/release-job-rollout";
 import { recordServiceHeartbeat } from "@/lib/private-monitoring";
 import {
   configuredPrivateWorkerRehearsalSandbox,
@@ -256,6 +257,16 @@ function jitter(delayMs: number): number {
 async function watchdogLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
+      const recoveredReleasePreparations =
+        await recoverAbandonedManagedReleasePreparations(
+          getPool(),
+          optionalEnv("POSTIL_RELEASE_SHA"),
+        );
+      if (recoveredReleasePreparations > 0) {
+        console.warn(
+          `[watchdog] recovered ${recoveredReleasePreparations} abandoned release preparation(s)`,
+        );
+      }
       await enqueueGateEnforcementSweepOnce(getPool(), {
         minIntervalMs: GATE_ENFORCEMENT_SWEEP_INTERVAL_MS,
       });

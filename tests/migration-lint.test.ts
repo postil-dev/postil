@@ -426,47 +426,17 @@ describe("migration lint", () => {
     expect(publicationLifecycleMigration).toContain(
       'UPDATE "jobs"\nSET "run_after" = \'infinity\'::timestamptz',
     );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "PERFORM pg_terminate_backend(stale_pid)",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "activity.application_name = 'Supavisor'",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "ORDER BY (activity.state = 'idle') DESC",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "IF stale_state = 'idle' THEN",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "activity.datname = current_database()",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "activity.usename = current_user",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "clock_timestamp() + interval '30 seconds'",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "lifecycle_locked := pg_try_advisory_lock(",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "IF NOT pg_advisory_unlock(",
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_terminate_backend",
     );
     expect(publicationLifecycleRepairMigration).not.toContain(
-      "SELECT pg_advisory_xact_lock(hashtextextended('postil:publication-lifecycle-release'",
+      "pg_advisory_lock(",
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_advisory_unlock(",
     );
     expect(publicationLifecycleRepairMigration).toContain(
-      "PERFORM pg_stat_clear_snapshot()",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "active legacy publication lifecycle lock did not quiesce",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "advisory.pid <> pg_backend_pid()",
-    );
-    expect(publicationLifecycleRepairMigration).toContain(
-      "hashtextextended('postil:publication-lifecycle-release', 0)",
+      "hashtextextended('postil:publication-lifecycle-release-v2', 0)",
     );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx"',

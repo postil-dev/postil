@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import type { Database } from "@/lib/db";
 
 export const PUBLICATION_LIFECYCLE_LOCK =
-  "postil:publication-lifecycle-release";
+  "postil:publication-lifecycle-release-v2";
 
 /** Keep lifecycle work ahead of narrower review locks in the global order. */
 export async function lockPublicationLifecycleShared(

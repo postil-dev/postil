@@ -228,7 +228,10 @@ describe("private repository worker defense in depth", () => {
     expect(exclusiveLock).toContain("lock_timeout = '250ms'");
     expect(exclusiveLock).toContain("set_config('lock_timeout', $1, true)");
     expect(exclusiveLock).toContain("ROLLBACK TO SAVEPOINT");
-    expect(exclusiveLock).toContain("pg_terminate_backend");
+    expect(exclusiveLock).not.toContain("pg_terminate_backend");
+    expect(rollout).toContain(
+      "waitForLegacyPublicationLifecycleTransactions(client)",
+    );
     expect(exclusiveLock).toContain("publication lifecycle lock did not quiesce");
     expect(activation).toContain("client.release(releaseError)");
     expect(activation).not.toContain('query("ROLLBACK").catch');

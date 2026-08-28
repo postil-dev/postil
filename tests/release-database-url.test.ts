@@ -181,6 +181,46 @@ describe("release database connection", () => {
     expect(restored).toEqual([snapshot]);
   });
 
+  test("aborts the active migration child and compensates on termination", async () => {
+    const environment = {
+      DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
+      POSTIL_RELEASE_SHA: "b".repeat(40),
+    };
+    const snapshot = {
+      releaseSha: "b".repeat(40),
+      publicationLifecycleReady: true,
+      capabilities: ["publication-lifecycle-fleet-active"],
+    };
+    const controller = new AbortController();
+    let childStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      childStarted = resolve;
+    });
+    const kills: Array<number | NodeJS.Signals | undefined> = [];
+    const restored: unknown[] = [];
+    const run = runReleaseMigrations(
+      environment,
+      () => {
+        childStarted();
+        return {
+          exited: new Promise<number>(() => undefined),
+          kill: (signal) => kills.push(signal),
+        };
+      },
+      async () => snapshot,
+      async (_databaseEnvironment, captured) => {
+        restored.push(captured);
+      },
+      controller.signal,
+    );
+    await started;
+    controller.abort();
+
+    await expect(run).rejects.toThrow("release database migration interrupted");
+    expect(kills).toEqual(["SIGTERM"]);
+    expect(restored).toEqual([snapshot]);
+  });
+
   test("keeps the checked-in release and deploy contracts aligned", async () => {
     const root = join(import.meta.dir, "..");
     const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as {

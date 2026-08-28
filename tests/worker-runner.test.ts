@@ -540,6 +540,8 @@ describe("drainQueueOnce", () => {
     expect(worker).toContain("activeControllers.set(job.id, controller)");
     expect(worker).toContain("requeueableReviewIds.add(job.id)");
     expect(worker).toContain("requeueableReviewIds.delete(job.id)");
+    expect(worker).toContain("recoverAbandonedManagedReleasePreparations(");
+    expect(worker).toContain('optionalEnv("POSTIL_RELEASE_SHA")');
     // A claim that lands during shutdown is requeued before it is started.
     expect(worker).toContain('if (shuttingDown && outcome.status === "claimed")');
     expect(worker).toContain("[outcome.job.id]");

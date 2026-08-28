@@ -29,9 +29,11 @@ import {
   deactivatePublicationLifecycleRelease,
   prepareManagedReleaseCapabilities,
   publicationLifecycleReleaseActivated,
+  recoverAbandonedManagedReleasePreparations,
   restoreManagedReleaseCapabilities,
   withPublicationLifecycleReleaseActive,
 } from "@/lib/release-job-rollout";
+import { compensateReleasePreparation } from "../scripts/run-release-migrations";
 
 const realAppAuth = await import("@/lib/github/app-auth");
 const realChecks = await import("@/lib/github/checks");
@@ -783,16 +785,13 @@ describeDb("publication receipt migration and lifecycle", () => {
     }
   });
 
-  test("deactivation retires an idle transaction-pool backend and its leaked session state", async () => {
+  test("deactivation ignores an idle legacy session lock without terminating its backend", async () => {
     const stalePool = new Pool({
       connectionString: TEST_URL,
       max: 1,
       application_name: "Supavisor",
     });
     const holder = await stalePool.connect();
-    const holderFailure = new Promise<Error>((resolve) => {
-      holder.on("error", resolve);
-    });
     try {
       await holder.query(
         "SELECT pg_advisory_lock_shared(hashtextextended($1, 0))",
@@ -806,13 +805,6 @@ describeDb("publication receipt migration and lifecycle", () => {
       expect(await deactivatePublicationLifecycleRelease(pool)).toMatchObject({
         deactivated: true,
       });
-      const termination = await Promise.race([
-        holderFailure,
-        Bun.sleep(1_000).then(() => null),
-      ]);
-      expect(termination?.message).toContain(
-        "terminating connection due to administrator command",
-      );
       const leakedState = await pool.query<{ count: string }>(
         `SELECT count(*)::text AS count
            FROM pg_locks
@@ -823,7 +815,8 @@ describeDb("publication receipt migration and lifecycle", () => {
             AND objid::bigint = (hashtextextended($1, 0) & 4294967295)`,
         ["postil:test-leaked-session-state"],
       );
-      expect(leakedState.rows[0]?.count).toBe("0");
+      expect(leakedState.rows[0]?.count).toBe("1");
+      expect((await holder.query("SELECT 1 AS alive")).rows[0]?.alive).toBe(1);
     } finally {
       await holder
         .query(
@@ -833,6 +826,34 @@ describeDb("publication receipt migration and lifecycle", () => {
         .catch(() => undefined);
       holder.release(true);
       await stalePool.end();
+      await activatePublicationLifecycleRelease(pool);
+    }
+  });
+
+  test("deactivation drains an active legacy transaction before crossing the versioned boundary", async () => {
+    const legacyPool = new Pool({ connectionString: TEST_URL, max: 1 });
+    const holder = await legacyPool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
+        ["postil:publication-lifecycle-release"],
+      );
+      let finished = false;
+      const deactivation = deactivatePublicationLifecycleRelease(pool).then(
+        (result) => {
+          finished = true;
+          return result;
+        },
+      );
+      await Bun.sleep(150);
+      expect(finished).toBe(false);
+      await holder.query("COMMIT");
+      await expect(deactivation).resolves.toMatchObject({ deactivated: true });
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      await legacyPool.end();
       await activatePublicationLifecycleRelease(pool);
     }
   });
@@ -884,6 +905,15 @@ describeDb("publication receipt migration and lifecycle", () => {
       ).rows[0]?.parked,
     ).toBe(true);
 
+    const parkedHosted = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload, run_after)
+       VALUES
+         ('review', jsonb_build_object('releaseDarkSha', $1::text), 'infinity'::timestamptz),
+         ('hosted-provider-key-lifecycle', jsonb_build_object('releaseDarkSha', $1::text), 'infinity'::timestamptz)
+       RETURNING id`,
+      [releaseSha],
+    );
+
     await restoreManagedReleaseCapabilities(pool, snapshot);
     expect(
       (
@@ -907,6 +937,111 @@ describeDb("publication receipt migration and lifecycle", () => {
         )
       ).rows[0],
     ).toEqual({ due: true, dark: false });
+    const restoredHosted = await pool.query<{ due: boolean; dark: boolean }>(
+      `SELECT run_after <= now() AS due,
+              payload ? 'releaseDarkSha' AS dark
+         FROM jobs
+        WHERE id = ANY($1::bigint[])
+        ORDER BY id`,
+      [parkedHosted.rows.map((row) => row.id)],
+    );
+    expect(restoredHosted.rows).toEqual([
+      { due: true, dark: false },
+      { due: true, dark: false },
+    ]);
+    const journal = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM deployment_capabilities
+        WHERE name LIKE $1`,
+      [`managed-release-preparation:${releaseSha}:%`],
+    );
+    expect(journal.rows[0]?.count).toBe("0");
+  });
+
+  test("an old worker restores an abandoned durable preparation but the target release does not", async () => {
+    const releaseSha = "9".repeat(40);
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('publication-lifecycle-fleet-active'),
+              ('hosted-inference-fleet-active'),
+              ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [`hosted-inference-release:${releaseSha}`],
+    );
+    await prepareManagedReleaseCapabilities(pool, releaseSha, true);
+    await pool.query(
+      `UPDATE deployment_capabilities
+          SET activated_at = now() - interval '30 minutes'
+        WHERE name LIKE $1`,
+      [`managed-release-preparation:${releaseSha}:%`],
+    );
+
+    expect(
+      await recoverAbandonedManagedReleasePreparations(pool, releaseSha, 0),
+    ).toBe(0);
+    expect(
+      await recoverAbandonedManagedReleasePreparations(
+        pool,
+        "a".repeat(40),
+        0,
+      ),
+    ).toBe(1);
+    const restored = await pool.query<{ name: string }>(
+      `SELECT name FROM deployment_capabilities
+        WHERE name = ANY($1::text[])
+        ORDER BY name`,
+      [[
+        "publication-lifecycle-fleet-active",
+        "hosted-inference-fleet-active",
+        `hosted-inference-release:${releaseSha}`,
+      ]],
+    );
+    expect(restored.rows.map((row) => row.name)).toEqual([
+      "hosted-inference-fleet-active",
+      `hosted-inference-release:${releaseSha}`,
+      "publication-lifecycle-fleet-active",
+    ]);
+  });
+
+  test("the deploy recovery command restores the exact durable preparation", async () => {
+    const releaseSha = "7".repeat(40);
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('publication-lifecycle-fleet-active'),
+              ('hosted-inference-fleet-active'),
+              ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [`hosted-inference-release:${releaseSha}`],
+    );
+    await prepareManagedReleaseCapabilities(pool, releaseSha, true);
+
+    expect(
+      await compensateReleasePreparation({
+        DATABASE_URL: TEST_URL!,
+        POSTIL_RELEASE_SHA: releaseSha,
+      }),
+    ).toBe(true);
+    expect(
+      await compensateReleasePreparation({
+        DATABASE_URL: TEST_URL!,
+        POSTIL_RELEASE_SHA: releaseSha,
+      }),
+    ).toBe(false);
+    const restored = await pool.query<{ name: string }>(
+      `SELECT name FROM deployment_capabilities
+        WHERE name = ANY($1::text[])
+        ORDER BY name`,
+      [[
+        "publication-lifecycle-fleet-active",
+        "hosted-inference-fleet-active",
+        `hosted-inference-release:${releaseSha}`,
+      ]],
+    );
+    expect(restored.rows.map((row) => row.name)).toEqual([
+      "hosted-inference-fleet-active",
+      `hosted-inference-release:${releaseSha}`,
+      "publication-lifecycle-fleet-active",
+    ]);
   });
 
   test("a gate committed after the activation sweep self-heals", async () => {
@@ -917,7 +1052,7 @@ describeDb("publication receipt migration and lifecycle", () => {
       await activationClient.query("BEGIN");
       await activationClient.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-        ["postil:publication-lifecycle-release"],
+        ["postil:publication-lifecycle-release-v2"],
       );
       await activationClient.query(
         `INSERT INTO deployment_capabilities (name)

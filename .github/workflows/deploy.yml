@@ -326,6 +326,40 @@ jobs:
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Restore capabilities when release preparation failed before replacement
+        if: ${{ always() && steps.deploy.outcome == 'failure' && steps.recover.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          machines=$(flyctl machine list --app postil-web --json)
+          target_seen=0
+          while IFS= read -r id; do
+            release=$(flyctl machine exec "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
+              --app postil-web --timeout 15 2>/dev/null || true)
+            if [[ ! "${release}" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "A managed machine did not report a valid release; capabilities remain dark."
+              exit 1
+            fi
+            if [[ "${release}" == "${GITHUB_SHA}" ]]; then
+              target_seen=1
+              break
+            fi
+          done < <(jq -r '.[] | select(
+            .state == "started" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          ) | .id' <<<"${machines}")
+          if [[ "${target_seen}" -ne 0 ]]; then
+            echo "A target-release machine is running; release capabilities remain dark."
+            exit 0
+          fi
+          bun scripts/run-release-migrations.ts --compensate
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POSTIL_RELEASE_SHA: ${{ github.sha }}
       - name: Verify and activate release capabilities after fleet replacement
         id: activate
         # Migration 0020 stages new job kinds with an infinite

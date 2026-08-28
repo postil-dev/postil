@@ -1,6 +1,9 @@
 name: Production monitor
 
 on:
+  workflow_run:
+    workflows: ["deploy"]
+    types: [completed]
   schedule:
     # Requested every 15 minutes; GitHub throttles scheduled workflows, so
     # observed cadence is best-effort (often hourly or worse). This workflow
@@ -24,8 +27,82 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-recovery:
+    name: Recover abandoned release preparation
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install checksum-pinned flyctl
+        env:
+          FLYCTL_VERSION: 0.4.71
+          FLYCTL_LINUX_X86_64_SHA256: a782dceed173d215c000ab94e2b08623c22267edff6d90ebe3010b3f9b671dc2
+        run: |
+          set -euo pipefail
+          archive="flyctl_${FLYCTL_VERSION}_Linux_x86_64.tar.gz"
+          url="https://github.com/superfly/flyctl/releases/download/v${FLYCTL_VERSION}/${archive}"
+          temporary_directory="$(mktemp -d)"
+          trap 'rm -rf "${temporary_directory}"' EXIT
+          curl --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --output "${temporary_directory}/${archive}" "${url}"
+          printf '%s  %s\n' "${FLYCTL_LINUX_X86_64_SHA256}" "${temporary_directory}/${archive}" \
+            | sha256sum --check --strict
+          tar -xzf "${temporary_directory}/${archive}" -C "${temporary_directory}" flyctl
+          install -m 0755 "${temporary_directory}/flyctl" "${RUNNER_TEMP}/flyctl"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+      - name: Restore only an unchanged prior fleet
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POSTIL_RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          machines=$(flyctl machine list --app postil-web --json)
+          managed_count=$(jq -r '[.[] | select(
+            .config.metadata.fly_process_group == "web" or
+            .config.metadata.fly_process_group == "worker" or
+            .config.metadata.fly_process_group == "monitor"
+          )] | length' <<<"${machines}")
+          started_count=$(jq -r '[.[] | select(
+            .state == "started" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          )] | length' <<<"${machines}")
+          if [[ "${managed_count}" -lt 4 || "${started_count}" -ne "${managed_count}" ]]; then
+            echo "Managed fleet state is incomplete; release capabilities remain dark."
+            exit 1
+          fi
+          while IFS= read -r id; do
+            release=$(flyctl machine exec "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
+              --app postil-web --timeout 15 2>/dev/null)
+            if [[ ! "${release}" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "A managed machine did not report a valid release; capabilities remain dark."
+              exit 1
+            fi
+            if [[ "${release}" == "${POSTIL_RELEASE_SHA}" ]]; then
+              echo "The target release reached the managed fleet; capabilities remain dark."
+              exit 1
+            fi
+          done < <(jq -r '.[] | select(
+            .state == "started" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          ) | .id' <<<"${machines}")
+          bun scripts/run-release-migrations.ts --compensate
+
   smoke:
     name: Smoke check production
+    if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:

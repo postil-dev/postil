@@ -3,12 +3,16 @@ import { Pool } from "pg";
 import {
   type ManagedReleaseCapabilitySnapshot,
   prepareManagedReleaseCapabilities,
+  restoreManagedReleasePreparation,
   restoreManagedReleaseCapabilities,
 } from "@/lib/release-job-rollout";
 import { resolveDirectDatabaseUrl } from "./resolve-direct-database-url";
 
 type Environment = Record<string, string | undefined>;
-type MigrationProcess = { exited: Promise<number> };
+type MigrationProcess = {
+  exited: Promise<number>;
+  kill?: (signal?: number | NodeJS.Signals) => unknown;
+};
 type SpawnReleaseDatabaseCommand = (
   command: readonly string[],
   environment: Environment,
@@ -37,6 +41,7 @@ export async function runReleaseMigrations(
   spawnCommand: SpawnReleaseDatabaseCommand = defaultSpawnReleaseDatabaseCommand,
   prepareCapabilities: PrepareReleaseCapabilities = defaultPrepareReleaseCapabilities,
   restoreCapabilities: RestoreReleaseCapabilities = defaultRestoreReleaseCapabilities,
+  signal?: AbortSignal,
 ): Promise<void> {
   const databaseEnvironment = releaseMigrationEnvironment(environment);
   const snapshot = await prepareCapabilities(databaseEnvironment);
@@ -46,18 +51,21 @@ export async function runReleaseMigrations(
       "release database migration",
       databaseEnvironment,
       spawnCommand,
+      signal,
     );
     await runReleaseDatabaseCommand(
       ["bun", "run", "operational:indexes"],
       "release operational indexes",
       databaseEnvironment,
       spawnCommand,
+      signal,
     );
     await runReleaseDatabaseCommand(
       ["bun", "run", "notifications:quiesce"],
       "release notification quiescence",
       databaseEnvironment,
       spawnCommand,
+      signal,
     );
   } catch (error) {
     if (snapshot) {
@@ -131,11 +139,30 @@ async function defaultRestoreReleaseCapabilities(
   }
 }
 
+export async function compensateReleasePreparation(
+  environment: Environment = process.env,
+): Promise<boolean> {
+  const releaseSha = environment.POSTIL_RELEASE_SHA?.trim();
+  if (!releaseSha) {
+    throw new Error("POSTIL_RELEASE_SHA is required for release compensation");
+  }
+  const databaseEnvironment = releaseMigrationEnvironment(environment);
+  const pool = new Pool({ connectionString: databaseEnvironment.DATABASE_URL });
+  try {
+    const schema = await releaseSchemaState(pool);
+    if (!schema.hostedReady) return false;
+    return await restoreManagedReleasePreparation(pool, releaseSha);
+  } finally {
+    await pool.end();
+  }
+}
+
 async function runReleaseDatabaseCommand(
   command: readonly string[],
   label: string,
   environment: Environment,
   spawnCommand: SpawnReleaseDatabaseCommand,
+  signal?: AbortSignal,
 ): Promise<void> {
   let process: MigrationProcess;
   try {
@@ -145,10 +172,24 @@ async function runReleaseDatabaseCommand(
   }
 
   let exitCode: number;
+  let abortHandler: (() => void) | undefined;
   try {
-    exitCode = await process.exited;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      abortHandler = () => {
+        process.kill?.("SIGTERM");
+        reject(new Error(`${label} interrupted`));
+      };
+      if (signal?.aborted) abortHandler();
+      else signal?.addEventListener("abort", abortHandler, { once: true });
+    });
+    exitCode = await Promise.race([process.exited, interrupted]);
   } catch (cause) {
+    if (cause instanceof Error && cause.message === `${label} interrupted`) {
+      throw cause;
+    }
     throw new Error(`${label} status could not be observed`, { cause });
+  } finally {
+    if (abortHandler) signal?.removeEventListener("abort", abortHandler);
   }
   if (exitCode !== 0) {
     throw new Error(`${label} failed with status ${exitCode}`);
@@ -167,4 +208,32 @@ function defaultSpawnReleaseDatabaseCommand(
   });
 }
 
-if (import.meta.main) await runReleaseMigrations();
+if (import.meta.main) {
+  if (process.argv[2] === "--compensate") {
+    const restored = await compensateReleasePreparation();
+    console.log(
+      `release preparation compensation: ${restored ? "restored" : "not pending"}`,
+    );
+    process.exit(0);
+  }
+  const controller = new AbortController();
+  const interrupt = (signal: NodeJS.Signals) => {
+    controller.abort(new Error(`release database preparation received ${signal}`));
+  };
+  const onInterrupt = () => interrupt("SIGINT");
+  const onTerminate = () => interrupt("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  try {
+    await runReleaseMigrations(
+      process.env,
+      defaultSpawnReleaseDatabaseCommand,
+      defaultPrepareReleaseCapabilities,
+      defaultRestoreReleaseCapabilities,
+      controller.signal,
+    );
+  } finally {
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+  }
+}
