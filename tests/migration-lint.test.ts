@@ -429,7 +429,10 @@ describe("migration lint", () => {
       "activity.application_name = 'Supavisor'",
     );
     expect(publicationLifecycleRepairMigration).toContain(
-      "activity.state = 'idle'",
+      "ORDER BY (activity.state = 'idle') DESC",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "IF stale_state = 'idle' THEN",
     );
     expect(publicationLifecycleRepairMigration).toContain(
       "activity.datname = current_database()",
