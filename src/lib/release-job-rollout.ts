@@ -176,9 +176,11 @@ export async function deactivatePublicationLifecycleRelease(
   let transactionOpen = false;
   try {
     // Managed release preparation records a durable recovery journal before
-    // this drain begins. Darken before draining so a legacy publisher that
-    // has not passed the capability check cannot begin while admitted
-    // operations finish; interruption remains fail-closed and recoverable.
+    // this drain begins. The first commit removes the active capability, so
+    // the database trigger parks every new gate job before the exclusive lock
+    // is requested. Admitted legacy operations can then drain without a gap
+    // that lets another active publisher enter; interruption remains
+    // fail-closed and recoverable.
     await client.query("BEGIN");
     transactionOpen = true;
     const initial = await darkenPublicationLifecycle(client);
@@ -224,6 +226,8 @@ export async function deactivatePublicationLifecycleRelease(
         );
       }
     }
+    // A successful rollback leaves the client reusable. releaseError is set
+    // only when BEGIN or rollback leaves the backend state uncertain.
     throw primaryError;
   } finally {
     client.release(releaseError);
@@ -411,6 +415,8 @@ export async function activatePublicationLifecycleRelease(
         "publication lifecycle activation and rollback failed",
       );
     }
+    // A successful rollback leaves the client reusable. releaseError is set
+    // only when BEGIN or rollback leaves the backend state uncertain.
     throw primaryError;
   } finally {
     client.release(releaseError);

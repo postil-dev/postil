@@ -127,6 +127,8 @@ jobs:
           releases=()
           target_seen=0
           while IFS= read -r id; do
+            # The flyctl execution timeout bounds every individual machine
+            # probe; workflow timeout remains the independent outer bound.
             release=$(flyctl machine exec "${id}" \
               "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
               --app postil-web --timeout 15 2>/dev/null)
