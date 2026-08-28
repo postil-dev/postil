@@ -220,7 +220,7 @@ describe("production monitor workflow", () => {
     expect(workflow.jobs.resolve?.if).toContain(
       "needs.smoke.result == 'success'",
     );
-    expect(workflow.jobs.resolve?.if).not.toContain("inputs.test_alert");
+    expect(workflow.jobs.resolve?.if).toContain("inputs.test_alert != true");
   });
 
   test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {

@@ -667,7 +667,7 @@ jobs:
   resolve:
     name: Resolve external alert
     needs: smoke
-    if: ${{ needs.smoke.result == 'success' }}
+    if: ${{ needs.smoke.result == 'success' && inputs.test_alert != true }}
     permissions:
       contents: read
       id-token: write
