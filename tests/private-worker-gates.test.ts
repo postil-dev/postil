@@ -230,8 +230,11 @@ describe("private repository worker defense in depth", () => {
     expect(exclusiveLock).toContain("ROLLBACK TO SAVEPOINT");
     expect(exclusiveLock).not.toContain("pg_terminate_backend");
     expect(rollout).toContain(
-      "waitForLegacyPublicationLifecycleTransactions(client)",
+      "waitForLegacyPublicationLifecycleOperations(client)",
     );
+    expect(rollout).toContain("kind = 'gate-state-sync'");
+    expect(rollout).toContain("status = 'running'");
+    expect(exclusiveLock).not.toContain("pg_stat_activity");
     expect(exclusiveLock).toContain("publication lifecycle lock did not quiesce");
     expect(activation).toContain("client.release(releaseError)");
     expect(activation).not.toContain('query("ROLLBACK").catch');

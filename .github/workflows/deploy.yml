@@ -333,6 +333,7 @@ jobs:
           set -euo pipefail
           machines=$(flyctl machine list --app postil-web --json)
           target_seen=0
+          releases=()
           while IFS= read -r id; do
             release=$(flyctl machine exec "${id}" \
               "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
@@ -341,6 +342,7 @@ jobs:
               echo "A managed machine did not report a valid release; capabilities remain dark."
               exit 1
             fi
+            releases+=("${release}")
             if [[ "${release}" == "${GITHUB_SHA}" ]]; then
               target_seen=1
               break
@@ -354,6 +356,15 @@ jobs:
           if [[ "${target_seen}" -ne 0 ]]; then
             echo "A target-release machine is running; release capabilities remain dark."
             exit 0
+          fi
+          if [[ "${#releases[@]}" -lt 4 ]]; then
+            echo "Managed fleet evidence is incomplete; release capabilities remain dark."
+            exit 1
+          fi
+          unique_release_count=$(printf '%s\n' "${releases[@]}" | sort -u | wc -l)
+          if [[ "${unique_release_count}" -ne 1 ]]; then
+            echo "The managed fleet is mixed; release capabilities remain dark."
+            exit 1
           fi
           bun scripts/run-release-migrations.ts --compensate
         env:

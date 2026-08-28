@@ -138,7 +138,7 @@ describe("release database connection", () => {
     ).rejects.toThrow("release database migration could not start");
     await expect(
       runReleaseMigrations(environment, () => ({ exited: Promise.reject(new Error("lost child")) })),
-    ).rejects.toThrow("release database migration status could not be observed");
+    ).rejects.toThrow("release database migration termination could not be observed");
   });
 
   test("restores the captured capability state when any database preparation step fails", async () => {
@@ -198,17 +198,27 @@ describe("release database connection", () => {
     });
     const kills: Array<number | NodeJS.Signals | undefined> = [];
     const restored: unknown[] = [];
+    const events: string[] = [];
+    let childExited!: (exitCode: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      childExited = resolve;
+    });
     const run = runReleaseMigrations(
       environment,
       () => {
         childStarted();
         return {
-          exited: new Promise<number>(() => undefined),
-          kill: (signal) => kills.push(signal),
+          exited,
+          kill: (signal) => {
+            events.push("child terminated");
+            kills.push(signal);
+            childExited(143);
+          },
         };
       },
       async () => snapshot,
       async (_databaseEnvironment, captured) => {
+        events.push("capabilities restored");
         restored.push(captured);
       },
       controller.signal,
@@ -219,6 +229,30 @@ describe("release database connection", () => {
     await expect(run).rejects.toThrow("release database migration interrupted");
     expect(kills).toEqual(["SIGTERM"]);
     expect(restored).toEqual([snapshot]);
+    expect(events).toEqual(["child terminated", "capabilities restored"]);
+  });
+
+  test("leaves durable compensation pending when child termination is unobservable", async () => {
+    const snapshot = {
+      releaseSha: "c".repeat(40),
+      publicationLifecycleReady: true,
+      capabilities: ["publication-lifecycle-fleet-active"],
+    };
+    const restored: unknown[] = [];
+    await expect(
+      runReleaseMigrations(
+        {
+          DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
+          POSTIL_RELEASE_SHA: snapshot.releaseSha,
+        },
+        () => ({ exited: Promise.reject(new Error("lost child")) }),
+        async () => snapshot,
+        async (_databaseEnvironment, captured) => {
+          restored.push(captured);
+        },
+      ),
+    ).rejects.toThrow("durable compensation remains pending");
+    expect(restored).toEqual([]);
   });
 
   test("keeps the checked-in release and deploy contracts aligned", async () => {
@@ -227,6 +261,10 @@ describe("release database connection", () => {
       scripts: Record<string, string>;
     };
     const deployWorkflow = await readFile(join(root, ".github", "workflows", "deploy.yml"), "utf8");
+    const productionMonitorWorkflow = await readFile(
+      join(root, ".github", "workflows", "production-monitor.yml"),
+      "utf8",
+    );
     const deactivationScript = await readFile(
       join(root, "scripts", "deactivate-hosted-inference.ts"),
       "utf8",
@@ -240,6 +278,19 @@ describe("release database connection", () => {
     );
     expect(deployWorkflow).toContain('staged+="DATABASE_URL=${DATABASE_URL}"');
     expect(deployWorkflow).not.toContain("POSTIL_DIRECT_DATABASE_URL");
+    expect(deployWorkflow).toContain(
+      "Restore capabilities when release preparation failed before replacement",
+    );
+    expect(deployWorkflow).toContain("bun scripts/run-release-migrations.ts --compensate");
+    expect(productionMonitorWorkflow).toContain('workflows: ["deploy"]');
+    expect(productionMonitorWorkflow).toContain("group: fly-deploy");
+    expect(productionMonitorWorkflow).toContain("latest_deploy_run_id");
+    expect(productionMonitorWorkflow).toContain(
+      "needs: [smoke, release-recovery]",
+    );
+    expect(productionMonitorWorkflow).toContain(
+      "Postil release recovery failed",
+    );
     expect(deactivationScript).toContain("resolveDirectDatabaseUrl");
     expect(deactivationScript).toContain("publication_lifecycle_required_at");
     expect(deactivationScript.indexOf("process.env.DATABASE_URL =")).toBeLessThan(

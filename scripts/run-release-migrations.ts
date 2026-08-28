@@ -25,6 +25,10 @@ type RestoreReleaseCapabilities = (
   snapshot: ManagedReleaseCapabilitySnapshot,
 ) => Promise<void>;
 
+class ReleaseCommandStateUncertainError extends Error {
+  override name = "ReleaseCommandStateUncertainError";
+}
+
 export function releaseMigrationEnvironment(environment: Environment): Environment {
   const { POSTIL_DIRECT_DATABASE_URL: directDatabaseUrl, ...migrationEnvironment } = environment;
   return {
@@ -68,7 +72,7 @@ export async function runReleaseMigrations(
       signal,
     );
   } catch (error) {
-    if (snapshot) {
+    if (snapshot && !(error instanceof ReleaseCommandStateUncertainError)) {
       try {
         await restoreCapabilities(databaseEnvironment, snapshot);
       } catch (restoreError) {
@@ -173,24 +177,28 @@ async function runReleaseDatabaseCommand(
 
   let exitCode: number;
   let abortHandler: (() => void) | undefined;
+  let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+  let interrupted = false;
   try {
-    const interrupted = new Promise<never>((_resolve, reject) => {
-      abortHandler = () => {
-        process.kill?.("SIGTERM");
-        reject(new Error(`${label} interrupted`));
-      };
-      if (signal?.aborted) abortHandler();
-      else signal?.addEventListener("abort", abortHandler, { once: true });
-    });
-    exitCode = await Promise.race([process.exited, interrupted]);
+    abortHandler = () => {
+      if (interrupted) return;
+      interrupted = true;
+      process.kill?.("SIGTERM");
+      forceKillTimer = setTimeout(() => process.kill?.("SIGKILL"), 10_000);
+    };
+    if (signal?.aborted) abortHandler();
+    else signal?.addEventListener("abort", abortHandler, { once: true });
+    exitCode = await process.exited;
   } catch (cause) {
-    if (cause instanceof Error && cause.message === `${label} interrupted`) {
-      throw cause;
-    }
-    throw new Error(`${label} status could not be observed`, { cause });
+    throw new ReleaseCommandStateUncertainError(
+      `${label} termination could not be observed; durable compensation remains pending`,
+      { cause },
+    );
   } finally {
+    if (forceKillTimer) clearTimeout(forceKillTimer);
     if (abortHandler) signal?.removeEventListener("abort", abortHandler);
   }
+  if (interrupted) throw new Error(`${label} interrupted`);
   if (exitCode !== 0) {
     throw new Error(`${label} failed with status ${exitCode}`);
   }

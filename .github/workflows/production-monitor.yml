@@ -30,6 +30,12 @@ jobs:
   release-recovery:
     name: Recover abandoned release preparation
     if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}
+    concurrency:
+      group: fly-deploy
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -61,9 +67,18 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FAILED_DEPLOY_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ github.token }}
           POSTIL_RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          latest_deploy_run_id=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs?per_page=1" \
+            --jq '.workflow_runs[0].id')
+          if [[ "${latest_deploy_run_id}" != "${FAILED_DEPLOY_RUN_ID}" ]]; then
+            echo "A newer deployment owns release recovery."
+            exit 0
+          fi
           machines=$(flyctl machine list --app postil-web --json)
           managed_count=$(jq -r '[.[] | select(
             .config.metadata.fly_process_group == "web" or
@@ -80,6 +95,7 @@ jobs:
             echo "Managed fleet state is incomplete; release capabilities remain dark."
             exit 1
           fi
+          releases=()
           while IFS= read -r id; do
             release=$(flyctl machine exec "${id}" \
               "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
@@ -88,6 +104,7 @@ jobs:
               echo "A managed machine did not report a valid release; capabilities remain dark."
               exit 1
             fi
+            releases+=("${release}")
             if [[ "${release}" == "${POSTIL_RELEASE_SHA}" ]]; then
               echo "The target release reached the managed fleet; capabilities remain dark."
               exit 1
@@ -98,6 +115,11 @@ jobs:
              .config.metadata.fly_process_group == "worker" or
              .config.metadata.fly_process_group == "monitor")
           ) | .id' <<<"${machines}")
+          unique_release_count=$(printf '%s\n' "${releases[@]}" | sort -u | wc -l)
+          if [[ "${#releases[@]}" -ne "${managed_count}" || "${unique_release_count}" -ne 1 ]]; then
+            echo "The managed fleet is mixed; release capabilities remain dark."
+            exit 1
+          fi
           bun scripts/run-release-migrations.ts --compensate
 
   smoke:
@@ -472,8 +494,8 @@ jobs:
   # runs into one alert, and the resolve job auto-closes it on recovery.
   notify:
     name: Raise external alert
-    needs: smoke
-    if: ${{ always() && (needs.smoke.result == 'failure' || inputs.test_alert == true) }}
+    needs: [smoke, release-recovery]
+    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || inputs.test_alert == true) }}
     permissions:
       contents: read
       id-token: write
@@ -494,10 +516,12 @@ jobs:
         uses: ./.github/actions/ilert-event
         with:
           event-type: ALERT
-          summary: ${{ needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
-          alert-key: ${{ needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test' }}
+          summary: ${{ needs.release-recovery.result == 'failure' && 'Postil release recovery failed' || needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
+          alert-key: ${{ inputs.test_alert == true && 'postil-production-monitor-test' || 'postil-production-monitor' }}
           details: >-
-            ${{ needs.smoke.result == 'failure'
+            ${{ needs.release-recovery.result == 'failure'
+                && 'Failed deployment left release recovery unresolved. Run log:'
+                || needs.smoke.result == 'failure'
                 && 'Production checks failed. Run log:'
                 || 'Operator-requested test alert; production checks passed. Run log:' }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}

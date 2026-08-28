@@ -29,8 +29,8 @@ import {
   deactivatePublicationLifecycleRelease,
   prepareManagedReleaseCapabilities,
   publicationLifecycleReleaseActivated,
-  recoverAbandonedManagedReleasePreparations,
   restoreManagedReleaseCapabilities,
+  restoreManagedReleasePreparation,
   withPublicationLifecycleReleaseActive,
 } from "@/lib/release-job-rollout";
 import { compensateReleasePreparation } from "../scripts/run-release-migrations";
@@ -830,7 +830,7 @@ describeDb("publication receipt migration and lifecycle", () => {
     }
   });
 
-  test("deactivation drains an active legacy transaction before crossing the versioned boundary", async () => {
+  test("deactivation drains a durable legacy publication operation without trusting backend state", async () => {
     const legacyPool = new Pool({ connectionString: TEST_URL, max: 1 });
     const holder = await legacyPool.connect();
     try {
@@ -838,6 +838,14 @@ describeDb("publication receipt migration and lifecycle", () => {
       await holder.query(
         "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
         ["postil:publication-lifecycle-release"],
+      );
+      const legacyJob = await pool.query<{ id: string }>(
+        `INSERT INTO jobs
+           (kind, payload, status, locked_at, locked_by)
+         VALUES
+           ('gate-state-sync', '{"reviewId":1,"reviewPublicId":"legacy-drain"}'::jsonb,
+            'running', now(), 'legacy-worker')
+         RETURNING id`,
       );
       let finished = false;
       const deactivation = deactivatePublicationLifecycleRelease(pool).then(
@@ -848,8 +856,15 @@ describeDb("publication receipt migration and lifecycle", () => {
       );
       await Bun.sleep(150);
       expect(finished).toBe(false);
-      await holder.query("COMMIT");
+      await pool.query(
+        `UPDATE jobs
+            SET status = 'done', locked_at = NULL, locked_by = NULL
+          WHERE id = $1`,
+        [legacyJob.rows[0]!.id],
+      );
       await expect(deactivation).resolves.toMatchObject({ deactivated: true });
+      expect((await holder.query("SELECT 1 AS alive")).rows[0]?.alive).toBe(1);
+      await holder.query("COMMIT");
     } finally {
       await holder.query("ROLLBACK").catch(() => undefined);
       holder.release();
@@ -860,6 +875,7 @@ describeDb("publication receipt migration and lifecycle", () => {
 
   test("failed release preparation restores the exact fleet capabilities", async () => {
     const releaseSha = "8".repeat(40);
+    const priorReleaseSha = "5".repeat(40);
     const capabilityNames = [
       "publication-lifecycle-fleet-active",
       "hosted-inference-fleet-active",
@@ -911,7 +927,7 @@ describeDb("publication receipt migration and lifecycle", () => {
          ('review', jsonb_build_object('releaseDarkSha', $1::text), 'infinity'::timestamptz),
          ('hosted-provider-key-lifecycle', jsonb_build_object('releaseDarkSha', $1::text), 'infinity'::timestamptz)
        RETURNING id`,
-      [releaseSha],
+      [priorReleaseSha],
     );
 
     await restoreManagedReleaseCapabilities(pool, snapshot);
@@ -958,51 +974,6 @@ describeDb("publication receipt migration and lifecycle", () => {
     expect(journal.rows[0]?.count).toBe("0");
   });
 
-  test("an old worker restores an abandoned durable preparation but the target release does not", async () => {
-    const releaseSha = "9".repeat(40);
-    await pool.query(
-      `INSERT INTO deployment_capabilities (name)
-       VALUES ('publication-lifecycle-fleet-active'),
-              ('hosted-inference-fleet-active'),
-              ($1)
-       ON CONFLICT (name) DO NOTHING`,
-      [`hosted-inference-release:${releaseSha}`],
-    );
-    await prepareManagedReleaseCapabilities(pool, releaseSha, true);
-    await pool.query(
-      `UPDATE deployment_capabilities
-          SET activated_at = now() - interval '30 minutes'
-        WHERE name LIKE $1`,
-      [`managed-release-preparation:${releaseSha}:%`],
-    );
-
-    expect(
-      await recoverAbandonedManagedReleasePreparations(pool, releaseSha, 0),
-    ).toBe(0);
-    expect(
-      await recoverAbandonedManagedReleasePreparations(
-        pool,
-        "a".repeat(40),
-        0,
-      ),
-    ).toBe(1);
-    const restored = await pool.query<{ name: string }>(
-      `SELECT name FROM deployment_capabilities
-        WHERE name = ANY($1::text[])
-        ORDER BY name`,
-      [[
-        "publication-lifecycle-fleet-active",
-        "hosted-inference-fleet-active",
-        `hosted-inference-release:${releaseSha}`,
-      ]],
-    );
-    expect(restored.rows.map((row) => row.name)).toEqual([
-      "hosted-inference-fleet-active",
-      `hosted-inference-release:${releaseSha}`,
-      "publication-lifecycle-fleet-active",
-    ]);
-  });
-
   test("the deploy recovery command restores the exact durable preparation", async () => {
     const releaseSha = "7".repeat(40);
     await pool.query(
@@ -1042,6 +1013,64 @@ describeDb("publication receipt migration and lifecycle", () => {
       `hosted-inference-release:${releaseSha}`,
       "publication-lifecycle-fleet-active",
     ]);
+  });
+
+  test("same-release recovery re-reads a replacement journal under the lifecycle locks", async () => {
+    const releaseSha = "6".repeat(40);
+    const capabilityNames = [
+      "publication-lifecycle-fleet-active",
+      "hosted-inference-fleet-active",
+      `hosted-inference-release:${releaseSha}`,
+      `hosted-inference-dark:${releaseSha}`,
+    ];
+    await pool.query(
+      "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
+      [capabilityNames],
+    );
+    await pool.query(
+      `INSERT INTO deployment_capabilities (name)
+       VALUES ('publication-lifecycle-fleet-active'),
+              ('hosted-inference-fleet-active'),
+              ($1)`,
+      [`hosted-inference-release:${releaseSha}`],
+    );
+    await prepareManagedReleaseCapabilities(pool, releaseSha, true);
+
+    let replaced = false;
+    const interceptedPool = {
+      query: async (text: string, values?: readonly unknown[]) => {
+        const result = await pool.query(text, values as never[] | undefined);
+        if (!replaced) {
+          replaced = true;
+          await restoreManagedReleasePreparation(pool, releaseSha);
+          await pool.query(
+            "DELETE FROM deployment_capabilities WHERE name = ANY($1::text[])",
+            [capabilityNames],
+          );
+          await pool.query(
+            `INSERT INTO deployment_capabilities (name)
+             VALUES ('hosted-inference-fleet-active')`,
+          );
+          await prepareManagedReleaseCapabilities(pool, releaseSha, true);
+        }
+        return result;
+      },
+      connect: () => pool.connect(),
+    } as unknown as Pool;
+
+    expect(
+      await restoreManagedReleasePreparation(interceptedPool, releaseSha),
+    ).toBe(true);
+    const restored = await pool.query<{ name: string }>(
+      `SELECT name FROM deployment_capabilities
+        WHERE name = ANY($1::text[])
+        ORDER BY name`,
+      [capabilityNames],
+    );
+    expect(restored.rows.map((row) => row.name)).toEqual([
+      "hosted-inference-fleet-active",
+    ]);
+    await activatePublicationLifecycleRelease(pool);
   });
 
   test("a gate committed after the activation sweep self-heals", async () => {
