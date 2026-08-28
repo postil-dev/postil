@@ -324,6 +324,12 @@ describe("release database connection", () => {
     });
     expect(productionMonitorWorkflow).toContain("latest_deploy_run_id");
     expect(productionMonitorWorkflow).toContain(
+      "A newer deployment run owns release recovery.",
+    );
+    expect(productionMonitorWorkflow).toContain(
+      'recovery_target_sha="${POSTIL_RELEASE_SHA}"',
+    );
+    expect(productionMonitorWorkflow).toContain(
       "needs: [smoke, release-recovery]",
     );
     expect(productionMonitorWorkflow).toContain(

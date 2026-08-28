@@ -77,12 +77,17 @@ jobs:
           POSTIL_RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          IFS=$'\t' read -r latest_deploy_run_id recovery_target_sha < <(gh api \
+          latest_deploy_run_id=$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs?per_page=1" \
-            --jq '.workflow_runs[0] | [.id, .head_sha] | @tsv')
+            --jq '.workflow_runs[0].id')
           if [[ "${latest_deploy_run_id}" != "${FAILED_DEPLOY_RUN_ID}" ]]; then
-            echo "Taking recovery ownership for the latest deployment run."
+            # queue:max preserves a separate recovery owner for every deploy
+            # completion. A superseded owner must not mutate the newer run's
+            # durable preparation or compensate against its fleet evidence.
+            echo "A newer deployment run owns release recovery."
+            exit 0
           fi
+          recovery_target_sha="${POSTIL_RELEASE_SHA}"
           # Durable database state is authoritative. No journal plus both
           # active fleet capabilities means no release preparation remains.
           if bun scripts/run-release-migrations.ts --verify-clear >/dev/null 2>&1; then
