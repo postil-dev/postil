@@ -407,6 +407,13 @@
       "when": 1787853636499,
       "tag": "0058_amused_wolverine",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1787873286640,
+      "tag": "0059_publication_lifecycle_nonblocking_triggers",
+      "breakpoints": true
     }
   ]
 }

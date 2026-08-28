@@ -49,6 +49,10 @@ export async function runGateStateSyncJob(
   }
   validateReviewPayload(payload);
   const leaseId = randomUUID();
+  // Publication reconciliation takes the review advisory lock before
+  // updating this row. Keep the same order while the lifecycle wrapper holds
+  // the outer transaction so the publisher lease cannot invert those locks.
+  await lockReviewApprovalState(db, payload.reviewId);
   if (!(await acquireGatePublisherLease(db, payload, leaseId))) return;
   try {
     for (let iteration = 0; iteration < 8; iteration += 1) {

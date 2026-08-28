@@ -107,7 +107,12 @@ describe("private repository worker defense in depth", () => {
     expect(activation.indexOf("activatePublicationLifecycleRelease")).toBeLessThan(
       activation.indexOf("activateReleaseJobs"),
     );
-    expect(deactivation).toContain("deactivatePublicationLifecycleRelease");
+    expect(deactivation).toContain("standalone release deactivation is unsupported");
+    expect(deactivation).not.toContain("prepareManagedReleaseCapabilities");
+    expect(deactivation).not.toContain(
+      "deactivatePublicationLifecycleRelease",
+    );
+    expect(deactivation).not.toContain("deactivateHostedInferenceRelease");
   });
 
   test("disabled hosted inference stops before reservation, config fetch, or CLI spawn", () => {
@@ -173,6 +178,97 @@ describe("private repository worker defense in depth", () => {
     expect(source.slice(lifecycleGate, recovery)).toContain(
       "throw new HostedInferenceReleaseDarkError(releaseSha)",
     );
+  });
+
+  test("publication lifecycle exclusion uses transaction-scoped advisory locks", () => {
+    const rollout = readFileSync("src/lib/release-job-rollout.ts", "utf8");
+    const sharedStart = rollout.indexOf(
+      "export async function withPublicationLifecycleReleaseActive",
+    );
+    const sharedEnd = rollout.indexOf(
+      "export async function deactivatePublicationLifecycleRelease",
+      sharedStart,
+    );
+    const activationStart = rollout.indexOf(
+      "export async function activatePublicationLifecycleRelease",
+    );
+    const activationEnd = rollout.indexOf(
+      "function normalizedReleaseSha",
+      activationStart,
+    );
+    const decisions = readFileSync("src/lib/finding-approvals.ts", "utf8");
+    const database = readFileSync("src/lib/db-transaction.ts", "utf8");
+    const lifecycleLock = readFileSync(
+      "src/lib/publication-lifecycle-lock.ts",
+      "utf8",
+    );
+    const exclusiveLockStart = rollout.indexOf(
+      "async function lockPublicationLifecycleExclusive",
+    );
+    const exclusiveLockEnd = rollout.indexOf(
+      "export class PublicationLifecycleReleaseDarkError",
+      exclusiveLockStart,
+    );
+    const deactivationStart = rollout.indexOf(
+      "export async function deactivatePublicationLifecycleRelease",
+    );
+    const deactivationEnd = rollout.indexOf(
+      "async function darkenPublicationLifecycle",
+      deactivationStart,
+    );
+    const decisionStart = decisions.indexOf(
+      "export async function withReviewDecisionScopeLock",
+    );
+    const decisionEnd = decisions.indexOf(
+      "export async function lockReviewDecisionScopeById",
+      decisionStart,
+    );
+
+    const shared = rollout.slice(sharedStart, sharedEnd);
+    const activation = rollout.slice(activationStart, activationEnd);
+    const exclusiveLock = rollout.slice(exclusiveLockStart, exclusiveLockEnd);
+    const deactivation = rollout.slice(deactivationStart, deactivationEnd);
+    const decision = decisions.slice(decisionStart, decisionEnd);
+    expect(lifecycleLock).toContain("pg_advisory_xact_lock_shared");
+    expect(shared).toContain("withPinnedDatabaseTransaction");
+    expect(shared).toContain("lockPublicationLifecycleShared(transaction)");
+    expect(shared).toContain("operation(transaction, client)");
+    expect(shared).not.toContain("drizzle(pool");
+    expect(shared).not.toContain("pg_advisory_lock_shared");
+    expect(shared).not.toContain("pg_advisory_unlock_shared");
+    expect(activation).toContain("lockPublicationLifecycleExclusive(client)");
+    expect(exclusiveLock).toContain("pg_advisory_xact_lock");
+    expect(exclusiveLock).not.toContain("pg_try_advisory_xact_lock");
+    expect(exclusiveLock).toContain("PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS");
+    expect(exclusiveLock).toContain("set_config('lock_timeout', $1, true)");
+    expect(exclusiveLock).toContain("ROLLBACK TO SAVEPOINT");
+    expect(exclusiveLock).not.toContain("pg_terminate_backend");
+    expect(rollout).toContain(
+      "waitForLegacyPublicationLifecycleOperations(client)",
+    );
+    expect(
+      deactivation.indexOf("waitForLegacyPublicationLifecycleOperations(client)"),
+    ).toBeLessThan(
+      deactivation.indexOf("lockPublicationLifecycleExclusive(client)"),
+    );
+    expect(rollout).toContain("kind = 'gate-state-sync'");
+    expect(rollout).toContain("status = 'running'");
+    expect(exclusiveLock).not.toContain("pg_stat_activity");
+    expect(exclusiveLock).toContain("publication lifecycle lock did not quiesce");
+    expect(activation).toContain("client.release(releaseError)");
+    expect(activation).not.toContain('query("ROLLBACK").catch');
+    expect(activation).not.toContain("pg_advisory_unlock");
+    expect(decision).toContain("withPinnedDatabaseTransaction");
+    expect(decision).toContain("lockPublicationLifecycleShared(transaction)");
+    expect(decision).toContain("lockReviewDecisionScopeById");
+    expect(decision.indexOf("lockPublicationLifecycleShared(transaction)")).toBeLessThan(
+      decision.indexOf("lockReviewDecisionScopeById"),
+    );
+    expect(decision).not.toContain("pg_advisory_lock(");
+    expect(decision).not.toContain("pg_advisory_unlock(");
+    expect(database).toContain("clientDatabase.transaction");
+    expect(database).toContain("client.release(releaseError)");
+    expect(database).toContain("bodyFailed && error === bodyError");
   });
 
   test("respond honors entitlement and release activation before tokens or provider access", () => {

@@ -13,6 +13,7 @@ on:
 
 concurrency:
   group: fly-deploy
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -326,6 +327,68 @@ jobs:
           fi
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Restore capabilities when release preparation failed before replacement
+        if: ${{ always() && steps.deploy.outcome == 'failure' && steps.recover.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          machines=$(flyctl machine list --app postil-web --json)
+          if ! fleet_summary=$(jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}"); then
+            echo "Managed fleet topology is invalid; release capabilities remain dark."
+            exit 1
+          fi
+          managed_count=$(jq -r '.managed_count' <<<"${fleet_summary}")
+          started_count=$(jq -r '[.[] | select(
+            .state == "started" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          )] | length' <<<"${machines}")
+          if [[ "${managed_count}" -lt 4 || "${started_count}" -ne "${managed_count}" ]]; then
+            echo "Managed fleet state is incomplete; release capabilities remain dark."
+            exit 1
+          fi
+          target_seen=0
+          releases=()
+          while IFS= read -r id; do
+            release=$(flyctl machine exec "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
+              --app postil-web --timeout 15 2>/dev/null || true)
+            if [[ ! "${release}" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "A managed machine did not report a valid release; capabilities remain dark."
+              exit 1
+            fi
+            releases+=("${release}")
+            if [[ "${release}" == "${GITHUB_SHA}" ]]; then
+              target_seen=1
+            fi
+          done < <(jq -r '.[] | select(
+            .config.metadata.fly_process_group == "web" or
+            .config.metadata.fly_process_group == "worker" or
+            .config.metadata.fly_process_group == "monitor"
+          ) | .id' <<<"${machines}")
+          if [[ "${#releases[@]}" -ne "${managed_count}" ]]; then
+            echo "Managed fleet evidence is incomplete; release capabilities remain dark."
+            exit 1
+          fi
+          unique_release_count=$(printf '%s\n' "${releases[@]}" | sort -u | wc -l)
+          if [[ "${unique_release_count}" -ne 1 ]]; then
+            # Re-enabling publication while any target machine remains would
+            # let an unverified mixed fleet publish against restored state.
+            echo "The managed fleet is mixed; release capabilities remain dark."
+            exit 1
+          fi
+          if [[ "${target_seen}" -ne 0 ]]; then
+            # The target code reached every managed machine. A failed deploy
+            # needs activation or rollback proof, not prior-state restoration.
+            echo "The target release reached the managed fleet; release capabilities remain dark."
+            exit 1
+          fi
+          bun scripts/run-release-migrations.ts --compensate
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POSTIL_RELEASE_SHA: ${{ github.sha }}
       - name: Verify and activate release capabilities after fleet replacement
         id: activate
         # Migration 0020 stages new job kinds with an infinite
