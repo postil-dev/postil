@@ -143,6 +143,35 @@ describe("publication lifecycle database client safety", () => {
     );
     expect(releasedWith).toEqual([beginError]);
   });
+
+  test("discards an activation client when rollback fails", async () => {
+    const primaryError = new Error("activation query failed");
+    const rollbackError = new Error("activation rollback failed");
+    const releasedWith: Array<Error | undefined> = [];
+    const client = {
+      query: async (statement: string) => {
+        if (statement === "SHOW lock_timeout") {
+          return { rows: [{ lock_timeout: "0" }], rowCount: 1 };
+        }
+        if (statement.includes("SELECT count(*)::text AS count")) {
+          throw primaryError;
+        }
+        if (statement === "ROLLBACK") throw rollbackError;
+        return { rows: [], rowCount: 0 };
+      },
+      release: (error?: Error) => releasedWith.push(error),
+    };
+    const pool = {
+      connect: async () => client,
+    } as unknown as Pool;
+
+    const result = activatePublicationLifecycleRelease(pool);
+    await expect(result).rejects.toBeInstanceOf(AggregateError);
+    await expect(result).rejects.toThrow(
+      "publication lifecycle activation and rollback failed",
+    );
+    expect(releasedWith).toEqual([rollbackError]);
+  });
 });
 
 describeDb("publication receipt migration and lifecycle", () => {

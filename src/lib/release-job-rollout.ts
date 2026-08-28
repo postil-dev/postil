@@ -269,8 +269,10 @@ export async function activatePublicationLifecycleRelease(
 }> {
   const client = await pool.connect();
   let releaseError: Error | undefined;
+  let transactionOpen = false;
   try {
     await client.query("BEGIN");
+    transactionOpen = true;
     await lockPublicationLifecycleExclusive(client);
     const invalid = await client.query<{ count: string }>(
       `SELECT count(*)::text AS count
@@ -379,6 +381,7 @@ export async function activatePublicationLifecycleRelease(
       [PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY],
     );
     await client.query("COMMIT");
+    transactionOpen = false;
     return {
       activated: (activated.rowCount ?? 0) > 0,
       recoveriesQueued: recoveries.rowCount ?? 0,
@@ -386,6 +389,14 @@ export async function activatePublicationLifecycleRelease(
       released: released.rowCount ?? 0,
     };
   } catch (error) {
+    const primaryError = databaseClientError(
+      error,
+      "publication lifecycle activation failed",
+    );
+    if (!transactionOpen) {
+      releaseError = primaryError;
+      throw primaryError;
+    }
     try {
       await client.query("ROLLBACK");
     } catch (rollbackError) {
@@ -394,11 +405,11 @@ export async function activatePublicationLifecycleRelease(
         "publication lifecycle activation rollback failed",
       );
       throw new AggregateError(
-        [databaseClientError(error, "publication lifecycle activation failed"), releaseError],
+        [primaryError, releaseError],
         "publication lifecycle activation and rollback failed",
       );
     }
-    throw error;
+    throw primaryError;
   } finally {
     client.release(releaseError);
   }
