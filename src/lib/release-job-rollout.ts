@@ -32,9 +32,84 @@ export const PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY =
   "publication-lifecycle-fleet-active";
 const PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY =
   "_postilPublicationLifecycleDark";
+const PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS = 30_000;
 
 function databaseClientError(error: unknown, fallback: string): Error {
   return error instanceof Error ? error : new Error(fallback);
+}
+
+async function lockPublicationLifecycleExclusive(
+  client: PoolClient,
+): Promise<void> {
+  const deadline = Date.now() + PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS;
+  while (true) {
+    const acquired = await client.query<{ acquired: boolean }>(
+      "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired",
+      [PUBLICATION_LIFECYCLE_LOCK],
+    );
+    if (acquired.rows[0]?.acquired === true) return;
+
+    await client.query("SELECT pg_stat_clear_snapshot()");
+    const stale = await client.query<{ pid: number }>(
+      `SELECT advisory.pid
+         FROM pg_locks AS advisory
+         INNER JOIN pg_stat_activity AS activity ON activity.pid = advisory.pid
+        WHERE advisory.locktype = 'advisory'
+          AND advisory.granted
+          AND advisory.mode IN ('ShareLock', 'ExclusiveLock')
+          AND advisory.objsubid = 1
+          AND activity.datname = current_database()
+          AND activity.usename = current_user
+          AND advisory.classid::bigint = (
+            (hashtextextended($1, 0) >> 32) & 4294967295
+          )
+          AND advisory.objid::bigint = (
+            hashtextextended($1, 0) & 4294967295
+          )
+          AND advisory.pid <> pg_backend_pid()
+          AND activity.application_name = 'Supavisor'
+          AND activity.state = 'idle'
+        ORDER BY advisory.pid
+        LIMIT 1`,
+      [PUBLICATION_LIFECYCLE_LOCK],
+    );
+    if (stale.rows[0]) {
+      await client.query("SELECT pg_terminate_backend($1)", [stale.rows[0].pid]);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("publication lifecycle lock did not quiesce within 30 seconds");
+    }
+
+    await client.query("SAVEPOINT publication_lifecycle_lock_attempt");
+    try {
+      // A bounded blocking request enters PostgreSQL's lock queue. Trigger
+      // try-locks then defer new producers instead of extending this drain.
+      await client.query("SET LOCAL lock_timeout = '250ms'");
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [PUBLICATION_LIFECYCLE_LOCK],
+      );
+      await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
+      return;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK TO SAVEPOINT publication_lifecycle_lock_attempt");
+        await client.query("RELEASE SAVEPOINT publication_lifecycle_lock_attempt");
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [
+            databaseClientError(error, "publication lifecycle lock attempt failed"),
+            databaseClientError(
+              cleanupError,
+              "publication lifecycle lock savepoint cleanup failed",
+            ),
+          ],
+          "publication lifecycle lock attempt and savepoint cleanup failed",
+        );
+      }
+      if ((error as { code?: string }).code !== "55P03") throw error;
+    }
+  }
 }
 
 export class PublicationLifecycleReleaseDarkError extends Error {
@@ -92,10 +167,7 @@ export async function deactivatePublicationLifecycleRelease(
   let releaseError: Error | undefined;
   try {
     await client.query("BEGIN");
-    await client.query(
-      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-      [PUBLICATION_LIFECYCLE_LOCK],
-    );
+    await lockPublicationLifecycleExclusive(client);
     const deactivated = await client.query(
       "DELETE FROM deployment_capabilities WHERE name = $1",
       [PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY],
@@ -150,9 +222,7 @@ export async function activatePublicationLifecycleRelease(
   let releaseError: Error | undefined;
   try {
     await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-      PUBLICATION_LIFECYCLE_LOCK,
-    ]);
+    await lockPublicationLifecycleExclusive(client);
     const invalid = await client.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM reviews AS review

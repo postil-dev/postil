@@ -255,7 +255,9 @@ export async function resolveGitHubReviewThreads(
         observation.viewerCanResolve === false &&
         observation.state === "outdated"
       ) {
-        continue;
+        throw new Error(
+          "GitHub cannot resolve an outdated Postil review thread",
+        );
       }
       if (observation.viewerCanResolve !== true) {
         throw new Error(

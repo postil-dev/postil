@@ -598,36 +598,38 @@ describe("GitHub publication thread observations", () => {
       }));
     }) as unknown as typeof fetch;
 
+    const observations = [
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-11",
+        state: "outdated",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "12",
+        githubThreadId: "thread-12",
+        state: "inline",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "13",
+        githubThreadId: "thread-13",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
+      { githubCommentId: "14", state: "deleted" },
+      {
+        githubCommentId: "15",
+        githubThreadId: "thread-15",
+        state: "outdated",
+        viewerCanResolve: false,
+      },
+    ] as const;
+
     const reconciled = await resolveGitHubReviewThreads(
       "token",
-      [
-        {
-          githubCommentId: "11",
-          githubThreadId: "thread-11",
-          state: "outdated",
-          viewerCanResolve: true,
-        },
-        {
-          githubCommentId: "12",
-          githubThreadId: "thread-12",
-          state: "inline",
-          viewerCanResolve: true,
-        },
-        {
-          githubCommentId: "13",
-          githubThreadId: "thread-13",
-          state: "resolved",
-          viewerCanResolve: false,
-        },
-        { githubCommentId: "14", state: "deleted" },
-        {
-          githubCommentId: "15",
-          githubThreadId: "thread-15",
-          state: "outdated",
-          viewerCanResolve: false,
-        },
-      ],
-      ["11", "13", "14", "15"],
+      observations.slice(0, -1),
+      ["11", "13", "14"],
     );
 
     expect(requestedThreadIds).toEqual(["thread-11"]);
@@ -651,13 +653,10 @@ describe("GitHub publication thread observations", () => {
         viewerCanResolve: false,
       },
       { githubCommentId: "14", state: "deleted" },
-      {
-        githubCommentId: "15",
-        githubThreadId: "thread-15",
-        state: "outdated",
-        viewerCanResolve: false,
-      },
     ]);
+    await expect(
+      resolveGitHubReviewThreads("token", [...observations], ["15"]),
+    ).rejects.toThrow("cannot resolve an outdated Postil review thread");
   });
 
   test("fails closed when GitHub cannot resolve a still-active terminal thread", async () => {

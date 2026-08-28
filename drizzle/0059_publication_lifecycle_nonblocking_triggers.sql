@@ -4,11 +4,17 @@
 -- protocol. Active sessions and every unrelated advisory lock remain untouched.
 DO $$
 DECLARE
+  lifecycle_locked boolean := false;
   stale_pid integer;
   stale_state text;
   cleanup_deadline timestamptz := clock_timestamp() + interval '30 seconds';
 BEGIN
   LOOP
+    lifecycle_locked := pg_try_advisory_lock(
+      hashtextextended('postil:publication-lifecycle-release', 0)
+    );
+    EXIT WHEN lifecycle_locked;
+
     PERFORM pg_stat_clear_snapshot();
     stale_pid := NULL;
     stale_state := NULL;
@@ -49,7 +55,6 @@ BEGIN
   END LOOP;
 END;
 $$;--> statement-breakpoint
-SELECT pg_advisory_xact_lock(hashtextextended('postil:publication-lifecycle-release', 0));--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "postil_require_publication_lifecycle"()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -115,5 +120,14 @@ BEGIN
       - '_postilPublicationLifecycleDark';
   END IF;
   RETURN NEW;
+END;
+$$;--> statement-breakpoint
+DO $$
+BEGIN
+  IF NOT pg_advisory_unlock(
+    hashtextextended('postil:publication-lifecycle-release', 0)
+  ) THEN
+    RAISE EXCEPTION 'publication lifecycle migration lock was not held';
+  END IF;
 END;
 $$;

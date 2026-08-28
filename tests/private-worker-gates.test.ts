@@ -197,6 +197,13 @@ describe("private repository worker defense in depth", () => {
       "src/lib/publication-lifecycle-lock.ts",
       "utf8",
     );
+    const exclusiveLockStart = rollout.indexOf(
+      "async function lockPublicationLifecycleExclusive",
+    );
+    const exclusiveLockEnd = rollout.indexOf(
+      "export class PublicationLifecycleReleaseDarkError",
+      exclusiveLockStart,
+    );
     const decisionStart = decisions.indexOf(
       "export async function withReviewDecisionScopeLock",
     );
@@ -207,6 +214,7 @@ describe("private repository worker defense in depth", () => {
 
     const shared = rollout.slice(sharedStart, sharedEnd);
     const activation = rollout.slice(activationStart, activationEnd);
+    const exclusiveLock = rollout.slice(exclusiveLockStart, exclusiveLockEnd);
     const decision = decisions.slice(decisionStart, decisionEnd);
     expect(lifecycleLock).toContain("pg_advisory_xact_lock_shared");
     expect(shared).toContain("withPinnedDatabaseTransaction");
@@ -215,7 +223,12 @@ describe("private repository worker defense in depth", () => {
     expect(shared).not.toContain("drizzle(pool");
     expect(shared).not.toContain("pg_advisory_lock_shared");
     expect(shared).not.toContain("pg_advisory_unlock_shared");
-    expect(activation).toContain("pg_advisory_xact_lock");
+    expect(activation).toContain("lockPublicationLifecycleExclusive(client)");
+    expect(exclusiveLock).toContain("pg_try_advisory_xact_lock");
+    expect(exclusiveLock).toContain("lock_timeout = '250ms'");
+    expect(exclusiveLock).toContain("ROLLBACK TO SAVEPOINT");
+    expect(exclusiveLock).toContain("pg_terminate_backend");
+    expect(exclusiveLock).toContain("publication lifecycle lock did not quiesce");
     expect(activation).toContain("client.release(releaseError)");
     expect(activation).not.toContain('query("ROLLBACK").catch');
     expect(activation).not.toContain("pg_advisory_unlock");

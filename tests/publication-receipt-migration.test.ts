@@ -719,6 +719,45 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
   });
 
+  test("deactivation retires an idle transaction-pool session lock", async () => {
+    const stalePool = new Pool({
+      connectionString: TEST_URL,
+      max: 1,
+      application_name: "Supavisor",
+    });
+    const holder = await stalePool.connect();
+    const holderFailure = new Promise<Error>((resolve) => {
+      holder.on("error", resolve);
+    });
+    try {
+      await holder.query(
+        "SELECT pg_advisory_lock_shared(hashtextextended($1, 0))",
+        ["postil:publication-lifecycle-release"],
+      );
+
+      expect(await deactivatePublicationLifecycleRelease(pool)).toMatchObject({
+        deactivated: true,
+      });
+      const termination = await Promise.race([
+        holderFailure,
+        Bun.sleep(1_000).then(() => null),
+      ]);
+      expect(termination?.message).toContain(
+        "terminating connection due to administrator command",
+      );
+    } finally {
+      await holder
+        .query(
+          "SELECT pg_advisory_unlock_shared(hashtextextended($1, 0))",
+          ["postil:publication-lifecycle-release"],
+        )
+        .catch(() => undefined);
+      holder.release(true);
+      await stalePool.end();
+      await activatePublicationLifecycleRelease(pool);
+    }
+  });
+
   test("a gate committed after the activation sweep self-heals", async () => {
     await deactivatePublicationLifecycleRelease(pool);
     const activationClient = await pool.connect();

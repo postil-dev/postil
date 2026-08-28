@@ -444,6 +444,15 @@ describe("migration lint", () => {
       "clock_timestamp() + interval '30 seconds'",
     );
     expect(publicationLifecycleRepairMigration).toContain(
+      "lifecycle_locked := pg_try_advisory_lock(",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "IF NOT pg_advisory_unlock(",
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "SELECT pg_advisory_xact_lock(hashtextextended('postil:publication-lifecycle-release'",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
       "PERFORM pg_stat_clear_snapshot()",
     );
     expect(publicationLifecycleRepairMigration).toContain(

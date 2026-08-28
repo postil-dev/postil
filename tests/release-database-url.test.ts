@@ -44,7 +44,7 @@ describe("release database connection", () => {
     ).toThrow(/cannot be empty/);
   });
 
-  test("binds only the migration subprocess to the direct connection", async () => {
+  test("binds the migration subprocess to the direct connection", async () => {
     const runtimeUrl =
       "postgresql://postgres.project@aws-0-eu-central-1.pooler.supabase.com:6543/postgres";
     const directUrl =
@@ -134,12 +134,22 @@ describe("release database connection", () => {
       scripts: Record<string, string>;
     };
     const deployWorkflow = await readFile(join(root, ".github", "workflows", "deploy.yml"), "utf8");
+    const deactivationScript = await readFile(
+      join(root, "scripts", "deactivate-hosted-inference.ts"),
+      "utf8",
+    );
 
-    expect(packageJson.scripts["release:prepare"]).toStartWith("bun run db:migrate:release");
+    expect(packageJson.scripts["release:prepare"]).toStartWith(
+      "bun run hosted:deactivate-release && bun run db:migrate:release",
+    );
     expect(packageJson.scripts["db:migrate:release"]).toBe(
       "bun run scripts/run-release-migrations.ts",
     );
     expect(deployWorkflow).toContain('staged+="DATABASE_URL=${DATABASE_URL}"');
     expect(deployWorkflow).not.toContain("POSTIL_DIRECT_DATABASE_URL");
+    expect(deactivationScript).toContain("resolveDirectDatabaseUrl");
+    expect(deactivationScript.indexOf("process.env.DATABASE_URL =")).toBeLessThan(
+      deactivationScript.indexOf("getPool().query"),
+    );
   });
 });

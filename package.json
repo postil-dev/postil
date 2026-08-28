@@ -12,7 +12,7 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:release": "bun run scripts/run-release-migrations.ts",
-    "release:prepare": "bun run db:migrate:release && bun run operational:indexes && bun run notifications:quiesce && bun run hosted:deactivate-release",
+    "release:prepare": "bun run hosted:deactivate-release && bun run db:migrate:release && bun run operational:indexes && bun run notifications:quiesce",
     "seed": "bun run scripts/seed.ts",
     "billing:grant-credit": "bun run scripts/grant-billing-credit.ts",
     "billing:set-entitlement": "bun run scripts/set-org-entitlement.ts",
