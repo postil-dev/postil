@@ -362,10 +362,9 @@ jobs:
               target_seen=1
             fi
           done < <(jq -r '.[] | select(
-            .state == "started" and
-            (.config.metadata.fly_process_group == "web" or
-             .config.metadata.fly_process_group == "worker" or
-             .config.metadata.fly_process_group == "monitor")
+            .config.metadata.fly_process_group == "web" or
+            .config.metadata.fly_process_group == "worker" or
+            .config.metadata.fly_process_group == "monitor"
           ) | .id' <<<"${machines}")
           if [[ "${#releases[@]}" -ne "${managed_count}" ]]; then
             echo "Managed fleet evidence is incomplete; release capabilities remain dark."
