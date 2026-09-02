@@ -231,6 +231,15 @@ describe("production monitor workflow", () => {
     expect(finalizer?.["timeout-minutes"]).toBe(14);
     expect(finalizer?.if).toContain("always()");
     expect(finalizer?.if).toContain("inputs.test_alert == true");
+    expect(finalizer?.if).toContain("needs.alert-stream.result != 'skipped'");
+    for (const [result, runs] of [
+      ["skipped", false],
+      ["failure", true],
+      ["cancelled", true],
+      ["success", true],
+    ] as const) {
+      expect(finalizerRunsAfterAlertStream(finalizer?.if, result)).toBe(runs);
+    }
     expect(finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
     )?.run).toContain("--finalize-canary");
@@ -439,3 +448,11 @@ exit "${"${stale_found}"}"
     }
   });
 });
+
+function finalizerRunsAfterAlertStream(condition: string | undefined, result: string): boolean {
+  return Boolean(
+    condition?.includes("always()") &&
+      condition.includes("inputs.test_alert == true") &&
+      (result !== "skipped" || !condition.includes("needs.alert-stream.result != 'skipped'")),
+  );
+}

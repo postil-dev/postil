@@ -602,7 +602,7 @@ jobs:
     # This separate job runs after success, failure, cancellation, or timeout.
     # It reconstructs the stable canary key and fails closed when resolution
     # cannot be verified during its own stabilization interval.
-    if: ${{ always() && inputs.test_alert == true }}
+    if: ${{ always() && inputs.test_alert == true && needs.alert-stream.result != 'skipped' }}
     permissions:
       contents: read
       id-token: write

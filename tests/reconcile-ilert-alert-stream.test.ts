@@ -295,8 +295,45 @@ describe("iLert alert-stream reconciliation", () => {
     expect(service.status).toBe("RESOLVED");
   });
 
+  test("does not accept stale successful history when ALERT delivery is dropped", async () => {
+    const service = canaryService({
+      existing: true,
+      status: "RESOLVED",
+      deliveries: 1,
+      dropAlertDelivery: true,
+    });
+    await expect(
+      verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("did not confirm successful Postil webhook delivery");
+  });
+
+  test("does not accept resolved state when finalizer RESOLVEs add no delivery", async () => {
+    const service = canaryService({
+      existing: true,
+      status: "RESOLVED",
+      deliveries: 1,
+      cleanupDeliveryFails: true,
+    });
+    await expect(
+      finalizeIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("did not verify canary resolution during stabilization");
+  });
+
   test("finalizer searches source-scoped alert pages for the reconstructed key", async () => {
     const alertRequests: Request[] = [];
+    let deliveries = 1;
     const unrelated = Array.from({ length: 100 }, (_, index) => ({
       id: index + 1,
       alertKey: `other-${index}`,
@@ -304,7 +341,10 @@ describe("iLert alert-stream reconciliation", () => {
     }));
     const fetchFn: Fetch = async (input, init) => {
       const request = new Request(input, init);
-      if (request.method === "POST") return new Response(null, { status: 202 });
+      if (request.method === "POST") {
+        deliveries += 1;
+        return new Response(null, { status: 202 });
+      }
       if (request.url.includes("/alerts?")) {
         alertRequests.push(request);
         return Response.json(
@@ -314,7 +354,13 @@ describe("iLert alert-stream reconciliation", () => {
         );
       }
       if (request.url.endsWith("/alerts/999/actions")) {
-        return Response.json({ alertActionId: 72, history: [{ success: true }] });
+        return Response.json({
+          alertActionId: 72,
+          history: Array.from({ length: deliveries }, (_, index) => ({
+            id: `delivery-${index + 1}`,
+            success: true,
+          })),
+        });
       }
       throw new Error(`unexpected request: ${request.method} ${request.url}`);
     };
@@ -326,7 +372,7 @@ describe("iLert alert-stream reconciliation", () => {
       fetchFn,
       sleep: async () => undefined,
     });
-    expect(alertRequests).toHaveLength(8);
+    expect(alertRequests).toHaveLength(10);
     expect(alertRequests.every((request) => request.url.includes("sources=42"))).toBe(true);
   });
 
@@ -388,6 +434,7 @@ function canaryService(options: {
   status?: "PENDING" | "RESOLVED";
   deliveries?: number;
   deferAlertAcceptance?: boolean;
+  dropAlertDelivery?: boolean;
   cleanupDeliveryFails?: boolean;
 } = {}) {
   const events: Array<{ alertKey: string; eventType: string }> = [];
@@ -402,6 +449,9 @@ function canaryService(options: {
       events.push(body);
       if (body.eventType === "ALERT") {
         if (options.deferAlertAcceptance) pendingAlert = true;
+        else if (options.dropAlertDelivery) {
+          status = "RESOLVED";
+        }
         else {
           existing = true;
           status = "PENDING";
@@ -430,7 +480,10 @@ function canaryService(options: {
     if (request.url.endsWith("/alerts/99/actions")) {
       return Response.json({
         alertActionId: 72,
-        history: Array.from({ length: deliveries }, () => ({ success: true })),
+        history: Array.from({ length: deliveries }, (_, index) => ({
+          id: `delivery-${index + 1}`,
+          success: true,
+        })),
       });
     }
     throw new Error(`unexpected request: ${request.method} ${request.url}`);

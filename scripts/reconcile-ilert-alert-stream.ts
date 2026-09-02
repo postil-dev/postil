@@ -206,7 +206,7 @@ export async function verifyIlertAlertStreamCanary(
   const key = canaryAlertKey();
   let alertAttempted = false;
   let resolutionConfirmed = false;
-  let created: { alertId: string; deliveries: number } | undefined;
+  let created: CanaryObservation | undefined;
   let primaryError: unknown;
   try {
     await resolveAndStabilize(
@@ -219,6 +219,15 @@ export async function verifyIlertAlertStreamCanary(
       true,
     );
     assertCleanupReserve(canaryDeadline);
+    const deliveryBaseline = await observeCanary({
+      ...options,
+      deadline: primaryDeadline,
+      fetchFn,
+      key,
+      sleep,
+      startedAt,
+    });
+    assertCleanupReserve(canaryDeadline);
     alertAttempted = true;
     await event(fetchFn, options.integrationKey, "ALERT", key, primaryDeadline);
     created = await waitForDelivery({
@@ -228,6 +237,7 @@ export async function verifyIlertAlertStreamCanary(
       key,
       sleep,
       startedAt,
+      deliveryBaseline,
     });
     await resolveAndStabilize(options, created, key, sleep, startedAt, canaryDeadline);
     resolutionConfirmed = true;
@@ -272,7 +282,7 @@ interface WaitOptions extends CanaryOptions {
   alertId?: string;
   fetchFn: Fetch;
   key: string;
-  minimumDeliveries?: number;
+  deliveryBaseline?: CanaryObservation;
   requiredStatus?: string;
   sleep: Sleep;
   startedAt: string;
@@ -281,13 +291,21 @@ interface WaitOptions extends CanaryOptions {
 
 async function resolveAndStabilize(
   options: CanaryOptions,
-  created: { alertId: string; deliveries: number } | undefined,
+  created: CanaryObservation | undefined,
   key: string,
   sleep: Sleep,
   startedAt: string,
   deadline: Deadline,
   allowUnseen = false,
 ): Promise<void> {
+  const deliveryBaseline = created ?? await observeCanary({
+    ...options,
+    deadline,
+    fetchFn: options.fetchFn ?? fetch,
+    key,
+    sleep,
+    startedAt,
+  });
   let matched = false;
   let resolutionDelivered = false;
   let stabilized = false;
@@ -305,7 +323,9 @@ async function resolveAndStabilize(
     });
     if (observed) {
       matched = true;
-      resolutionDelivered ||= observed.deliveries >= (created?.deliveries ?? 0) + 1;
+      resolutionDelivered ||= Boolean(
+        deliveryBaseline && deliveredAfter(observed, deliveryBaseline),
+      );
       stabilized = resolutionDelivered && observed.status === "RESOLVED";
     }
     if (attempt + 1 < CANARY_CLEANUP_ATTEMPTS) {
@@ -319,16 +339,18 @@ async function resolveAndStabilize(
 
 async function waitForDelivery(
   options: WaitOptions,
-): Promise<{ alertId: string; deliveries: number }> {
+): Promise<CanaryObservation> {
   for (let attempt = 0; attempt < CANARY_ATTEMPTS; attempt += 1) {
     assertBeforeDeadline(options.deadline);
     const observed = await observeCanary(options);
     if (
       observed &&
-      observed.deliveries >= (options.minimumDeliveries ?? 1) &&
+      (options.deliveryBaseline
+        ? deliveredAfter(observed, options.deliveryBaseline)
+        : observed.deliveries.count >= 1) &&
       (!options.requiredStatus || observed.status === options.requiredStatus)
     ) {
-      return { alertId: observed.alertId, deliveries: observed.deliveries };
+      return observed;
     }
     if (attempt + 1 < CANARY_ATTEMPTS) {
       await options.sleep(Math.min(CANARY_RETRY_MS, remaining(options.deadline)));
@@ -339,7 +361,7 @@ async function waitForDelivery(
 
 async function observeCanary(
   options: WaitOptions,
-): Promise<{ alertId: string; deliveries: number; status: unknown } | undefined> {
+): Promise<CanaryObservation | undefined> {
   const alert = await findCanaryAlert(options);
   const id = positiveId(alert?.id);
   if (!id || (options.alertId && options.alertId !== id)) return undefined;
@@ -354,14 +376,58 @@ async function observeCanary(
   if (actions.some((item) => !object(item))) {
     throw new Error("iLert returned invalid action history during the canary");
   }
-  const deliveries = actions
+  const history = actions
     .filter((item) => opaqueId(object(item)?.alertActionId) === options.actionId)
     .flatMap((item) => {
-      const history = object(item)?.history;
-      return Array.isArray(history) ? history : [];
+      const value = object(item)?.history;
+      return Array.isArray(value) ? value : [];
     })
-    .filter((item) => object(item)?.success === true).length;
-  return { alertId: id, deliveries, status: alert?.status };
+    .filter((item) => object(item)?.success === true);
+  const deliveryIds = new Set(
+    history.flatMap((item) => {
+      const historyId = opaqueId(object(item)?.id);
+      return historyId ? [historyId] : [];
+    }),
+  );
+  return {
+    alertId: id,
+    deliveries: {
+      count: history.length,
+      ids: deliveryIds,
+      hasCompleteUniqueIds: deliveryIds.size === history.length,
+    },
+    status: alert?.status,
+  };
+}
+
+interface DeliveryObservation {
+  count: number;
+  ids: ReadonlySet<string>;
+  hasCompleteUniqueIds: boolean;
+}
+
+interface CanaryObservation {
+  alertId: string;
+  deliveries: DeliveryObservation;
+  status: unknown;
+}
+
+function deliveredAfter(
+  observed: CanaryObservation,
+  baseline: CanaryObservation,
+): boolean {
+  if (observed.alertId !== baseline.alertId) return observed.deliveries.count >= 1;
+  if (observed.deliveries.count <= baseline.deliveries.count) return false;
+  // The iLert history contract provides an optional entry id but no delivery
+  // timestamp. When every successful entry has a distinct id, require a new
+  // one as well as the append-only count increase.
+  if (
+    baseline.deliveries.hasCompleteUniqueIds &&
+    observed.deliveries.hasCompleteUniqueIds
+  ) {
+    return [...observed.deliveries.ids].some((id) => !baseline.deliveries.ids.has(id));
+  }
+  return true;
 }
 
 async function findCanaryAlert(options: WaitOptions): Promise<Json | null> {
