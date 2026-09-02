@@ -203,12 +203,14 @@ describe("production monitor workflow", () => {
         {
           if?: string;
           needs?: string;
+          "timeout-minutes"?: number;
           steps?: Array<{ name?: string; run?: string }>;
         }
       >;
     };
     const alertStream = workflow.jobs["alert-stream"];
     expect(alertStream?.needs).toBe("smoke");
+    expect(alertStream?.["timeout-minutes"]).toBe(15);
     expect(alertStream?.if).toContain("always()");
     expect(alertStream?.if).toContain("inputs.test_alert == true");
     expect(alertStream?.if).toContain("needs.smoke.result == 'success'");

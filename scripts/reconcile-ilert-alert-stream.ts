@@ -5,9 +5,12 @@ import { randomUUID } from "node:crypto";
 const API_BASE = "https://api.ilert.com/api";
 const WEBHOOK_URL = "https://postil.dev/api/webhooks/ilert";
 const ACTION_NAME = "Postil operator alert stream";
-const REQUEST_TIMEOUT_MS = 20_000;
-const CANARY_ATTEMPTS = 12;
-const CANARY_RETRY_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 7_500;
+const CANARY_ATTEMPTS = 6;
+const CANARY_RETRY_MS = 2_000;
+const CANARY_DEADLINE_MS = 90_000;
+const CANARY_CLEANUP_RESERVE_MS = 30_000;
+const ALERT_ACTION_DETAILS_CONCURRENCY = 32;
 
 export const ALERT_TRIGGER_TYPES = [
   "alert-created",
@@ -22,7 +25,13 @@ export type Fetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 type Sleep = (milliseconds: number) => Promise<void>;
+type Clock = () => number;
 type Operation = "create" | "update" | "unchanged";
+
+interface Deadline {
+  expiresAt: number;
+  now: Clock;
+}
 
 interface ReconcileOptions {
   apiKey: string;
@@ -38,6 +47,7 @@ interface CanaryOptions {
   integrationKey: string;
   fetchFn?: Fetch;
   sleep?: Sleep;
+  now?: Clock;
   runId?: string;
   runAttempt?: string;
 }
@@ -48,9 +58,6 @@ export interface ReconcileResult {
 }
 
 export function desiredAlertAction(source: Json, secret: string): Json {
-  const authorization = Buffer.from(`postil-ilert:${secret}`, "utf8").toString(
-    "base64",
-  );
   return {
     alertSources: [source],
     connectorType: "webhook",
@@ -58,8 +65,7 @@ export function desiredAlertAction(source: Json, secret: string): Json {
     triggerMode: "AUTOMATIC",
     triggerTypes: [...ALERT_TRIGGER_TYPES],
     params: {
-      webhookUrl: WEBHOOK_URL,
-      headers: [{ key: "Authorization", value: `Basic ${authorization}` }],
+      webhookUrl: webhookUrl(secret),
     },
   };
 }
@@ -74,7 +80,8 @@ export function equivalentAlertAction(actual: Json, desired: Json): boolean {
     sameSet(strings(actual.triggerTypes), strings(desired.triggerTypes)) &&
     sameSet(relationIds(actual.alertSources), relationIds(desired.alertSources)) &&
     left?.webhookUrl === right?.webhookUrl &&
-    sameSet(headers(left?.headers), headers(right?.headers))
+    hasNoHeaders(left?.headers) &&
+    hasNoHeaders(right?.headers)
   );
 }
 
@@ -89,10 +96,14 @@ export async function reconcileIlertAlertAction(
   const desired = desiredAlertAction(source, options.webhookSecret);
   const listed = await listActions(fetchFn, options.apiKey);
   const actions: Json[] = [];
-  for (let index = 0; index < listed.length; index += 8) {
+  for (
+    let index = 0;
+    index < listed.length;
+    index += ALERT_ACTION_DETAILS_CONCURRENCY
+  ) {
     actions.push(
       ...(await Promise.all(
-        listed.slice(index, index + 8).map(async (item) =>
+        listed.slice(index, index + ALERT_ACTION_DETAILS_CONCURRENCY).map(async (item) =>
           requireObject(
             await management(
               fetchFn,
@@ -107,7 +118,10 @@ export async function reconcileIlertAlertAction(
   }
   const candidates = actions.filter((action) => {
     const params = object(action.params);
-    return action.name === ACTION_NAME || params?.webhookUrl === WEBHOOK_URL;
+    return (
+      action.name === ACTION_NAME ||
+      params?.webhookUrl === object(desired.params)?.webhookUrl
+    );
   });
   if (
     candidates.some(
@@ -172,50 +186,57 @@ export async function verifyIlertAlertStreamCanary(
 ): Promise<void> {
   const fetchFn = options.fetchFn ?? fetch;
   const sleep = options.sleep ?? Bun.sleep;
-  const startedAt = new Date(Date.now() - 5_000).toISOString();
+  const now = options.now ?? Date.now;
+  const startedAtMs = now();
+  const startedAt = new Date(startedAtMs - 5_000).toISOString();
+  const canaryDeadline: Deadline = {
+    expiresAt: startedAtMs + CANARY_DEADLINE_MS,
+    now,
+  };
+  const primaryDeadline: Deadline = {
+    expiresAt: canaryDeadline.expiresAt - CANARY_CLEANUP_RESERVE_MS,
+    now,
+  };
   const key = [
     "postil-operator-alert-stream-canary",
     options.runId ?? "local",
     options.runAttempt ?? "1",
     randomUUID(),
   ].join("-");
-  let accepted = false;
-  let resolveSent = false;
-  let failure: unknown;
+  let alertAttempted = false;
+  let resolutionConfirmed = false;
+  let created: { alertId: string; deliveries: number } | undefined;
+  let primaryError: unknown;
   try {
-    await event(fetchFn, options.integrationKey, "ALERT", key);
-    accepted = true;
-    const created = await waitForDelivery({
+    alertAttempted = true;
+    await event(fetchFn, options.integrationKey, "ALERT", key, primaryDeadline);
+    created = await waitForDelivery({
       ...options,
+      deadline: primaryDeadline,
       fetchFn,
       key,
       sleep,
       startedAt,
     });
-    await event(fetchFn, options.integrationKey, "RESOLVE", key);
-    resolveSent = true;
-    await waitForDelivery({
-      ...options,
-      alertId: created.alertId,
-      fetchFn,
-      key,
-      minimumDeliveries: created.deliveries + 1,
-      requiredStatus: "RESOLVED",
-      sleep,
-      startedAt,
-    });
+    await resolveAndVerify(options, created, key, sleep, startedAt, primaryDeadline);
+    resolutionConfirmed = true;
   } catch (error) {
-    failure = error;
-    throw error;
-  } finally {
-    if (accepted && !resolveSent) {
-      try {
-        await event(fetchFn, options.integrationKey, "RESOLVE", key);
-      } catch (error) {
-        if (!failure) throw error;
+    primaryError = error;
+  }
+  if (alertAttempted && !resolutionConfirmed) {
+    try {
+      await resolveAndVerify(options, created, key, sleep, startedAt, canaryDeadline);
+    } catch (cleanupError) {
+      if (primaryError) {
+        throw new AggregateError(
+          [primaryError, cleanupError],
+          "iLert canary failed and cleanup could not be verified",
+        );
       }
+      throw cleanupError;
     }
   }
+  if (primaryError) throw primaryError;
 }
 
 interface WaitOptions extends CanaryOptions {
@@ -226,16 +247,42 @@ interface WaitOptions extends CanaryOptions {
   requiredStatus?: string;
   sleep: Sleep;
   startedAt: string;
+  deadline: Deadline;
+}
+
+async function resolveAndVerify(
+  options: CanaryOptions,
+  created: { alertId: string; deliveries: number } | undefined,
+  key: string,
+  sleep: Sleep,
+  startedAt: string,
+  deadline: Deadline,
+): Promise<void> {
+  await event(options.fetchFn ?? fetch, options.integrationKey, "RESOLVE", key, deadline);
+  await waitForDelivery({
+    ...options,
+    alertId: created?.alertId,
+    deadline,
+    fetchFn: options.fetchFn ?? fetch,
+    key,
+    minimumDeliveries: (created?.deliveries ?? 0) + 1,
+    requiredStatus: "RESOLVED",
+    sleep,
+    startedAt,
+  });
 }
 
 async function waitForDelivery(
   options: WaitOptions,
 ): Promise<{ alertId: string; deliveries: number }> {
   for (let attempt = 0; attempt < CANARY_ATTEMPTS; attempt += 1) {
+    assertBeforeDeadline(options.deadline);
     const alerts = await management(
       options.fetchFn,
       options.apiKey,
       `/alerts?from=${encodeURIComponent(options.startedAt)}&max-results=100`,
+      {},
+      options.deadline,
     );
     if (!Array.isArray(alerts)) {
       throw new Error("iLert returned an invalid alert list during the canary");
@@ -249,6 +296,8 @@ async function waitForDelivery(
         options.fetchFn,
         options.apiKey,
         `/alerts/${encodeURIComponent(id)}/actions`,
+        {},
+        options.deadline,
       );
       const actions = Array.isArray(value) ? value : [value];
       if (actions.some((item) => !object(item))) {
@@ -270,7 +319,9 @@ async function waitForDelivery(
         return { alertId: id, deliveries };
       }
     }
-    if (attempt + 1 < CANARY_ATTEMPTS) await options.sleep(CANARY_RETRY_MS);
+    if (attempt + 1 < CANARY_ATTEMPTS) {
+      await options.sleep(Math.min(CANARY_RETRY_MS, remaining(options.deadline)));
+    }
   }
   throw new Error("iLert did not confirm successful Postil webhook delivery");
 }
@@ -280,6 +331,7 @@ async function event(
   integrationKey: string,
   eventType: "ALERT" | "RESOLVE",
   alertKey: string,
+  deadline?: Deadline,
 ): Promise<void> {
   const response = await request(fetchFn, `${API_BASE}/events`, {
     method: "POST",
@@ -300,7 +352,7 @@ async function event(
         : {}),
       alertKey,
     }),
-  });
+  }, deadline);
   if (!response.ok) {
     throw new Error(`iLert event request failed with HTTP ${response.status}`);
   }
@@ -311,15 +363,16 @@ async function management(
   apiKey: string,
   path: string,
   init: RequestInit = {},
+  deadline?: Deadline,
 ): Promise<unknown> {
   const response = await request(fetchFn, `${API_BASE}${path}`, {
     ...init,
     headers: {
       accept: "application/json",
-      authorization: apiKey,
+      authorization: `Bearer ${apiKey}`,
       ...(init.body ? { "content-type": "application/json" } : {}),
     },
-  });
+  }, deadline);
   if (!response.ok) {
     throw new Error(`iLert management request failed with HTTP ${response.status}`);
   }
@@ -330,8 +383,17 @@ async function management(
   }
 }
 
-function request(fetchFn: Fetch, url: string, init: RequestInit): Promise<Response> {
-  return fetchFn(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+function request(
+  fetchFn: Fetch,
+  url: string,
+  init: RequestInit,
+  deadline?: Deadline,
+): Promise<Response> {
+  const timeout = deadline
+    ? Math.min(REQUEST_TIMEOUT_MS, remaining(deadline))
+    : REQUEST_TIMEOUT_MS;
+  if (timeout <= 0) throw new Error("iLert canary deadline expired");
+  return fetchFn(url, { ...init, signal: AbortSignal.timeout(timeout) });
 }
 
 async function listActions(fetchFn: Fetch, apiKey: string): Promise<Json[]> {
@@ -421,15 +483,8 @@ function relationIds(value: unknown): number[] {
     : [];
 }
 
-function headers(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.flatMap((item) => {
-        const header = object(item);
-        return typeof header?.key === "string" && typeof header.value === "string"
-          ? [`${header.key.toLowerCase()}:${header.value}`]
-          : [];
-      })
-    : [];
+function hasNoHeaders(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.length === 0);
 }
 
 function strings(value: unknown): string[] {
@@ -456,6 +511,21 @@ function requireObject(value: unknown, message: string): Json {
 
 function nonempty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function webhookUrl(secret: string): string {
+  return WEBHOOK_URL.replace(
+    "https://",
+    `https://${encodeURIComponent("postil-ilert")}:${encodeURIComponent(secret)}@`,
+  );
+}
+
+function remaining(deadline: Deadline): number {
+  return deadline.expiresAt - deadline.now();
+}
+
+function assertBeforeDeadline(deadline: Deadline): void {
+  if (remaining(deadline) <= 0) throw new Error("iLert canary deadline expired");
 }
 
 function environment(name: string): string {

@@ -24,8 +24,9 @@ const SOURCE = {
 };
 
 describe("iLert alert-stream reconciliation", () => {
-  test("builds the bounded automatic webhook action", () => {
-    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET);
+  test("builds the bounded automatic webhook action with URL-encoded credentials", () => {
+    const secret = "test webhook:/?#%";
+    const desired = desiredAlertAction(SOURCE, secret);
     expect(desired).toMatchObject({
       alertSources: [SOURCE],
       connectorType: "webhook",
@@ -33,21 +34,25 @@ describe("iLert alert-stream reconciliation", () => {
       triggerMode: "AUTOMATIC",
       triggerTypes: [...ALERT_TRIGGER_TYPES],
       params: {
-        webhookUrl: "https://postil.dev/api/webhooks/ilert",
-        headers: [{ key: "Authorization" }],
+        webhookUrl:
+          "https://postil-ilert:test%20webhook%3A%2F%3F%23%25@postil.dev/api/webhooks/ilert",
       },
     });
-    expect(JSON.stringify(desired)).not.toContain(WEBHOOK_SECRET);
+    expect((desired.params as Record<string, unknown>).headers).toBeUndefined();
   });
 
-  test("compares trigger and header sets without depending on order or case", () => {
+  test("compares the generated credential URL and rejects unsupported headers", () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET);
     const actual = structuredClone(desired) as Record<string, unknown>;
     actual.id = "42";
     actual.triggerTypes = [...ALERT_TRIGGER_TYPES].reverse();
-    const params = actual.params as { headers: Array<{ key: string; value: string }> };
-    params.headers[0]!.key = "authorization";
     expect(equivalentAlertAction(actual, desired)).toBe(true);
+    (actual.params as Record<string, unknown>).headers = [];
+    expect(equivalentAlertAction(actual, desired)).toBe(true);
+    (actual.params as Record<string, unknown>).headers = [
+      { key: "Authorization", value: "unsupported" },
+    ];
+    expect(equivalentAlertAction(actual, desired)).toBe(false);
   });
 
   test("dry-run reports create without mutating", async () => {
@@ -130,7 +135,12 @@ describe("iLert alert-stream reconciliation", () => {
       "POST",
       "GET",
     ]);
-    expect(requests[2]!.headers.get("authorization")).toBe(API_KEY);
+    expect(requests.map((request) => request.headers.get("authorization"))).toEqual([
+      `Bearer ${API_KEY}`,
+      `Bearer ${API_KEY}`,
+      `Bearer ${API_KEY}`,
+      `Bearer ${API_KEY}`,
+    ]);
   });
 
   test("updates one drifted action and leaves an equivalent action unchanged", async () => {
@@ -283,8 +293,8 @@ describe("iLert alert-stream reconciliation", () => {
       throw new Error(`unexpected request: ${request.method} ${request.url}`);
     };
 
-    await expect(
-      verifyIlertAlertStreamCanary({
+    try {
+      await verifyIlertAlertStreamCanary({
         actionId: "72",
         apiKey: API_KEY,
         integrationKey: "test-integration-key",
@@ -292,9 +302,168 @@ describe("iLert alert-stream reconciliation", () => {
         sleep: async () => undefined,
         runId: "100",
         runAttempt: "2",
+      });
+      throw new Error("expected canary to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors).toHaveLength(2);
+    }
+    expect(eventTypes).toEqual(["ALERT", "RESOLVE"]);
+  });
+
+  test("resolves the same key after an ambiguous ALERT failure", async () => {
+    const eventBodies: Record<string, unknown>[] = [];
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST" && request.url.endsWith("/events")) {
+        const body = (await request.json()) as Record<string, unknown>;
+        eventBodies.push(body);
+        if (body.eventType === "ALERT") throw new Error("ambiguous ALERT failure");
+        return new Response(null, { status: 202 });
+      }
+      if (request.url.includes("/alerts?")) {
+        return Response.json([
+          { id: 99, alertKey: eventBodies[0]?.alertKey, status: "RESOLVED" },
+        ]);
+      }
+      if (request.url.endsWith("/alerts/99/actions")) {
+        return Response.json({
+          alertActionId: 72,
+          history: [{ success: true }],
+        });
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await expect(
+      verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("ambiguous ALERT failure");
+    expect(eventBodies.map((body) => body.eventType)).toEqual(["ALERT", "RESOLVE"]);
+    expect(eventBodies[0]?.alertKey).toBe(eventBodies[1]?.alertKey);
+  });
+
+  test("retries and verifies cleanup when the first resolution delivery is unconfirmed", async () => {
+    const eventTypes: unknown[] = [];
+    let canaryKey = "";
+    let resolves = 0;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST" && request.url.endsWith("/events")) {
+        const body = (await request.json()) as Record<string, unknown>;
+        eventTypes.push(body.eventType);
+        canaryKey = String(body.alertKey);
+        if (body.eventType === "RESOLVE") resolves += 1;
+        return new Response(null, { status: 202 });
+      }
+      if (request.url.includes("/alerts?")) {
+        return Response.json([
+          {
+            id: 99,
+            alertKey: canaryKey,
+            status: resolves > 1 ? "RESOLVED" : "PENDING",
+          },
+        ]);
+      }
+      if (request.url.endsWith("/alerts/99/actions")) {
+        return Response.json({
+          alertActionId: 72,
+          history: Array.from({ length: resolves > 1 ? 2 : 1 }, () => ({
+            success: true,
+          })),
+        });
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await expect(
+      verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        fetchFn,
+        sleep: async () => undefined,
       }),
     ).rejects.toThrow("did not confirm successful Postil webhook delivery");
-    expect(eventTypes).toEqual(["ALERT", "RESOLVE"]);
+    expect(eventTypes).toEqual(["ALERT", "RESOLVE", "RESOLVE"]);
+  });
+
+  test("retains primary and cleanup failures", async () => {
+    let resolves = 0;
+    let canaryKey = "";
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST" && request.url.endsWith("/events")) {
+        const body = (await request.json()) as Record<string, unknown>;
+        canaryKey = String(body.alertKey);
+        if (body.eventType === "RESOLVE") {
+          resolves += 1;
+          return new Response(null, { status: resolves === 1 ? 500 : 502 });
+        }
+        return new Response(null, { status: 202 });
+      }
+      if (request.url.includes("/alerts?")) {
+        return Response.json([{ id: 99, alertKey: canaryKey, status: "PENDING" }]);
+      }
+      if (request.url.endsWith("/alerts/99/actions")) {
+        return Response.json({ alertActionId: 72, history: [{ success: true }] });
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    try {
+      await verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        fetchFn,
+        sleep: async () => undefined,
+      });
+      throw new Error("expected canary to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors.map(String)).toEqual([
+        expect.stringContaining("HTTP 500"),
+        expect.stringContaining("HTTP 502"),
+      ]);
+    }
+  });
+
+  test("reserves canary time for verified cleanup after the primary deadline", async () => {
+    let now = 0;
+    let canaryKey = "";
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST" && request.url.endsWith("/events")) {
+        const body = (await request.json()) as Record<string, unknown>;
+        canaryKey = String(body.alertKey);
+        if (body.eventType === "ALERT") now = 60_000;
+        return new Response(null, { status: 202 });
+      }
+      if (request.url.includes("/alerts?")) {
+        return Response.json([{ id: 99, alertKey: canaryKey, status: "RESOLVED" }]);
+      }
+      if (request.url.endsWith("/alerts/99/actions")) {
+        return Response.json({ alertActionId: 72, history: [{ success: true }] });
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await expect(
+      verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        fetchFn,
+        now: () => now,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("canary deadline expired");
   });
 });
 

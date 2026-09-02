@@ -545,7 +545,9 @@ jobs:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Reconciliation can inspect up to 1,100 actions twice, then reserves 30
+    # seconds of the 90-second canary budget for verified cleanup.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
