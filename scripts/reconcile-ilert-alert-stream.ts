@@ -333,7 +333,8 @@ export async function verifyIlertWebhookCanary(
     };
     alertAttempted = true;
     await options.onAlertAttempted?.();
-    acceptedAt = await event(
+    acceptedAt = now();
+    await event(
       fetchFn,
       options.integrationKey,
       "ALERT",
@@ -1051,7 +1052,7 @@ async function event(
   sleep: Sleep,
   priority?: "HIGH" | "LOW",
   summary = "Postil iLert webhook canary",
-): Promise<number> {
+): Promise<void> {
   const response = await requestWithRetry(
     fetchFn,
     `${API_BASE}/events`,
@@ -1078,7 +1079,6 @@ async function event(
   if (!response.ok) {
     throw new Error(`iLert event request failed with HTTP ${response.status}`);
   }
-  return deadline.now();
 }
 
 async function management(
@@ -1204,8 +1204,9 @@ interface CreateAlertActionOptions {
 async function createAlertActionSafely(
   options: CreateAlertActionOptions,
 ): Promise<Json> {
+  let created: Json;
   try {
-    return requireObject(
+    created = requireObject(
       await managementOnce(
         options.fetchFn,
         options.apiKey,
@@ -1215,20 +1216,35 @@ async function createAlertActionSafely(
       ),
       "iLert returned an invalid alert action",
     );
-  } catch (error) {
-    const candidates = await loadCandidateActions(
-      options.fetchFn,
-      options.apiKey,
-      options.desired,
-      options.deadline,
-      options.sleep,
-    );
-    const candidate = reservedCandidate(candidates, options.desired, options.sourceId);
+  } catch {
+    const candidate = await loadReservedAlertAction(options);
     if (candidate && equivalentAlertAction(candidate, options.desired)) return candidate;
     throw new Error(
       "iLert alert-action creation was ambiguous; refusing to submit a second POST",
     );
   }
+  const candidate = await loadReservedAlertAction(options);
+  if (
+    !candidate ||
+    !equivalentAlertAction(candidate, options.desired) ||
+    actionId(candidate) !== actionId(created)
+  ) {
+    throw new Error("iLert did not confirm the created alert action in the global inventory");
+  }
+  return candidate;
+}
+
+async function loadReservedAlertAction(
+  options: CreateAlertActionOptions,
+): Promise<Json | undefined> {
+  const candidates = await loadCandidateActions(
+    options.fetchFn,
+    options.apiKey,
+    options.desired,
+    options.deadline,
+    options.sleep,
+  );
+  return reservedCandidate(candidates, options.desired, options.sourceId);
 }
 
 function reservedCandidate(

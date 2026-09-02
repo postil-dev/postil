@@ -358,6 +358,8 @@ describe("iLert webhook-action reconciliation", () => {
         Response.json([]),
         new Response(null, { status: 204 }),
         Response.json({ id: "71" }),
+        Response.json([{ id: "71", name: desired.name }]),
+        Response.json({ ...desired, id: "71" }),
         Response.json({ ...desired, id: "71" }),
       ]),
     });
@@ -370,6 +372,49 @@ describe("iLert webhook-action reconciliation", () => {
       alertSources: Array<Record<string, unknown>>;
     };
     expect(body.alertSources[0]).not.toHaveProperty("integrationKey");
+  });
+
+  test("fails closed after creation when the global inventory finds a concurrent reserved candidate", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    for (const conflictingSummary of [
+      { id: "74", name: desired.name },
+      {
+        id: "74",
+        name: "Concurrent webhook action",
+        params: { webhookUrl: (desired.params as Record<string, unknown>).webhookUrl },
+      },
+    ]) {
+      let inventoryScans = 0;
+      const requests: Request[] = [];
+      await expect(reconcileIlertAlertAction({
+        ...reconcileOptions,
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request.clone());
+          if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+          if (request.url === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+          if (request.method === "POST" && request.url.includes("/alert-actions")) {
+            return Response.json({ id: "73" });
+          }
+          if (request.url.includes("/alert-actions?")) {
+            inventoryScans += 1;
+            return Response.json(inventoryScans === 1
+              ? []
+              : [{ id: "73", name: desired.name }, conflictingSummary]);
+          }
+          if (request.url.includes("/alert-actions/")) {
+            const id = new URL(request.url).pathname.split("/").at(-1);
+            return Response.json(id === "73"
+              ? { ...desired, id: "73" }
+              : { ...desired, id: "74", name: conflictingSummary.name });
+          }
+          throw new Error(`unexpected request: ${request.method} ${request.url}`);
+        },
+      })).rejects.toThrow("Multiple Postil webhook alert actions exist");
+      expect(requests.filter((request) =>
+        request.method === "POST" && request.url.includes("/alert-actions")
+      )).toHaveLength(1);
+    }
   });
 
   test("bounds 429 handling and honors a capped Retry-After delay", async () => {
@@ -566,9 +611,66 @@ describe("iLert webhook canary", () => {
     });
     const discoveryWindows = service.requests
       .filter((request) => request.url.includes("/alerts?"))
-      .map((request) => Date.parse(new URL(request.url).searchParams.get("until")!));
-    expect(discoveryWindows).toContain(15_000);
-    expect(discoveryWindows.some((until) => until >= 16_000)).toBe(true);
+      .map((request) => new URL(request.url).searchParams);
+    expect(Date.parse(discoveryWindows[0]!.get("from")!)).toBe(-5_000);
+    const discoveryUntil = discoveryWindows.map((query) => Date.parse(query.get("until")!));
+    expect(discoveryUntil).toContain(15_000);
+    expect(discoveryUntil.some((until) => until >= 16_000)).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
+  });
+
+  test("discovers and resolves the exact canary after a slow successful ALERT response", async () => {
+    let currentTime = 0;
+    const service = canaryService({ alertReportTime: new Date(0).toISOString() });
+    let delayed = false;
+    await verifyIlertWebhookCanary({
+      ...canaryOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        const response = await service.fetchFn(input, init);
+        if (!delayed && request.method === "POST" && request.url.endsWith("/events")) {
+          delayed = true;
+          currentTime += 6_000;
+        }
+        return response;
+      },
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+    const firstDiscovery = service.requests.find((request) => request.url.includes("/alerts?"));
+    expect(Date.parse(new URL(firstDiscovery!.url).searchParams.get("from")!)).toBe(-5_000);
+    expect(Date.parse(new URL(firstDiscovery!.url).searchParams.get("until")!)).toBe(11_000);
+    expect(service.requests.some((request) => request.url.endsWith("/alerts/99/resolve"))).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
+  });
+
+  test("discovers and resolves the exact committed canary after a lost first ALERT response", async () => {
+    let currentTime = 0;
+    const service = canaryService({
+      alertReportTime: new Date(0).toISOString(),
+      deduplicateAlertKeys: true,
+    });
+    let lost = false;
+    await verifyIlertWebhookCanary({
+      ...canaryOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        const response = await service.fetchFn(input, init);
+        if (!lost && request.method === "POST" && request.url.endsWith("/events")) {
+          lost = true;
+          currentTime += 8_000;
+          throw new Error("connection reset after commit");
+        }
+        return response;
+      },
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+    const firstDiscovery = service.requests.find((request) => request.url.includes("/alerts?"));
+    expect(Date.parse(new URL(firstDiscovery!.url).searchParams.get("from")!)).toBe(-5_000);
+    expect(Date.parse(new URL(firstDiscovery!.url).searchParams.get("until")!)).toBe(13_500);
+    expect(service.events.filter((event) => event.eventType === "ALERT")).toHaveLength(2);
+    expect(service.requests.some((request) => request.url.endsWith("/alerts/99/resolve"))).toBe(true);
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
@@ -855,6 +957,7 @@ function finalizerOptions() {
 function canaryService(options: {
   alertReportTime?: string;
   alertRetryAfter?: string;
+  deduplicateAlertKeys?: boolean;
   deferredListings?: number;
   detailPendingReads?: number;
   detailAlwaysPending?: boolean;
@@ -949,7 +1052,11 @@ function canaryService(options: {
           headers: { "retry-after": options.alertRetryAfter! },
         });
       }
-      if (body.eventType === "ALERT" && !options.dropAlertCreation) {
+      if (
+        body.eventType === "ALERT" &&
+        !options.dropAlertCreation &&
+        (!options.deduplicateAlertKeys || !alerts.some((alert) => alert.alertKey === body.alertKey))
+      ) {
         alertSent = true;
         const id = alerts.length === 0
           ? 99
