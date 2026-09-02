@@ -218,7 +218,14 @@ describe("production monitor workflow", () => {
     };
     expect(source).toContain("reconcile_alert_stream:");
     expect(source).toContain(
-      "description: Reconcile the iLert webhook action and run a receiver canary",
+      "description: Reconcile the iLert webhook action and send then resolve a HIGH-priority production test alert; it can invoke the escalation path",
+    );
+    const architecture = await readFile(
+      new URL("../ARCHITECTURE.md", import.meta.url),
+      "utf8",
+    );
+    expect(architecture).toContain(
+      "HIGH-priority production test alert that can invoke the escalation path",
     );
     expect(source).not.toContain("test_alert");
     expect(source).not.toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");

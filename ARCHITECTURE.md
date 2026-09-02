@@ -486,17 +486,19 @@ password embedded as URL-encoded HTTP Basic credentials in that action, and
 `POSTIL_ILERT_RECEIVER_ORIGIN` selects its strictly validated HTTPS origin. The
 deployment and reconciliation workflows load the receiver password from one
 secret record. Reconciliation verifies that the deployed receiver accepts the
-credential before it creates or updates the action. Manual canaries use a
-workflow-serialized key derived from the stable workflow run id, distinct from
-production monitor keys. Each canary pre-cleans that key and requires exact
-persisted `alert-created` and `alert-resolved` receiver events during a bounded
-interval. The receiver-event observations bind each event to the exact iLert
-alert and alert-source ids, proving Event API routing without using untyped
-alert-action history. The cleanup-only finalizer uses the durable non-secret
-ALERT-submitted handoff: it no-ops only when no event was sent, otherwise it
-polls the bounded cleanup interval and fails closed if discovery or persisted
-resolution cannot be proved. It never reconciles the action. The canary does
-not open the authenticated operator SSE stream.
+credential before it creates or updates the action. Before any action mutation,
+it sends and resolves a unique production Event API binding probe and verifies
+its management API alert-source id. The probe requests LOW priority, although
+source configuration can override it. Manual canaries send and resolve a
+HIGH-priority production test alert that can invoke the escalation path. They
+use a workflow-serialized key derived from the stable workflow run id, distinct
+from production monitor keys. Each canary pre-cleans every open alert with that
+key and requires exact persisted `alert-created` and `alert-resolved` receiver
+events during a bounded interval. Resolved alerts with the same key remain
+history. The cleanup-only finalizer treats missing or unknown handoff state as
+cleanup-required, resolves every discovered open alert, and fails closed if
+discovery or persisted resolution cannot be proved. It never reconciles the
+action. The canary does not open the authenticated operator SSE stream.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the

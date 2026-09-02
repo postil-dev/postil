@@ -110,6 +110,38 @@ describe("iLert webhook-action reconciliation", () => {
     expect(requests[0]!.method).toBe("GET");
   });
 
+  test("rejects a mismatched Event API route before action mutation and resolves its probe", async () => {
+    const requests: Request[] = [];
+    let probe: { key: string; status: "PENDING" | "RESOLVED" } | undefined;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) return Response.json(SOURCE);
+      if (request.url.includes("/alert-actions?")) return Response.json([]);
+      if (request.url.endsWith("/events")) {
+        const body = await request.json() as { alertKey: string; eventType: string };
+        if (body.eventType === "ALERT") probe = { key: body.alertKey, status: "PENDING" };
+        if (body.eventType === "RESOLVE" && probe?.key === body.alertKey) probe.status = "RESOLVED";
+        return new Response(null, { status: 202 });
+      }
+      if (request.url.includes("/alerts?")) {
+        return Response.json(probe ? [{
+          alertKey: probe.key,
+          alertSource: { id: SOURCE_ID + 1 },
+          id: 91,
+          status: probe.status,
+        }] : []);
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+    await expect(reconcileIlertAlertAction({ ...reconcileOptions, fetchFn }))
+      .rejects.toThrow("does not route to the configured alert source");
+    expect(requests.filter((request) =>
+      request.url.includes("/alert-actions") && request.method !== "GET"
+    )).toHaveLength(0);
+    expect(probe?.status).toBe("RESOLVED");
+  });
+
   test("uses the source filter and avoids detail calls for unrelated actions", async () => {
     const requests: Request[] = [];
     const unrelated = Array.from({ length: 100 }, (_, index) => ({
@@ -154,15 +186,85 @@ describe("iLert webhook-action reconciliation", () => {
     });
     expect(result).toEqual({ actionId: "72", operation: "update" });
     expect(requests[2]!.url).toContain("include=conditions");
-    expect(requests[3]!.url).toBe(
+    expect(requests[7]!.url).toBe(
       `${RECEIVER_ORIGIN}/api/webhooks/ilert`,
     );
-    expect(requests[3]!.headers.get("authorization")).toStartWith("Basic ");
-    expect(requests[4]!.method).toBe("PUT");
-    expect(requests[4]!.url).toContain("include=conditions");
-    const body = await requests[4]!.json() as Record<string, unknown>;
+    expect(requests[7]!.headers.get("authorization")).toStartWith("Basic ");
+    expect(requests[8]!.method).toBe("PUT");
+    expect(requests[8]!.url).toContain("include=conditions");
+    const body = await requests[8]!.json() as Record<string, unknown>;
     expect(body.conditions).toBe("");
     expect(body.params).toMatchObject({ bodyTemplate: "" });
+  });
+
+  test("clears an active deprecated alertFilter and verifies its removal", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const legacy = {
+      ...desired,
+      alertFilter: { operator: "AND", predicates: [{ field: "ALERT_SUMMARY" }] },
+      id: "72",
+    };
+    const requests: Request[] = [];
+    await reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: queuedFetch(requests, [
+        Response.json(SOURCE),
+        Response.json([{ id: "72", name: desired.name }]),
+        Response.json(legacy),
+        new Response(null, { status: 204 }),
+        Response.json({ ...desired, id: "72" }),
+        Response.json({ ...desired, id: "72" }),
+      ]),
+    });
+    const update = requests.find((request) => request.method === "PUT");
+    expect(update).toBeDefined();
+    expect(await update!.json()).toMatchObject({ alertFilter: null, conditions: "" });
+  });
+
+  test("adopts one equivalent action after an ambiguous committed POST without retrying", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const requests: Request[] = [];
+    let created = false;
+    let probe: { key: string; status: "PENDING" | "RESOLVED" } | undefined;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) return Response.json(SOURCE);
+      if (request.url.endsWith("/events")) {
+        const body = await request.json() as { alertKey: string; eventType: string };
+        if (body.eventType === "ALERT") probe = { key: body.alertKey, status: "PENDING" };
+        if (body.eventType === "RESOLVE" && probe?.key === body.alertKey) probe.status = "RESOLVED";
+        return new Response(null, { status: 202 });
+      }
+      if (request.url.includes("/alerts?")) {
+        return Response.json(probe ? [{
+          alertKey: probe.key,
+          alertSource: { id: SOURCE_ID },
+          id: 991,
+          status: probe.status,
+        }] : []);
+      }
+      if (request.url === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+      if (request.method === "POST" && request.url.includes("/alert-actions")) {
+        created = true;
+        throw new Error("connection reset after commit");
+      }
+      if (request.url.includes("/alert-actions")) {
+        if (!created) return Response.json([]);
+        if (request.url.includes("include=conditions")) return Response.json({ ...desired, id: "73" });
+        return Response.json([{ id: "73", name: desired.name }]);
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+    const result = await reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn,
+      sleep: async () => undefined,
+    });
+    expect(result).toEqual({ actionId: "73", operation: "create" });
+    expect(requests.filter((request) =>
+      request.method === "POST" && request.url.includes("/alert-actions")
+    )).toHaveLength(1);
   });
 
   test("does not persist a credential when the deployed receiver rejects preflight", async () => {
@@ -179,6 +281,10 @@ describe("iLert webhook-action reconciliation", () => {
     ).rejects.toThrow("credential preflight failed with HTTP 401");
     expect(requests.map((request) => request.method)).toEqual([
       "GET",
+      "GET",
+      "POST",
+      "GET",
+      "POST",
       "GET",
       "GET",
     ]);
@@ -202,11 +308,15 @@ describe("iLert webhook-action reconciliation", () => {
     expect(requests.map((request) => request.method)).toEqual([
       "GET",
       "GET",
+      "POST",
+      "GET",
+      "POST",
+      "GET",
       "GET",
       "POST",
       "GET",
     ]);
-    const body = await requests[3]!.json() as {
+    const body = await requests[7]!.json() as {
       alertSources: Array<Record<string, unknown>>;
     };
     expect(body.alertSources[0]).not.toHaveProperty("integrationKey");
@@ -262,6 +372,27 @@ describe("iLert webhook canary", () => {
     ]);
     expect(service.events.every((event) => event.alertKey === canaryAlertKey(RUN_ID))).toBe(true);
     expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
+  });
+
+  test("pre-cleans an older open stable-key alert without a report-time cutoff", async () => {
+    const service = canaryService({ existing: true, status: "PENDING" });
+    await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn });
+    const alertLookup = service.requests.find((request) => request.url.includes("/alerts?"));
+    expect(alertLookup).toBeDefined();
+    expect(new URL(alertLookup!.url).searchParams.has("from")).toBe(false);
+    expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
+  });
+
+  test("keeps resolved same-key history while resolving the one current alert", async () => {
+    const service = canaryService({
+      initialAlerts: [
+        { id: 11, status: "RESOLVED" },
+        { id: 12, status: "RESOLVED" },
+        { id: 13, status: "PENDING" },
+      ],
+    });
+    await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn });
+    expect(service.statuses).toEqual(["RESOLVED", "RESOLVED", "RESOLVED", "RESOLVED"]);
   });
 
   test("rejects a non-API source before ALERT", async () => {
@@ -350,6 +481,20 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
+  test("failed pre-clean leaves cleanup required and the finalizer resolves the stable key", async () => {
+    const service = canaryService({
+      existing: true,
+      failAlertListings: 3,
+      status: "PENDING",
+    });
+    await expect(
+      verifyIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn }),
+    ).rejects.toThrow("management request failed with HTTP 503");
+    await finalizeIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn });
+    expect(service.events.some((event) => event.eventType === "RESOLVE")).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
+  });
+
   test("finalizer no-ops only after a durable no-ALERT handoff", async () => {
     const service = canaryService();
     await finalizeIlertWebhookCanary({
@@ -406,6 +551,8 @@ function canaryService(options: {
   deferredListings?: number;
   dropResolvedReceiverEvent?: boolean;
   existing?: boolean;
+  failAlertListings?: number;
+  initialAlerts?: Array<{ id: number; status: "PENDING" | "RESOLVED" }>;
   managementFailsAfterAlert?: boolean;
   observedSourceId?: number;
   receiverObservationFailures?: number;
@@ -420,7 +567,14 @@ function canaryService(options: {
     id: number;
     resolvedReceived: boolean;
     status: "PENDING" | "RESOLVED";
-  }> = options.existing
+  }> = options.initialAlerts
+    ? options.initialAlerts.map((alert) => ({
+        createdReceived: true,
+        id: alert.id,
+        resolvedReceived: alert.status === "RESOLVED",
+        status: alert.status,
+      }))
+    : options.existing
     ? [{
         createdReceived: true,
         id: 98,
@@ -430,6 +584,7 @@ function canaryService(options: {
     : [];
   let alertSent = false;
   let alertListRequests = 0;
+  let failAlertListings = options.failAlertListings ?? 0;
   let receiverObservationFailures = options.receiverObservationFailures ?? 0;
   let receiverObservationRequests = 0;
   let resolveRequestFailures = options.resolveRequestFailures ?? 0;
@@ -472,6 +627,10 @@ function canaryService(options: {
     }
     if (request.url.includes("/alerts?")) {
       alertListRequests += 1;
+      if (failAlertListings > 0) {
+        failAlertListings -= 1;
+        return new Response(null, { status: 503 });
+      }
       if (options.managementFailsAfterAlert && alertSent) {
         return new Response(null, { status: 503 });
       }
@@ -524,8 +683,26 @@ function canaryService(options: {
 }
 
 function queuedFetch(requests: Request[], responses: Response[]): Fetch {
+  let probe: { key: string; status: "PENDING" | "RESOLVED" } | undefined;
   return async (input, init) => {
-    requests.push(new Request(input, init));
+    const request = new Request(input, init);
+    requests.push(request);
+    if (request.method === "POST" && request.url.endsWith("/events")) {
+      const body = await request.json() as { alertKey: string; eventType: string };
+      if (body.eventType === "ALERT") probe = { key: body.alertKey, status: "PENDING" };
+      if (body.eventType === "RESOLVE" && probe?.key === body.alertKey) {
+        probe.status = "RESOLVED";
+      }
+      return new Response(null, { status: 202 });
+    }
+    if (request.url.includes("/alerts?") && probe) {
+      return Response.json([{
+        alertKey: probe.key,
+        alertSource: { id: SOURCE_ID },
+        id: 991,
+        status: probe.status,
+      }]);
+    }
     const response = responses.shift();
     if (!response) throw new Error("unexpected request");
     return response;

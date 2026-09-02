@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       reconcile_alert_stream:
-        description: Reconcile the iLert webhook action and run a receiver canary
+        description: Reconcile the iLert webhook action and send then resolve a HIGH-priority production test alert; it can invoke the escalation path
         required: false
         type: boolean
         default: false
