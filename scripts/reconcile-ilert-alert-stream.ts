@@ -119,12 +119,13 @@ export async function reconcileIlertAlertAction(
     actions.push(
       ...(await Promise.all(
         listed.slice(index, index + ALERT_ACTION_DETAILS_CONCURRENCY).map(async (item) =>
-          requireObject(
+          requireAlertActionId(
             await management(
               fetchFn,
               options.apiKey,
               `/alert-actions/${encodeURIComponent(actionId(item))}`,
             ),
+            actionId(item),
             "iLert returned an invalid alert action",
           ),
         ),
@@ -187,6 +188,9 @@ export async function reconcileIlertAlertAction(
     "iLert returned an invalid alert action",
   );
   const resultId = actionId(result);
+  if (id && resultId !== id) {
+    throw new Error("iLert returned a different alert action after update");
+  }
   const confirmed = requireObject(
     await management(
       fetchFn,
@@ -195,6 +199,9 @@ export async function reconcileIlertAlertAction(
     ),
     "iLert returned an invalid alert action",
   );
+  if (actionId(confirmed) !== resultId) {
+    throw new Error("iLert returned a confirmation for a different alert action");
+  }
   if (!equivalentAlertAction(confirmed, desired)) {
     throw new Error("iLert did not retain the reconciled alert action");
   }
@@ -470,6 +477,8 @@ function successfulHistoryDeliveryIds(
     const record = object(action);
     const history = record?.history;
     if (!Array.isArray(history)) continue;
+    const recordActionId = opaqueId(record?.alertActionId);
+    if (recordActionId && recordActionId !== actionId) continue;
     for (const value of history) {
       const entry = object(value);
       if (entry?.success !== true) continue;
@@ -477,7 +486,7 @@ function successfulHistoryDeliveryIds(
       if (
         !historyId ||
         deliveryIds.has(historyId) ||
-        opaqueId(record?.alertActionId) !== actionId ||
+        recordActionId !== actionId ||
         positiveId(entry.alertId) !== alertId ||
         opaqueId(entry.alertActionId) !== actionId
       ) {
@@ -669,6 +678,18 @@ function actionId(value: unknown): string {
   const id = opaqueId(object(value)?.id);
   if (id) return id;
   throw new Error("iLert returned an alert action without an identity");
+}
+
+function requireAlertActionId(
+  value: unknown,
+  expectedId: string,
+  invalidMessage: string,
+): Json {
+  const action = requireObject(value, invalidMessage);
+  if (actionId(action) !== expectedId) {
+    throw new Error("iLert returned a detail for a different alert action");
+  }
+  return action;
 }
 
 function opaqueId(value: unknown): string | null {

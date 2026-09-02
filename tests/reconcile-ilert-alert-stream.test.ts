@@ -199,6 +199,42 @@ describe("iLert alert-stream reconciliation", () => {
     ]);
   });
 
+  test("fails closed on an action detail that does not match its list identity", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET);
+    const requests: Request[] = [];
+    await expect(
+      reconcileIlertAlertAction({
+        apiKey: API_KEY,
+        sourceId: SOURCE_ID,
+        webhookSecret: WEBHOOK_SECRET,
+        fetchFn: fakeFetch(requests, [
+          Response.json(SOURCE),
+          Response.json([{ id: "72" }]),
+          Response.json({ ...desired, id: "73" }),
+        ]),
+      }),
+    ).rejects.toThrow("detail for a different alert action");
+    expect(requests.map((request) => request.method)).toEqual(["GET", "GET", "GET"]);
+  });
+
+  test("fails closed when POST confirmation changes the created action identity", async () => {
+    const requests: Request[] = [];
+    await expect(
+      reconcileIlertAlertAction({
+        apiKey: API_KEY,
+        sourceId: SOURCE_ID,
+        webhookSecret: WEBHOOK_SECRET,
+        fetchFn: fakeFetch(requests, [
+          Response.json(SOURCE),
+          Response.json([]),
+          Response.json({ id: "71" }),
+          Response.json({ ...desiredAlertAction(SOURCE, WEBHOOK_SECRET), id: "72" }),
+        ]),
+      }),
+    ).rejects.toThrow("confirmation for a different alert action");
+    expect(requests.map((request) => request.method)).toEqual(["GET", "GET", "POST", "GET"]);
+  });
+
   test("updates one drifted action and leaves an equivalent action unchanged", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET);
     const drifted = { ...desired, id: "72", triggerMode: "MANUAL" };
@@ -211,11 +247,11 @@ describe("iLert alert-stream reconciliation", () => {
         Response.json(SOURCE),
         Response.json([{ id: "72" }]),
         Response.json(drifted),
-        Response.json({ ...desired, id: "action-72" }),
-        Response.json({ ...desired, id: "action-72" }),
+        Response.json({ ...desired, id: "72" }),
+        Response.json({ ...desired, id: "72" }),
       ]),
     });
-    expect(updated).toEqual({ actionId: "action-72", operation: "update" });
+    expect(updated).toEqual({ actionId: "72", operation: "update" });
     expect(updateRequests[3]!.method).toBe("PUT");
 
     const unchangedRequests: Request[] = [];
@@ -231,6 +267,33 @@ describe("iLert alert-stream reconciliation", () => {
     });
     expect(unchanged).toEqual({ actionId: "72", operation: "unchanged" });
     expect(unchangedRequests).toHaveLength(3);
+  });
+
+  test("fails closed when PUT confirmation changes the updated action identity", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET);
+    const drifted = { ...desired, id: "72", triggerMode: "MANUAL" };
+    const requests: Request[] = [];
+    await expect(
+      reconcileIlertAlertAction({
+        apiKey: API_KEY,
+        sourceId: SOURCE_ID,
+        webhookSecret: WEBHOOK_SECRET,
+        fetchFn: fakeFetch(requests, [
+          Response.json(SOURCE),
+          Response.json([{ id: "72" }]),
+          Response.json(drifted),
+          Response.json({ ...desired, id: "72" }),
+          Response.json({ ...desired, id: "73" }),
+        ]),
+      }),
+    ).rejects.toThrow("confirmation for a different alert action");
+    expect(requests.map((request) => request.method)).toEqual([
+      "GET",
+      "GET",
+      "GET",
+      "PUT",
+      "GET",
+    ]);
   });
 
   test("fails closed on duplicate candidates and does not delete either", async () => {
@@ -378,6 +441,19 @@ describe("iLert alert-stream reconciliation", () => {
         sleep: async () => undefined,
       }),
     ).rejects.toThrow("invalid action history");
+  });
+
+  test("ignores valid successful history records for another action", async () => {
+    const service = canaryService({ existing: true, otherActionRecord: true });
+    await finalizeIlertAlertStreamCanary({
+      actionId: "72",
+      apiKey: API_KEY,
+      integrationKey: "test-integration-key",
+      ...CANARY_CONTEXT,
+      fetchFn: service.fetchFn,
+      sleep: async () => undefined,
+    });
+    expect(service.status).toBe("RESOLVED");
   });
 
   test("fails closed on successful history records missing required identities", async () => {
@@ -615,6 +691,7 @@ function canaryService(options: {
   ambiguousAlert?: boolean;
   delayedPrecleanResolve?: boolean;
   historyEntry?: (entry: HistoryEntry) => unknown;
+  otherActionRecord?: boolean;
 } = {}) {
   const events: Array<{ alertKey: string; eventType: string }> = [];
   const alerts: Array<{
@@ -671,7 +748,7 @@ function canaryService(options: {
     if (actionMatch) {
       const alert = alerts.find((item) => item.id === Number(actionMatch[1]));
       if (!alert) throw new Error(`unknown alert: ${request.url}`);
-      return Response.json({
+      const postilRecord = {
         alertActionId: 72,
         history: Array.from({ length: alert.deliveries }, (_, index) =>
           options.historyEntry?.({
@@ -686,7 +763,20 @@ function canaryService(options: {
             success: true,
           },
         ),
-      });
+      };
+      if (!options.otherActionRecord) return Response.json(postilRecord);
+      return Response.json([
+        {
+          alertActionId: "73",
+          history: [{
+            alertActionId: "73",
+            alertId: alert.id,
+            id: `other-action-delivery-${alert.deliveries}`,
+            success: true,
+          }],
+        },
+        postilRecord,
+      ]);
     }
     throw new Error(`unexpected request: ${request.method} ${request.url}`);
   };
