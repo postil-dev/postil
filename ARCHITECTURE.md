@@ -477,6 +477,17 @@ allowlist. Transport keepalives do not query alert state. The receiver and
 stream make no outbound iLert API calls and cannot acknowledge, accept, or
 resolve an alert.
 
+The production-monitor workflow reconciles the iLert Webhook action with the
+`ILERT_API_KEY` management bearer credential and sends monitor and canary
+events with the `ILERT_INTEGRATION_KEY` Event API credential. Its
+`POSTIL_ILERT_ALERT_SOURCE_ID` GitHub Actions variable selects the alert source
+whose action is reconciled. `POSTIL_ILERT_WEBHOOK_SECRET` supplies the receiver
+password embedded as URL-encoded HTTP Basic credentials in that action. Manual
+canaries use a workflow-serialized stable key distinct from production monitor
+keys. Each canary pre-cleans that key, verifies webhook delivery, repeatedly
+resolves it during a bounded stabilization interval, and a separate finalizer
+repeats the same resolution verification after the main canary job completes.
+
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
 external metrics collector are separate dependencies. A platform-wide or

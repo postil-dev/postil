@@ -210,7 +210,7 @@ describe("production monitor workflow", () => {
     };
     const alertStream = workflow.jobs["alert-stream"];
     expect(alertStream?.needs).toBe("smoke");
-    expect(alertStream?.["timeout-minutes"]).toBe(15);
+    expect(alertStream?.["timeout-minutes"]).toBe(24);
     expect(alertStream?.if).toContain("always()");
     expect(alertStream?.if).toContain("inputs.test_alert == true");
     expect(alertStream?.if).toContain("needs.smoke.result == 'success'");
@@ -220,6 +220,20 @@ describe("production monitor workflow", () => {
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
       "Reconcile, deliver, and resolve the unique iLert canary",
     );
+    expect(alertStream?.steps?.find(
+      (step) => step.name === "Preview iLert alert-stream reconciliation",
+    )?.run).toContain("timeout 7m");
+    expect(alertStream?.steps?.find(
+      (step) => step.name === "Reconcile, deliver, and resolve the unique iLert canary",
+    )?.run).toContain("timeout 13m");
+    const finalizer = workflow.jobs["alert-stream-finalize"];
+    expect(finalizer?.needs).toBe("alert-stream");
+    expect(finalizer?.["timeout-minutes"]).toBe(14);
+    expect(finalizer?.if).toContain("always()");
+    expect(finalizer?.if).toContain("inputs.test_alert == true");
+    expect(finalizer?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
+    )?.run).toContain("--finalize-canary");
     expect(workflow.jobs.notify?.if).not.toContain("inputs.test_alert");
     expect(workflow.jobs.resolve?.if).toContain(
       "needs.smoke.result == 'success'",
