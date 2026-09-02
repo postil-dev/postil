@@ -12,7 +12,7 @@ const CANARY_CLEANUP_RESERVE_MS = 120_000;
 const CANARY_CLEANUP_ATTEMPTS = 4;
 const CANARY_LOOKBACK_MS = 60 * 60 * 1_000;
 const ALERT_ACTION_DETAILS_CONCURRENCY = 32;
-const CANARY_KEY = "postil-operator-alert-stream-canary";
+const CANARY_KEY_PREFIX = "postil-operator-alert-stream-canary";
 
 export const ALERT_TRIGGER_TYPES = [
   "alert-created",
@@ -47,6 +47,8 @@ interface CanaryOptions {
   actionId: string;
   apiKey: string;
   integrationKey: string;
+  runAttempt: string;
+  runId: string;
   sourceId?: number;
   fetchFn?: Fetch;
   sleep?: Sleep;
@@ -59,8 +61,11 @@ export interface ReconcileResult {
   operation: Operation;
 }
 
-export function canaryAlertKey(): string {
-  return CANARY_KEY;
+export function canaryAlertKey(runId: string, runAttempt: string): string {
+  if (!positiveId(runId) || !positiveId(runAttempt)) {
+    throw new Error("GitHub run ID and attempt must be positive integers");
+  }
+  return `${CANARY_KEY_PREFIX}-${runId}-${runAttempt}`;
 }
 
 export function desiredAlertAction(source: Json, secret: string): Json {
@@ -203,41 +208,45 @@ export async function verifyIlertAlertStreamCanary(
     expiresAt: canaryDeadline.expiresAt - CANARY_CLEANUP_RESERVE_MS,
     now,
   };
-  const key = canaryAlertKey();
+  const key = canaryAlertKey(options.runId, options.runAttempt);
   let alertAttempted = false;
   let resolutionConfirmed = false;
   let created: CanaryObservation | undefined;
+  let preexistingAlertIds = new Set<string>();
   let primaryError: unknown;
   try {
-    await resolveAndStabilize(
-      options,
-      undefined,
-      key,
-      sleep,
-      startedAt,
-      primaryDeadline,
-      true,
-    );
-    assertCleanupReserve(canaryDeadline);
-    const deliveryBaseline = await observeCanary({
+    const waitOptions = {
       ...options,
       deadline: primaryDeadline,
       fetchFn,
       key,
       sleep,
       startedAt,
-    });
+    };
+    const preexisting = await findCanaryAlerts(waitOptions);
+    preexistingAlertIds = new Set(preexisting.map(canaryAlertId));
+    for (const alert of preexisting) {
+      if (alert.status === "RESOLVED") continue;
+      await resolveAndStabilize(
+        options,
+        await observeCanaryAlert(waitOptions, alert),
+        key,
+        sleep,
+        startedAt,
+        primaryDeadline,
+      );
+    }
     assertCleanupReserve(canaryDeadline);
     alertAttempted = true;
     await event(fetchFn, options.integrationKey, "ALERT", key, primaryDeadline);
-    created = await waitForDelivery({
+    created = await waitForCreatedDelivery({
       ...options,
       deadline: primaryDeadline,
       fetchFn,
       key,
       sleep,
       startedAt,
-      deliveryBaseline,
+      preexistingAlertIds,
     });
     await resolveAndStabilize(options, created, key, sleep, startedAt, canaryDeadline);
     resolutionConfirmed = true;
@@ -246,7 +255,24 @@ export async function verifyIlertAlertStreamCanary(
   }
   if (alertAttempted && !resolutionConfirmed) {
     try {
-      await resolveAndStabilize(options, created, key, sleep, startedAt, canaryDeadline);
+      const cleanupTarget = created ?? await findNewCanaryAlert({
+        ...options,
+        deadline: canaryDeadline,
+        fetchFn,
+        key,
+        sleep,
+        startedAt,
+      }, preexistingAlertIds);
+      if (cleanupTarget) {
+        await resolveAndStabilize(
+          options,
+          cleanupTarget,
+          key,
+          sleep,
+          startedAt,
+          canaryDeadline,
+        );
+      }
     } catch (cleanupError) {
       if (primaryError) {
         throw new AggregateError(
@@ -268,12 +294,29 @@ export async function finalizeIlertAlertStreamCanary(
     expiresAt: now() + CANARY_CLEANUP_RESERVE_MS,
     now,
   };
+  const key = canaryAlertKey(options.runId, options.runAttempt);
+  const waitOptions = {
+    ...options,
+    deadline,
+    fetchFn: options.fetchFn ?? fetch,
+    key,
+    sleep: options.sleep ?? Bun.sleep,
+    startedAt: options.startedAt ?? new Date(now() - CANARY_LOOKBACK_MS).toISOString(),
+  };
+  const initial = await findCanaryAlerts(waitOptions);
+  const initialCanary = initial[0];
+  if (!initialCanary || initial.length !== 1) {
+    throw new Error("iLert did not identify a unique canary for cleanup");
+  }
+  canaryAlertId(initialCanary);
+  if (initialCanary.status === "RESOLVED") return;
+  const created = await observeCanaryAlert(waitOptions, initialCanary);
   await resolveAndStabilize(
     options,
-    undefined,
-    canaryAlertKey(),
-    options.sleep ?? Bun.sleep,
-    options.startedAt ?? new Date(now() - CANARY_LOOKBACK_MS).toISOString(),
+    created,
+    key,
+    waitOptions.sleep,
+    waitOptions.startedAt,
     deadline,
   );
 }
@@ -282,8 +325,7 @@ interface WaitOptions extends CanaryOptions {
   alertId?: string;
   fetchFn: Fetch;
   key: string;
-  deliveryBaseline?: CanaryObservation;
-  requiredStatus?: string;
+  preexistingAlertIds?: ReadonlySet<string>;
   sleep: Sleep;
   startedAt: string;
   deadline: Deadline;
@@ -296,7 +338,6 @@ async function resolveAndStabilize(
   sleep: Sleep,
   startedAt: string,
   deadline: Deadline,
-  allowUnseen = false,
 ): Promise<void> {
   const deliveryBaseline = created ?? await observeCanary({
     ...options,
@@ -306,6 +347,10 @@ async function resolveAndStabilize(
     sleep,
     startedAt,
   });
+  if (!deliveryBaseline) {
+    throw new Error("iLert did not identify a unique canary for cleanup");
+  }
+  if (deliveryBaseline.status === "RESOLVED") return;
   let matched = false;
   let resolutionDelivered = false;
   let stabilized = false;
@@ -333,23 +378,19 @@ async function resolveAndStabilize(
     }
   }
   if (matched && stabilized) return;
-  if (!matched && allowUnseen) return;
   throw new Error("iLert did not verify canary resolution during stabilization");
 }
 
-async function waitForDelivery(
+async function waitForCreatedDelivery(
   options: WaitOptions,
 ): Promise<CanaryObservation> {
   for (let attempt = 0; attempt < CANARY_ATTEMPTS; attempt += 1) {
     assertBeforeDeadline(options.deadline);
-    const observed = await observeCanary(options);
-    if (
-      observed &&
-      (options.deliveryBaseline
-        ? deliveredAfter(observed, options.deliveryBaseline)
-        : observed.deliveries.count >= 1) &&
-      (!options.requiredStatus || observed.status === options.requiredStatus)
-    ) {
+    const observed = await findNewCanaryAlert(
+      options,
+      options.preexistingAlertIds ?? new Set(),
+    );
+    if (observed && observed.status === "PENDING" && observed.deliveries.count >= 1) {
       return observed;
     }
     if (attempt + 1 < CANARY_ATTEMPTS) {
@@ -362,9 +403,33 @@ async function waitForDelivery(
 async function observeCanary(
   options: WaitOptions,
 ): Promise<CanaryObservation | undefined> {
-  const alert = await findCanaryAlert(options);
-  const id = positiveId(alert?.id);
-  if (!id || (options.alertId && options.alertId !== id)) return undefined;
+  const alerts = await findCanaryAlerts(options);
+  const matches = options.alertId
+    ? alerts.filter((alert) => canaryAlertId(alert) === options.alertId)
+    : alerts;
+  if (matches.length > 1) {
+    throw new Error("Multiple current iLert canary alerts exist; refusing to choose one");
+  }
+  return matches[0] ? observeCanaryAlert(options, matches[0]) : undefined;
+}
+
+async function findNewCanaryAlert(
+  options: WaitOptions,
+  preexistingAlertIds: ReadonlySet<string>,
+): Promise<CanaryObservation | undefined> {
+  const current = await findCanaryAlerts(options);
+  const created = current.filter((alert) => !preexistingAlertIds.has(canaryAlertId(alert)));
+  if (created.length > 1) {
+    throw new Error("Multiple current iLert canary alerts exist; refusing to choose one");
+  }
+  return created[0] ? observeCanaryAlert(options, created[0]) : undefined;
+}
+
+async function observeCanaryAlert(
+  options: WaitOptions,
+  alert: Json,
+): Promise<CanaryObservation> {
+  const id = canaryAlertId(alert);
   const value = await management(
     options.fetchFn,
     options.apiKey,
@@ -400,6 +465,12 @@ async function observeCanary(
   };
 }
 
+function canaryAlertId(alert: Json): string {
+  const id = positiveId(alert.id);
+  if (!id) throw new Error("iLert returned a canary alert without an identity");
+  return id;
+}
+
 interface DeliveryObservation {
   count: number;
   ids: ReadonlySet<string>;
@@ -430,7 +501,8 @@ function deliveredAfter(
   return true;
 }
 
-async function findCanaryAlert(options: WaitOptions): Promise<Json | null> {
+async function findCanaryAlerts(options: WaitOptions): Promise<Json[]> {
+  const matches: Json[] = [];
   for (let start = 0; ; start += 100) {
     assertBeforeDeadline(options.deadline);
     const query = new URLSearchParams({
@@ -449,11 +521,13 @@ async function findCanaryAlert(options: WaitOptions): Promise<Json | null> {
     if (!Array.isArray(alerts) || alerts.some((item) => !object(item))) {
       throw new Error("iLert returned an invalid alert list during the canary");
     }
-    const alert = object(
-      alerts.find((item) => object(item)?.alertKey === options.key),
+    matches.push(
+      ...alerts.flatMap((item) => {
+        const alert = object(item);
+        return alert?.alertKey === options.key ? [alert] : [];
+      }),
     );
-    if (alert) return alert;
-    if (alerts.length < 100) return null;
+    if (alerts.length < 100) return matches;
   }
 }
 
@@ -721,6 +795,8 @@ async function main(): Promise<void> {
       actionId: result.actionId,
       apiKey,
       integrationKey: environment("ILERT_INTEGRATION_KEY"),
+      runAttempt: environment("POSTIL_ILERT_CANARY_RUN_ATTEMPT"),
+      runId: environment("POSTIL_ILERT_CANARY_RUN_ID"),
       sourceId,
     };
     if (canary) {

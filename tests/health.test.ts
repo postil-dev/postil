@@ -204,7 +204,13 @@ describe("production monitor workflow", () => {
           if?: string;
           needs?: string;
           "timeout-minutes"?: number;
-          steps?: Array<{ name?: string; run?: string }>;
+          steps?: Array<{
+            env?: Record<string, string>;
+            name?: string;
+            run?: string;
+            uses?: string;
+            with?: Record<string, string>;
+          }>;
         }
       >;
     };
@@ -226,6 +232,12 @@ describe("production monitor workflow", () => {
     expect(alertStream?.steps?.find(
       (step) => step.name === "Reconcile, deliver, and resolve the unique iLert canary",
     )?.run).toContain("timeout 13m");
+    expect(alertStream?.steps?.find(
+      (step) => step.name === "Reconcile, deliver, and resolve the unique iLert canary",
+    )?.env).toMatchObject({
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
+    });
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
     expect(finalizer?.["timeout-minutes"]).toBe(14);
@@ -243,11 +255,52 @@ describe("production monitor workflow", () => {
     expect(finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
     )?.run).toContain("--finalize-canary");
+    expect(finalizer?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
+    )?.env).toMatchObject({
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
+    });
+    for (const job of [alertStream, finalizer]) {
+      const scopedSecretLoads = job?.steps?.filter((step) => step.with?.["secret-name"]);
+      expect(scopedSecretLoads?.map((step) => step.with?.["secret-name"])).toEqual([
+        "ILERT_API_KEY",
+        "ILERT_INTEGRATION_KEY",
+        "POSTIL_ILERT_WEBHOOK_SECRET",
+      ]);
+      expect(scopedSecretLoads?.every((step) =>
+        step.uses === "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db" &&
+        typeof step.with?.["secret-path"] === "string",
+      )).toBe(true);
+    }
     expect(workflow.jobs.notify?.if).not.toContain("inputs.test_alert");
     expect(workflow.jobs.resolve?.if).toContain(
       "needs.smoke.result == 'success'",
     );
     expect(workflow.jobs.resolve?.if).toContain("inputs.test_alert != true");
+  });
+
+  test("resolves a production failure after manual success and scheduled success", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: {
+        resolve: {
+          if: string;
+          steps: Array<{ if?: string; name?: string; uses?: string }>;
+        };
+      };
+    };
+    const resolve = workflow.jobs.resolve;
+    expect(resolve.if).toContain("needs.smoke.result == 'success'");
+    expect(resolve.if).toContain("inputs.test_alert != true");
+    expect(resolve.steps.some((step) => step.name === "Check whether the previous run failed")).toBe(false);
+    expect(resolve.steps.find((step) => step.name === "Load alerting secret from Infisical")?.if).toBeUndefined();
+    expect(resolve.steps.find((step) => step.name === "Resolve ilert alert")).toMatchObject({
+      uses: "./.github/actions/ilert-event",
+    });
   });
 
   test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {

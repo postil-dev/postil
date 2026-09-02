@@ -14,6 +14,7 @@ import {
 const API_KEY = "test-api-key";
 const SOURCE_ID = 42;
 const WEBHOOK_SECRET = "test-webhook-secret-with-at-least-32-bytes";
+const CANARY_CONTEXT = { runId: "12345", runAttempt: "2" };
 const SOURCE = {
   id: SOURCE_ID,
   name: "Postil test source",
@@ -256,42 +257,53 @@ describe("iLert alert-stream reconciliation", () => {
     }
   });
 
-  test("uses a stable canary key, pre-cleans it, and stabilizes resolution", async () => {
+  test("uses a deterministic run-attempt canary key and stabilizes resolution", async () => {
     const service = canaryService();
     await verifyIlertAlertStreamCanary({
       actionId: "72",
       apiKey: API_KEY,
       integrationKey: "test-integration-key",
+      ...CANARY_CONTEXT,
       fetchFn: service.fetchFn,
       sleep: async () => undefined,
     });
-    expect(canaryAlertKey()).toBe("postil-operator-alert-stream-canary");
-    expect(canaryAlertKey()).not.toBe("postil-production-monitor");
+    expect(canaryAlertKey(CANARY_CONTEXT.runId, CANARY_CONTEXT.runAttempt)).toBe(
+      "postil-operator-alert-stream-canary-12345-2",
+    );
+    expect(canaryAlertKey("12346", CANARY_CONTEXT.runAttempt)).not.toBe(
+      canaryAlertKey(CANARY_CONTEXT.runId, CANARY_CONTEXT.runAttempt),
+    );
+    expect(canaryAlertKey(CANARY_CONTEXT.runId, "3")).not.toBe(
+      canaryAlertKey(CANARY_CONTEXT.runId, CANARY_CONTEXT.runAttempt),
+    );
     expect(service.events.map((event) => event.eventType)).toEqual([
-      "RESOLVE",
-      "RESOLVE",
-      "RESOLVE",
-      "RESOLVE",
       "ALERT",
       "RESOLVE",
       "RESOLVE",
       "RESOLVE",
       "RESOLVE",
     ]);
-    expect(service.events.every((event) => event.alertKey === canaryAlertKey())).toBe(true);
+    expect(service.events.every((event) => event.alertKey === canaryAlertKey(
+      CANARY_CONTEXT.runId,
+      CANARY_CONTEXT.runAttempt,
+    ))).toBe(true);
   });
 
-  test("finalizer reconstructs, resolves, and verifies the stable canary key", async () => {
+  test("finalizer reconstructs, resolves, and verifies the run-attempt canary key", async () => {
     const service = canaryService({ existing: true, status: "PENDING", deliveries: 1 });
     await finalizeIlertAlertStreamCanary({
       actionId: "72",
       apiKey: API_KEY,
       integrationKey: "test-integration-key",
+      ...CANARY_CONTEXT,
       fetchFn: service.fetchFn,
       sleep: async () => undefined,
     });
     expect(service.events).toHaveLength(4);
-    expect(service.events.every((event) => event.alertKey === canaryAlertKey())).toBe(true);
+    expect(service.events.every((event) => event.alertKey === canaryAlertKey(
+      CANARY_CONTEXT.runId,
+      CANARY_CONTEXT.runAttempt,
+    ))).toBe(true);
     expect(service.status).toBe("RESOLVED");
   });
 
@@ -307,33 +319,85 @@ describe("iLert alert-stream reconciliation", () => {
         actionId: "72",
         apiKey: API_KEY,
         integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
         fetchFn: service.fetchFn,
         sleep: async () => undefined,
       }),
     ).rejects.toThrow("did not confirm successful Postil webhook delivery");
   });
 
-  test("does not accept resolved state when finalizer RESOLVEs add no delivery", async () => {
+  test("selects a new alert ID when the current records are reordered", async () => {
+    const service = canaryService({
+      existing: true,
+      status: "RESOLVED",
+      deliveries: 1,
+    });
+    await verifyIlertAlertStreamCanary({
+      actionId: "72",
+      apiKey: API_KEY,
+      integrationKey: "test-integration-key",
+      ...CANARY_CONTEXT,
+      fetchFn: service.fetchFn,
+      sleep: async () => undefined,
+    });
+    expect(service.status).toBe("RESOLVED");
+  });
+
+  test("does not mistake a delayed pre-clean RESOLVE delivery for a dropped ALERT", async () => {
+    const service = canaryService({
+      delayedPrecleanResolve: true,
+      dropAlertDelivery: true,
+      existing: true,
+      status: "PENDING",
+      deliveries: 1,
+    });
+    await expect(
+      verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("did not confirm successful Postil webhook delivery");
+  });
+
+  test("fails closed when ALERT creates multiple current canary records", async () => {
+    const service = canaryService({ ambiguousAlert: true });
+    await expect(
+      verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toBeInstanceOf(AggregateError);
+  });
+
+  test("treats an already resolved uniquely identified canary as complete", async () => {
     const service = canaryService({
       existing: true,
       status: "RESOLVED",
       deliveries: 1,
       cleanupDeliveryFails: true,
     });
-    await expect(
-      finalizeIlertAlertStreamCanary({
-        actionId: "72",
-        apiKey: API_KEY,
-        integrationKey: "test-integration-key",
-        fetchFn: service.fetchFn,
-        sleep: async () => undefined,
-      }),
-    ).rejects.toThrow("did not verify canary resolution during stabilization");
+    await finalizeIlertAlertStreamCanary({
+      actionId: "72",
+      apiKey: API_KEY,
+      integrationKey: "test-integration-key",
+      ...CANARY_CONTEXT,
+      fetchFn: service.fetchFn,
+      sleep: async () => undefined,
+    });
+    expect(service.events).toHaveLength(0);
   });
 
   test("finalizer searches source-scoped alert pages for the reconstructed key", async () => {
     const alertRequests: Request[] = [];
-    let deliveries = 1;
+    let actionHistoryRequests = 0;
     const unrelated = Array.from({ length: 100 }, (_, index) => ({
       id: index + 1,
       alertKey: `other-${index}`,
@@ -341,26 +405,24 @@ describe("iLert alert-stream reconciliation", () => {
     }));
     const fetchFn: Fetch = async (input, init) => {
       const request = new Request(input, init);
-      if (request.method === "POST") {
-        deliveries += 1;
-        return new Response(null, { status: 202 });
-      }
       if (request.url.includes("/alerts?")) {
         alertRequests.push(request);
         return Response.json(
           new URL(request.url).searchParams.get("start-index") === "0"
             ? unrelated
-            : [{ id: 999, alertKey: canaryAlertKey(), status: "RESOLVED" }],
+            : [{
+                id: 999,
+                alertKey: canaryAlertKey(
+                  CANARY_CONTEXT.runId,
+                  CANARY_CONTEXT.runAttempt,
+                ),
+                status: "RESOLVED",
+              }],
         );
       }
       if (request.url.endsWith("/alerts/999/actions")) {
-        return Response.json({
-          alertActionId: 72,
-          history: Array.from({ length: deliveries }, (_, index) => ({
-            id: `delivery-${index + 1}`,
-            success: true,
-          })),
-        });
+        actionHistoryRequests += 1;
+        return Response.json({ alertActionId: 72, history: [] });
       }
       throw new Error(`unexpected request: ${request.method} ${request.url}`);
     };
@@ -368,26 +430,28 @@ describe("iLert alert-stream reconciliation", () => {
       actionId: "72",
       apiKey: API_KEY,
       integrationKey: "test-integration-key",
+      ...CANARY_CONTEXT,
       sourceId: SOURCE_ID,
       fetchFn,
       sleep: async () => undefined,
     });
-    expect(alertRequests).toHaveLength(10);
+    expect(alertRequests).toHaveLength(2);
     expect(alertRequests.every((request) => request.url.includes("sources=42"))).toBe(true);
+    expect(actionHistoryRequests).toBe(0);
   });
 
-  test("closes an ALERT accepted after earlier same-key RESOLVE events", async () => {
+  test("closes an ALERT accepted after a polling delay", async () => {
     const service = canaryService({ deferAlertAcceptance: true });
     await verifyIlertAlertStreamCanary({
       actionId: "72",
       apiKey: API_KEY,
       integrationKey: "test-integration-key",
+      ...CANARY_CONTEXT,
       fetchFn: service.fetchFn,
       sleep: async () => undefined,
     });
     const alertIndex = service.events.findIndex((event) => event.eventType === "ALERT");
-    expect(alertIndex).toBeGreaterThan(0);
-    expect(service.events.slice(0, alertIndex).every((event) => event.eventType === "RESOLVE")).toBe(true);
+    expect(alertIndex).toBe(0);
     expect(service.status).toBe("RESOLVED");
   });
 
@@ -398,6 +462,7 @@ describe("iLert alert-stream reconciliation", () => {
         actionId: "72",
         apiKey: API_KEY,
         integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
         fetchFn: service.fetchFn,
         sleep: async () => undefined,
       }),
@@ -410,7 +475,7 @@ describe("iLert alert-stream reconciliation", () => {
     const fetchFn: Fetch = async (input, init) => {
       const request = new Request(input, init);
       const response = await service.fetchFn(input, init);
-      if (request.url.includes("/alerts?") && service.events.length === 4) {
+      if (request.url.includes("/alerts?") && service.events.length === 0) {
         now = 250_000;
       }
       return response;
@@ -420,6 +485,7 @@ describe("iLert alert-stream reconciliation", () => {
         actionId: "72",
         apiKey: API_KEY,
         integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
         fetchFn,
         now: () => now,
         sleep: async () => undefined,
@@ -436,51 +502,67 @@ function canaryService(options: {
   deferAlertAcceptance?: boolean;
   dropAlertDelivery?: boolean;
   cleanupDeliveryFails?: boolean;
+  ambiguousAlert?: boolean;
+  delayedPrecleanResolve?: boolean;
 } = {}) {
   const events: Array<{ alertKey: string; eventType: string }> = [];
-  let existing = options.existing ?? false;
-  let status = options.status ?? "PENDING";
-  let deliveries = options.deliveries ?? 0;
+  const alerts: Array<{
+    deliveries: number;
+    id: number;
+    status: "PENDING" | "RESOLVED";
+  }> = options.existing
+    ? [{ deliveries: options.deliveries ?? 0, id: 98, status: options.status ?? "PENDING" }]
+    : [];
   let pendingAlert = false;
+  let alertSent = false;
+  let delayedPrecleanDelivery = false;
   const fetchFn: Fetch = async (input, init) => {
     const request = new Request(input, init);
     if (request.method === "POST" && request.url.endsWith("/events")) {
       const body = (await request.json()) as { alertKey: string; eventType: string };
       events.push(body);
       if (body.eventType === "ALERT") {
+        alertSent = true;
         if (options.deferAlertAcceptance) pendingAlert = true;
-        else if (options.dropAlertDelivery) {
-          status = "RESOLVED";
-        }
-        else {
-          existing = true;
-          status = "PENDING";
-          deliveries += 1;
-        }
+        else if (!options.dropAlertDelivery) addAlert();
       }
-      if (body.eventType === "RESOLVE" && existing) {
-        status = "RESOLVED";
-        if (!options.cleanupDeliveryFails) deliveries += 1;
+      if (body.eventType === "RESOLVE") {
+        for (const alert of alerts.filter((item) => item.status !== "RESOLVED")) {
+          alert.status = "RESOLVED";
+          if (options.delayedPrecleanResolve && !alertSent) {
+            delayedPrecleanDelivery = true;
+          } else if (!options.cleanupDeliveryFails) {
+            alert.deliveries += 1;
+          }
+        }
       }
       return new Response(null, { status: 202 });
     }
     if (request.url.includes("/alerts?")) {
       if (pendingAlert) {
         pendingAlert = false;
-        existing = true;
-        status = "PENDING";
-        deliveries += 1;
+        addAlert();
+      }
+      if (delayedPrecleanDelivery && (alertSent || events.some((event) => event.eventType === "RESOLVE"))) {
+        delayedPrecleanDelivery = false;
+        const existing = alerts.find((alert) => alert.id === 98);
+        if (existing) existing.deliveries += 1;
       }
       return Response.json(
-        existing
-          ? [{ id: 99, alertKey: canaryAlertKey(), status }]
-          : [],
+        [...alerts].reverse().map((alert) => ({
+          id: alert.id,
+          alertKey: canaryAlertKey(CANARY_CONTEXT.runId, CANARY_CONTEXT.runAttempt),
+          status: alert.status,
+        })),
       );
     }
-    if (request.url.endsWith("/alerts/99/actions")) {
+    const actionMatch = request.url.match(/\/alerts\/([0-9]+)\/actions$/u);
+    if (actionMatch) {
+      const alert = alerts.find((item) => item.id === Number(actionMatch[1]));
+      if (!alert) throw new Error(`unknown alert: ${request.url}`);
       return Response.json({
         alertActionId: 72,
-        history: Array.from({ length: deliveries }, (_, index) => ({
+        history: Array.from({ length: alert.deliveries }, (_, index) => ({
           id: `delivery-${index + 1}`,
           success: true,
         })),
@@ -492,9 +574,17 @@ function canaryService(options: {
     events,
     fetchFn,
     get status() {
-      return status;
+      return alerts.at(-1)?.status;
     },
   };
+
+  function addAlert() {
+    const id = alerts.length === 0 ? 99 : Math.max(...alerts.map((alert) => alert.id)) + 1;
+    alerts.push({ deliveries: 1, id, status: "PENDING" });
+    if (options.ambiguousAlert) {
+      alerts.push({ deliveries: 1, id: id + 1, status: "PENDING" });
+    }
+  }
 }
 
 function fakeFetch(requests: Request[], responses: Response[]): Fetch {

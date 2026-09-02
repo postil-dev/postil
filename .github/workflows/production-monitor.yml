@@ -25,7 +25,7 @@ permissions:
 concurrency:
   # Deployment-completion monitors keep independent workflow owners, while
   # scheduled and manual checks serialize together. A manual canary therefore
-  # owns its stable iLert key until its independent finalizer has run. Every
+  # owns its run-attempt iLert key until its independent finalizer has run. Every
   # recovery attempt then joins the same bounded FIFO queue as deploys, so it
   # observes an idle managed fleet.
   group: ${{ github.event_name == 'workflow_run' && format('production-monitor-deploy-{0}', github.event.workflow_run.id) || 'production-monitor' }}
@@ -558,7 +558,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Load iLert management secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -568,7 +568,7 @@ jobs:
           secret-path: /
           secret-name: ILERT_API_KEY
       - name: Load iLert integration secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -578,7 +578,7 @@ jobs:
           secret-path: /postil
           secret-name: ILERT_INTEGRATION_KEY
       - name: Load Postil webhook secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -594,13 +594,15 @@ jobs:
       - name: Reconcile, deliver, and resolve the unique iLert canary
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: timeout 13m bun run scripts/reconcile-ilert-alert-stream.ts --canary
 
   alert-stream-finalize:
     name: Finalize operator alert-stream canary
     needs: alert-stream
     # This separate job runs after success, failure, cancellation, or timeout.
-    # It reconstructs the stable canary key and fails closed when resolution
+    # It reconstructs the run-attempt canary key and fails closed when resolution
     # cannot be verified during its own stabilization interval.
     if: ${{ always() && inputs.test_alert == true && needs.alert-stream.result != 'skipped' }}
     permissions:
@@ -616,7 +618,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Load iLert management secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -626,7 +628,7 @@ jobs:
           secret-path: /
           secret-name: ILERT_API_KEY
       - name: Load iLert integration secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -636,7 +638,7 @@ jobs:
           secret-path: /postil
           secret-name: ILERT_INTEGRATION_KEY
       - name: Load Postil webhook secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -648,6 +650,8 @@ jobs:
       - name: Resolve and stabilize the reconstructible iLert canary
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: timeout 10m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
 
   # Alert delivery is owned by the external alerting service (ilert). The
@@ -728,7 +732,8 @@ jobs:
 
   # The alert-stream job resolves its unique canary before it succeeds. This
   # resolver owns only the stable production-monitor alert key, so a manual
-  # canary must not close a production incident.
+  # canary must not close a production incident. Every successful non-canary
+  # monitor run resolves that key, including one after a manual canary.
   resolve:
     name: Resolve external alert
     needs: smoke
@@ -736,24 +741,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Check whether the previous run failed
-        id: previous
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          previous="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/production-monitor.yml/runs?status=completed&per_page=5" \
-            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0].conclusion // \"none\"")"
-          echo "conclusion=${previous}" >> "$GITHUB_OUTPUT"
-          echo "Previous completed run conclusion: ${previous}"
       - name: Load alerting secret from Infisical
-        if: ${{ steps.previous.outputs.conclusion == 'failure' }}
         uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
         with:
           method: oidc
@@ -763,7 +755,6 @@ jobs:
           domain: https://eu.infisical.com
           secret-path: /postil
       - name: Resolve ilert alert
-        if: ${{ steps.previous.outputs.conclusion == 'failure' }}
         uses: ./.github/actions/ilert-event
         with:
           event-type: RESOLVE
