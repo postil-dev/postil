@@ -18,6 +18,8 @@ const CANARY_CLEANUP_RESERVE_MS = 120_000;
 const CANARY_FINALIZER_DEADLINE_MS = 600_000;
 const CANARY_FINALIZER_DISCOVERY_DEADLINE_MS = 360_000;
 const CANARY_FINALIZER_DISCOVERY_RETRY_MS = 10_000;
+const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 60_000;
+const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
 const CANARY_CLEANUP_ATTEMPTS = 4;
 const ALERT_REPORT_TIME_SKEW_MS = 5_000;
 const MAX_CANARY_RUN_ATTEMPT = 50;
@@ -369,8 +371,8 @@ export async function verifyIlertWebhookCanary(
         created,
       );
     } catch (cleanupError) {
-      if (primaryError instanceof InvalidCanaryAlertStatusError) throw primaryError;
-      if (cleanupError instanceof InvalidCanaryAlertStatusError) throw cleanupError;
+      if (primaryError instanceof InvalidCanaryAlertValidationError) throw primaryError;
+      if (cleanupError instanceof InvalidCanaryAlertValidationError) throw cleanupError;
       throw new AggregateError(
         primaryError ? [primaryError, cleanupError] : [cleanupError],
         "iLert canary failed and cleanup could not be verified",
@@ -456,17 +458,29 @@ interface WaitOptions extends CleanupOptions {
 interface CanaryTarget {
   alertId: string;
   alertKey: string;
-  priority: "HIGH" | "LOW";
   sourceId: number;
 }
 
 interface CanaryObservation extends CanaryTarget {
+  priority: "HIGH" | "LOW";
   status: "PENDING" | "ACCEPTED" | "RESOLVED";
 }
 
-class InvalidCanaryAlertStatusError extends Error {
+class InvalidCanaryAlertValidationError extends Error {
+  constructor(message: string, readonly target: CanaryTarget) {
+    super(message);
+  }
+}
+
+class InvalidCanaryAlertStatusError extends InvalidCanaryAlertValidationError {
   constructor(readonly target: CanaryTarget) {
-    super("iLert returned a canary alert with an invalid status");
+    super("iLert returned a canary alert with an invalid status", target);
+  }
+}
+
+class InvalidCanaryAlertPriorityError extends InvalidCanaryAlertValidationError {
+  constructor(readonly target: CanaryTarget) {
+    super("iLert returned a canary alert with an invalid priority", target);
   }
 }
 
@@ -540,7 +554,7 @@ async function resolveAndStabilize(
         return;
       }
     } catch (error) {
-      if (error instanceof InvalidCanaryAlertStatusError) throw error;
+      if (error instanceof InvalidCanaryAlertValidationError) throw error;
       lastError = error;
     }
     if (attempt + 1 < CANARY_CLEANUP_ATTEMPTS) {
@@ -646,25 +660,24 @@ function canaryObservation(
   if (!sourceId || (expectedSourceId !== undefined && sourceId !== expectedSourceId)) {
     throw new Error("iLert returned a canary alert from a different source");
   }
-  const priority = alert.priority;
-  if (priority !== "HIGH" && priority !== "LOW") {
-    throw new Error("iLert returned a canary alert with an invalid priority");
-  }
   const target: CanaryTarget = {
     alertId: canaryAlertId(alert),
     alertKey: expectedKey,
-    priority,
     sourceId,
   };
+  const priority = alert.priority;
+  if (priority !== "HIGH" && priority !== "LOW") {
+    throw new InvalidCanaryAlertPriorityError(target);
+  }
   const status = alert.status;
   if (status !== "PENDING" && status !== "ACCEPTED" && status !== "RESOLVED") {
     throw new InvalidCanaryAlertStatusError(target);
   }
-  return { ...target, status };
+  return { ...target, priority, status };
 }
 
 function invalidCanaryAlertTarget(error: unknown): CanaryTarget | undefined {
-  return error instanceof InvalidCanaryAlertStatusError ? error.target : undefined;
+  return error instanceof InvalidCanaryAlertValidationError ? error.target : undefined;
 }
 
 function canaryAlertId(alert: Json): string {
@@ -679,18 +692,18 @@ async function driveAlertToResolved(
   deadline: Deadline,
 ): Promise<void> {
   let lastError: unknown;
-  let invalidStatusError: InvalidCanaryAlertStatusError | undefined;
+  let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
   for (let attempt = 0; attempt < CANARY_CLEANUP_ATTEMPTS; attempt += 1) {
     try {
       await resolveAlertById(options, target.alertId);
       const observed = await observeAlertById(options, target);
       if (observed.status === "RESOLVED") {
-        if (invalidStatusError) throw invalidStatusError;
+        if (invalidValidationError) throw invalidValidationError;
         return;
       }
     } catch (error) {
-      if (error instanceof InvalidCanaryAlertStatusError) {
-        invalidStatusError ??= error;
+      if (error instanceof InvalidCanaryAlertValidationError) {
+        invalidValidationError ??= error;
       }
       lastError = error;
     }
@@ -698,7 +711,7 @@ async function driveAlertToResolved(
       await options.sleep(Math.min(CANARY_CLEANUP_RETRY_MS, remaining(deadline)));
     }
   }
-  if (invalidStatusError) throw invalidStatusError;
+  if (invalidValidationError) throw invalidValidationError;
   throw new Error("iLert did not resolve the canary alert", {
     cause: lastError,
   });
@@ -720,32 +733,32 @@ async function precleanPriorAttemptKeys(
   const targets = new Map<string, CanaryTarget>();
   let stableEmptyScans = 0;
   let lastErrors: unknown[] = [];
-  let invalidStatusError: InvalidCanaryAlertStatusError | undefined;
+  let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
 
   for (let pass = 0; pass < CANARY_CLEANUP_ATTEMPTS; pass += 1) {
     const discovered = await discoverOpenDeterministicAlerts(options, keys);
     rememberTargets(targets, discovered.alerts);
     lastErrors = discovered.errors;
-    invalidStatusError ??= discovered.errors.find((error) =>
-      error instanceof InvalidCanaryAlertStatusError,
-    ) as InvalidCanaryAlertStatusError | undefined;
+    invalidValidationError ??= discovered.errors.find((error) =>
+      error instanceof InvalidCanaryAlertValidationError,
+    ) as InvalidCanaryAlertValidationError | undefined;
     stableEmptyScans = discovered.complete && discovered.open === 0
       ? stableEmptyScans + 1
       : 0;
     await resolveKnownAlerts(options, targets);
     const observed = await observeKnownAlerts(options, targets);
     lastErrors = [...lastErrors, ...observed.errors];
-    invalidStatusError ??= observed.errors.find((error) =>
-      error instanceof InvalidCanaryAlertStatusError,
-    ) as InvalidCanaryAlertStatusError | undefined;
-    if (!invalidStatusError && stableEmptyScans >= FINALIZER_STABLE_EMPTY_SCANS && observed.allResolved) {
+    invalidValidationError ??= observed.errors.find((error) =>
+      error instanceof InvalidCanaryAlertValidationError,
+    ) as InvalidCanaryAlertValidationError | undefined;
+    if (!invalidValidationError && stableEmptyScans >= FINALIZER_STABLE_EMPTY_SCANS && observed.allResolved) {
       return;
     }
     if (pass + 1 < CANARY_CLEANUP_ATTEMPTS) {
       await options.sleep(Math.min(CANARY_CLEANUP_RETRY_MS, remaining(options.deadline)));
     }
   }
-  if (invalidStatusError) throw invalidStatusError;
+  if (invalidValidationError) throw invalidValidationError;
   throw new AggregateError(
     lastErrors,
     "iLert did not stabilize prior-attempt canary cleanup",
@@ -764,34 +777,39 @@ async function finalizeDeterministicCanaryKeys(
   let currentAccountedFor = false;
   let currentResolveSubmitted = false;
   let fatalError: unknown;
-  let invalidStatusError: InvalidCanaryAlertStatusError | undefined;
+  let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
   let recentErrors: unknown[] = [];
   let lastDiscovery: { complete: boolean; open: number } | undefined;
 
   const retainErrors = (errors: readonly unknown[]) => {
     if (errors.length > 0) recentErrors = [...recentErrors, ...errors].slice(-20);
   };
-  const retainInvalidStatus = (errors: readonly unknown[]) => {
-    invalidStatusError ??= errors.find((error) =>
-      error instanceof InvalidCanaryAlertStatusError,
-    ) as InvalidCanaryAlertStatusError | undefined;
+  const retainInvalidValidation = (errors: readonly unknown[]) => {
+    invalidValidationError ??= errors.find((error) =>
+      error instanceof InvalidCanaryAlertValidationError,
+    ) as InvalidCanaryAlertValidationError | undefined;
   };
-  const discover = async (): Promise<{ complete: boolean; open: number }> => {
+  const discover = async (
+    deadline: Deadline,
+    maxPages?: number,
+  ): Promise<{ complete: boolean; open: number }> => {
     const result = await discoverOpenDeterministicAlerts(
-      { ...options, deadline: discoveryDeadline },
+      { ...options, deadline },
       keys,
+      maxPages,
     );
     rememberTargets(targets, result.alerts);
     retainErrors(result.errors);
-    retainInvalidStatus(result.errors);
+    retainInvalidValidation(result.errors);
     if (handoff === "true" && !currentAccountedFor && currentWindow) {
       try {
         const current = await findAlertsByKey({
           apiKey: options.apiKey,
-          deadline: discoveryDeadline,
+          deadline,
           fetchFn: options.fetchFn,
           ...currentWindow,
           key: currentMain.key,
+          maxPages,
           onTarget: (target) => targets.set(target.alertId, target),
           sleep: options.sleep,
           sourceId: currentMain.sourceId,
@@ -813,7 +831,7 @@ async function finalizeDeterministicCanaryKeys(
       } catch (error) {
         const target = invalidCanaryAlertTarget(error);
         if (target) targets.set(target.alertId, target);
-        retainInvalidStatus([error]);
+        retainInvalidValidation([error]);
         retainErrors([error]);
       }
     }
@@ -840,12 +858,12 @@ async function finalizeDeterministicCanaryKeys(
   };
 
   while (remaining(discoveryDeadline) > 0) {
-    lastDiscovery = await discover();
+    lastDiscovery = await discover(discoveryDeadline);
     const resolved = await resolveKnownAlerts(options, targets);
     retainErrors(resolved.errors);
     const observed = await observeKnownAlerts(options, targets);
     retainErrors(observed.errors);
-    retainInvalidStatus(observed.errors);
+    retainInvalidValidation(observed.errors);
     if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
       currentAccountedFor = true;
     }
@@ -857,7 +875,18 @@ async function finalizeDeterministicCanaryKeys(
     if (delay > 0) await options.sleep(delay);
   }
 
-  const inventoryIncomplete = !lastDiscovery?.complete;
+  const terminalDeadline: Deadline = {
+    expiresAt: Math.min(
+      options.deadline.expiresAt - CANARY_CLEANUP_RESERVE_MS,
+      options.deadline.now() + CANARY_FINALIZER_TERMINAL_INVENTORY_MS,
+    ),
+    now: options.deadline.now,
+  };
+  const terminalDiscovery = remaining(terminalDeadline) > 0
+    ? await discover(terminalDeadline, CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES)
+    : { complete: false, open: 0 };
+  lastDiscovery = terminalDiscovery;
+  const inventoryIncomplete = !terminalDiscovery.complete;
   let stableEmptyScans = lastDiscovery?.complete ? 1 : 0;
 
   while (remaining(options.deadline) > 0) {
@@ -865,14 +894,14 @@ async function finalizeDeterministicCanaryKeys(
     retainErrors(resolved.errors);
     const observed = await observeKnownAlerts(options, targets);
     retainErrors(observed.errors);
-    retainInvalidStatus(observed.errors);
+    retainInvalidValidation(observed.errors);
     if (lastDiscovery?.complete) stableEmptyScans += 1;
     if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
       currentAccountedFor = true;
     }
     if (
       !fatalError &&
-      !invalidStatusError &&
+      !invalidValidationError &&
       !inventoryIncomplete &&
       currentAccountedFor &&
       observed.allResolved &&
@@ -884,7 +913,7 @@ async function finalizeDeterministicCanaryKeys(
     if (delay > 0) await options.sleep(delay);
   }
 
-  if (invalidStatusError) throw invalidStatusError;
+  if (invalidValidationError) throw invalidValidationError;
   if (inventoryIncomplete) {
     throw new AggregateError(
       recentErrors,
@@ -911,6 +940,7 @@ async function finalizeDeterministicCanaryKeys(
 async function discoverOpenDeterministicAlerts(
   options: CleanupOptions,
   keys: readonly DeterministicCanaryKey[],
+  maxPages?: number,
 ): Promise<{
   alerts: CanaryTarget[];
   complete: boolean;
@@ -930,6 +960,7 @@ async function discoverOpenDeterministicAlerts(
         deadline: options.deadline,
         fetchFn: options.fetchFn,
         keys: group.map((key) => key.key),
+        maxPages,
         sleep: options.sleep,
         sourceId,
         states: ["PENDING", "ACCEPTED"],
@@ -1189,6 +1220,7 @@ interface AlertKeyLookupOptions {
   fetchFn: Fetch;
   from?: string;
   key: string;
+  maxPages?: number;
   onTarget?: (target: CanaryTarget) => void;
   sleep: Sleep;
   sourceId?: number;
@@ -1208,7 +1240,10 @@ async function findAlertsByKeys(
 ): Promise<Json[]> {
   const matches: Json[] = [];
   const keys = new Set(options.keys);
-  for (let start = 0; ; start += 100) {
+  for (let start = 0, page = 0; ; start += 100, page += 1) {
+    if (options.maxPages !== undefined && page >= options.maxPages) {
+      throw new Error("iLert terminal canary inventory exceeded its pagination limit");
+    }
     assertBeforeDeadline(options.deadline);
     const query = new URLSearchParams({
       "max-results": "100",
