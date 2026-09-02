@@ -270,6 +270,41 @@ describe("iLert webhook-action reconciliation", () => {
     expect(requests[1]!.url).not.toContain("source=");
   });
 
+  test("fails closed for a renamed action at the receiver endpoint with an older credential", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const oldCredential = "older-webhook-credential-that-must-not-leak";
+    const renamed = {
+      ...desired,
+      alertSources: [{ id: SOURCE_ID + 1 }],
+      id: "72",
+      name: "Legacy operator webhook",
+      params: {
+        ...(desired.params as Record<string, unknown>),
+        webhookUrl: `https://postil-ilert:${oldCredential}@postil.example/api/webhooks/ilert`,
+      },
+    };
+    let error: unknown;
+    try {
+      await reconcileIlertAlertAction({
+        ...reconcileOptions,
+        dryRun: true,
+        fetchFn: queuedFetch([], [
+          Response.json(SOURCE),
+          Response.json([{
+            id: "72",
+            name: renamed.name,
+            params: renamed.params,
+          }]),
+          Response.json(renamed),
+        ]),
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toContain("conflicting Postil alert action");
+    expect(String(error)).not.toContain(oldCredential);
+  });
+
   test("adopts one equivalent action after an ambiguous committed POST without retrying", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
     const requests: Request[] = [];
@@ -303,6 +338,7 @@ describe("iLert webhook-action reconciliation", () => {
 
   test("fails closed when ambiguous action creation finds an equivalent and a conflicting reserved candidate", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const oldCredential = "older-webhook-credential-that-must-not-leak";
     let created = false;
     await expect(reconcileIlertAlertAction({
       ...reconcileOptions,
@@ -320,11 +356,26 @@ describe("iLert webhook-action reconciliation", () => {
             const id = new URL(request.url).pathname.split("/").at(-1);
             return Response.json(id === "73"
               ? { ...desired, id: "73" }
-              : { ...desired, alertSources: [{ id: SOURCE_ID + 1 }], id: "74" });
+              : {
+                  ...desired,
+                  alertSources: [{ id: SOURCE_ID + 1 }],
+                  id: "74",
+                  name: "Legacy operator webhook",
+                  params: {
+                    ...(desired.params as Record<string, unknown>),
+                    webhookUrl: `https://postil-ilert:${oldCredential}@postil.example/api/webhooks/ilert`,
+                  },
+                });
           }
           return Response.json([
             { id: "73", name: desired.name },
-            { id: "74", name: desired.name },
+            {
+              id: "74",
+              name: "Legacy operator webhook",
+              params: {
+                webhookUrl: `https://postil-ilert:${oldCredential}@postil.example/api/webhooks/ilert`,
+              },
+            },
           ]);
         }
         throw new Error("unexpected request");
@@ -376,12 +427,15 @@ describe("iLert webhook-action reconciliation", () => {
 
   test("fails closed after creation when the global inventory finds a concurrent reserved candidate", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const oldCredential = "older-webhook-credential-that-must-not-leak";
     for (const conflictingSummary of [
       { id: "74", name: desired.name },
       {
         id: "74",
-        name: "Concurrent webhook action",
-        params: { webhookUrl: (desired.params as Record<string, unknown>).webhookUrl },
+        name: "Legacy operator webhook",
+        params: {
+          webhookUrl: `https://postil-ilert:${oldCredential}@postil.example/api/webhooks/ilert`,
+        },
       },
     ]) {
       let inventoryScans = 0;
@@ -406,7 +460,7 @@ describe("iLert webhook-action reconciliation", () => {
             const id = new URL(request.url).pathname.split("/").at(-1);
             return Response.json(id === "73"
               ? { ...desired, id: "73" }
-              : { ...desired, id: "74", name: conflictingSummary.name });
+              : { ...desired, ...conflictingSummary, id: "74" });
           }
           throw new Error(`unexpected request: ${request.method} ${request.url}`);
         },
@@ -876,15 +930,40 @@ describe("iLert webhook canary", () => {
       if (request.url.endsWith("/events")) return new Response(null, { status: 202 });
       if (request.url.includes("/alerts?")) {
         const query = new URL(request.url).searchParams;
-        return Response.json(query.has("states") ? [] : historical);
+        const start = Number(query.get("start-index"));
+        return Response.json(historical.slice(start, start + 100));
       }
       throw new Error(`unexpected request: ${request.method} ${request.url}`);
     };
     await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn });
     const alertQueries = requests.filter((request) => request.url.includes("/alerts?"));
     expect(alertQueries.length).toBeGreaterThan(8);
-    expect(alertQueries.every((request) => new URL(request.url).searchParams.has("states"))).toBe(true);
+    expect(alertQueries.some((request) => new URL(request.url).searchParams.get("start-index") === "1000")).toBe(true);
+    expect(alertQueries.every((request) => !new URL(request.url).searchParams.has("states"))).toBe(true);
   });
+
+  for (const status of ["UNKNOWN", undefined] as const) {
+    test(`finalizer fails closed when a matching alert has ${status ?? "no"} status`, async () => {
+      const service = canaryService({ existing: true });
+      await expect(finalizeIlertWebhookCanary({
+        ...finalizerOptions(),
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          if (request.url.includes("/alerts?")) {
+            return Response.json([{
+              alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+              alertSource: { id: SOURCE_ID },
+              id: 98,
+              priority: "HIGH",
+              ...(status === undefined ? {} : { status }),
+            }]);
+          }
+          return service.fetchFn(input, init);
+        },
+      })).rejects.toThrow("did not verify every discovered alert as RESOLVED");
+      expect(service.statuses).toEqual(["RESOLVED"]);
+    });
+  }
 
   test("finalizer CLI is cleanup-only and never reads or mutates alert actions", async () => {
     const service = canaryService({ existing: true, staleOpenReadsAfterResolve: 2, status: "PENDING" });

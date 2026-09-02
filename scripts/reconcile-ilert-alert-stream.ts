@@ -1161,7 +1161,6 @@ async function findAlertsByKeys(
     });
     if (options.sourceId) query.append("sources", String(options.sourceId));
     if (options.from) query.append("from", options.from);
-    for (const state of options.states ?? []) query.append("states", state);
     if (options.until) query.append("until", options.until);
     const alerts = await management(
       options.fetchFn,
@@ -1176,11 +1175,11 @@ async function findAlertsByKeys(
     }
     matches.push(...alerts.flatMap((item) => {
       const alert = object(item);
-      return typeof alert?.alertKey === "string" &&
-          keys.has(alert.alertKey) &&
-          (options.states === undefined || options.states.includes(
-            alert.status as "PENDING" | "ACCEPTED" | "RESOLVED",
-          ))
+      if (typeof alert?.alertKey !== "string" || !keys.has(alert.alertKey)) {
+        return [];
+      }
+      const observed = canaryObservation(alert, alert.alertKey, options.sourceId);
+      return options.states === undefined || options.states.includes(observed.status)
         ? [alert]
         : [];
     }));
@@ -1390,14 +1389,13 @@ async function loadCandidateActions(
   sleep: Sleep,
 ): Promise<Json[]> {
   const webhook = object(desired.params)?.webhookUrl;
+  const desiredEndpoint = receiverEndpoint(webhook);
+  if (!desiredEndpoint) throw new Error("iLert returned an invalid desired webhook URL");
   const summaries = (await listActions(fetchFn, apiKey, deadline, sleep))
-    .filter((action) => {
-      const params = object(action.params);
-      return action.name === ACTION_NAME || params?.webhookUrl === webhook;
-    });
+    .filter((action) => reservedActionSummary(action, desiredEndpoint));
   return Promise.all(summaries.map(async (item) => {
     const id = actionId(item);
-    return requireAlertActionId(
+    const action = requireAlertActionId(
       await management(
         fetchFn,
         apiKey,
@@ -1409,7 +1407,70 @@ async function loadCandidateActions(
       id,
       "iLert returned an invalid alert action",
     );
+    if (
+      action.name !== ACTION_NAME &&
+      !sameReceiverEndpoint(object(action.params)?.webhookUrl, desiredEndpoint)
+    ) {
+      throw new Error("iLert returned an inconsistent reserved alert action");
+    }
+    if (action.name === ACTION_NAME && !receiverEndpoint(object(action.params)?.webhookUrl)) {
+      throw new Error("iLert returned a reserved alert action with an invalid webhook URL");
+    }
+    return action;
   }));
+}
+
+interface ReceiverEndpoint {
+  hostname: string;
+  pathname: string;
+  port: string;
+  protocol: string;
+  query: string;
+}
+
+function reservedActionSummary(action: Json, desired: ReceiverEndpoint): boolean {
+  if (action.name === ACTION_NAME) {
+    const webhook = object(action.params)?.webhookUrl;
+    if (webhook !== undefined && !receiverEndpoint(webhook)) {
+      throw new Error("iLert returned a reserved alert action with an invalid webhook URL");
+    }
+    return true;
+  }
+  return sameReceiverEndpoint(object(action.params)?.webhookUrl, desired);
+}
+
+function sameReceiverEndpoint(value: unknown, desired: ReceiverEndpoint): boolean {
+  const actual = receiverEndpoint(value);
+  return actual !== null &&
+    actual.protocol === desired.protocol &&
+    actual.hostname === desired.hostname &&
+    actual.port === desired.port &&
+    actual.pathname === desired.pathname &&
+    actual.query === desired.query;
+}
+
+function receiverEndpoint(value: unknown): ReceiverEndpoint | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = new URL(value);
+    const query = [...parsed.searchParams.entries()]
+      .sort(([leftName, leftValue], [rightName, rightValue]) =>
+        leftName === rightName
+          ? leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0
+          : leftName < rightName ? -1 : 1,
+      )
+      .map(([name, entry]) => `${encodeURIComponent(name)}=${encodeURIComponent(entry)}`)
+      .join("&");
+    return {
+      hostname: parsed.hostname.toLowerCase(),
+      pathname: parsed.pathname,
+      port: parsed.port,
+      protocol: parsed.protocol.toLowerCase(),
+      query,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function loadIntegrationBoundAlertSource(
