@@ -47,6 +47,7 @@ interface CanaryOptions {
   actionId: string;
   apiKey: string;
   integrationKey: string;
+  sourceId?: number;
   fetchFn?: Fetch;
   sleep?: Sleep;
   now?: Clock;
@@ -339,17 +340,7 @@ async function waitForDelivery(
 async function observeCanary(
   options: WaitOptions,
 ): Promise<{ alertId: string; deliveries: number; status: unknown } | undefined> {
-  const alerts = await management(
-    options.fetchFn,
-    options.apiKey,
-    `/alerts?from=${encodeURIComponent(options.startedAt)}&max-results=100`,
-    {},
-    options.deadline,
-  );
-  if (!Array.isArray(alerts)) {
-    throw new Error("iLert returned an invalid alert list during the canary");
-  }
-  const alert = object(alerts.find((item) => object(item)?.alertKey === options.key));
+  const alert = await findCanaryAlert(options);
   const id = positiveId(alert?.id);
   if (!id || (options.alertId && options.alertId !== id)) return undefined;
   const value = await management(
@@ -371,6 +362,33 @@ async function observeCanary(
     })
     .filter((item) => object(item)?.success === true).length;
   return { alertId: id, deliveries, status: alert?.status };
+}
+
+async function findCanaryAlert(options: WaitOptions): Promise<Json | null> {
+  for (let start = 0; ; start += 100) {
+    assertBeforeDeadline(options.deadline);
+    const query = new URLSearchParams({
+      from: options.startedAt,
+      "max-results": "100",
+      "start-index": String(start),
+    });
+    if (options.sourceId) query.append("sources", String(options.sourceId));
+    const alerts = await management(
+      options.fetchFn,
+      options.apiKey,
+      `/alerts?${query.toString()}`,
+      {},
+      options.deadline,
+    );
+    if (!Array.isArray(alerts) || alerts.some((item) => !object(item))) {
+      throw new Error("iLert returned an invalid alert list during the canary");
+    }
+    const alert = object(
+      alerts.find((item) => object(item)?.alertKey === options.key),
+    );
+    if (alert) return alert;
+    if (alerts.length < 100) return null;
+  }
 }
 
 async function event(
@@ -637,6 +655,7 @@ async function main(): Promise<void> {
       actionId: result.actionId,
       apiKey,
       integrationKey: environment("ILERT_INTEGRATION_KEY"),
+      sourceId,
     };
     if (canary) {
       await verifyIlertAlertStreamCanary(options);

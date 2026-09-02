@@ -295,6 +295,41 @@ describe("iLert alert-stream reconciliation", () => {
     expect(service.status).toBe("RESOLVED");
   });
 
+  test("finalizer searches source-scoped alert pages for the reconstructed key", async () => {
+    const alertRequests: Request[] = [];
+    const unrelated = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      alertKey: `other-${index}`,
+      status: "RESOLVED",
+    }));
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST") return new Response(null, { status: 202 });
+      if (request.url.includes("/alerts?")) {
+        alertRequests.push(request);
+        return Response.json(
+          new URL(request.url).searchParams.get("start-index") === "0"
+            ? unrelated
+            : [{ id: 999, alertKey: canaryAlertKey(), status: "RESOLVED" }],
+        );
+      }
+      if (request.url.endsWith("/alerts/999/actions")) {
+        return Response.json({ alertActionId: 72, history: [{ success: true }] });
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+    await finalizeIlertAlertStreamCanary({
+      actionId: "72",
+      apiKey: API_KEY,
+      integrationKey: "test-integration-key",
+      sourceId: SOURCE_ID,
+      fetchFn,
+      sleep: async () => undefined,
+    });
+    expect(alertRequests).toHaveLength(8);
+    expect(alertRequests.every((request) => request.url.includes("sources=42"))).toBe(true);
+  });
+
   test("closes an ALERT accepted after earlier same-key RESOLVE events", async () => {
     const service = canaryService({ deferAlertAcceptance: true });
     await verifyIlertAlertStreamCanary({
