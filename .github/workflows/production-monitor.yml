@@ -24,8 +24,8 @@ permissions:
 
 concurrency:
   # Deployment-completion monitors keep independent workflow owners, while
-  # scheduled and manual checks serialize together. A manual canary therefore
-  # owns its run-stable iLert key until its independent finalizer has run. Every
+  # scheduled and manual checks serialize together. Each manual canary attempt
+  # owns distinct iLert keys until its independent finalizer has run. Every
   # recovery attempt then joins the same bounded FIFO queue as deploys, so it
   # observes an idle managed fleet.
   group: ${{ github.event_name == 'workflow_run' && format('production-monitor-deploy-{0}', github.event.workflow_run.id) || 'production-monitor' }}
@@ -542,6 +542,7 @@ jobs:
     needs: [smoke, release-recovery]
     outputs:
       alert-submitted: ${{ steps.canary.outputs.alert_submitted }}
+      started-at: ${{ steps.canary.outputs.started_at }}
     # Manual canaries run only after smoke succeeds; failed or cancelled
     # production checks must not emit a test page. Production failures use the
     # stable alert key owned by the notify and resolve jobs below.
@@ -595,10 +596,11 @@ jobs:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
           POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
         run: timeout 7m bun run scripts/reconcile-ilert-alert-stream.ts --dry-run
-      - name: Reconcile and verify the run-stable iLert webhook canary
+      - name: Reconcile and verify the attempt-specific iLert webhook canary
         id: canary
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
           POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
         run: timeout 13m bun run scripts/reconcile-ilert-alert-stream.ts --canary
@@ -615,15 +617,16 @@ jobs:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    # The finalizer has three minutes for setup, ten for bounded discovery and
-    # cleanup, and four minutes of runner headroom. It never reconciles the action.
-    timeout-minutes: 17
+    # The finalizer has three minutes for setup, twelve for bounded discovery
+    # and cleanup, and five minutes of runner headroom. It never reconciles the action.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
       - name: Load iLert management secret from Infisical
+        if: ${{ needs.alert-stream.outputs.alert-submitted != 'cleaned' }}
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
@@ -634,6 +637,7 @@ jobs:
           secret-path: /
           secret-name: ILERT_API_KEY
       - name: Load iLert integration secret from Infisical
+        if: ${{ needs.alert-stream.outputs.alert-submitted != 'cleaned' }}
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
@@ -647,7 +651,9 @@ jobs:
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
           POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ needs.alert-stream.outputs.alert-submitted }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
+          POSTIL_ILERT_CANARY_STARTED_AT: ${{ needs.alert-stream.outputs.started-at }}
         run: timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
 
   # Alert delivery is owned by the external alerting service (ilert). The
@@ -665,8 +671,10 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Load alerting secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+      - name: Load iLert integration secret from Infisical
+        id: load-alerting-secret
+        continue-on-error: true
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -674,6 +682,10 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
+      - name: Warn when routine alert delivery is unavailable
+        if: ${{ steps.load-alerting-secret.outcome == 'failure' }}
+        run: echo "::warning::The optional iLert integration key could not be loaded; the event action applies its configured missing-key policy."
       - name: Send ilert event
         uses: ./.github/actions/ilert-event
         with:
@@ -710,8 +722,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: bun scripts/run-release-migrations.ts --verify-clear
-      - name: Load alerting secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+      - name: Load iLert integration secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -719,6 +731,7 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
       - name: Resolve ilert release recovery alert
         uses: ./.github/actions/ilert-event
         with:
@@ -726,7 +739,7 @@ jobs:
           summary: Postil release recovery cleared
           alert-key: postil-release-recovery
 
-  # The alert-stream job resolves its run-stable canary before it succeeds. This
+  # The alert-stream job resolves its attempt-specific canary before it succeeds. This
   # resolver owns only the stable production-monitor alert key, so a manual
   # canary must not close a production incident. Every successful non-canary
   # monitor run resolves that key, including one after a manual canary.
@@ -741,7 +754,9 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Load alerting secret from Infisical
+      - name: Load iLert integration secret from Infisical
+        id: load-alerting-secret
+        continue-on-error: true
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
@@ -751,6 +766,9 @@ jobs:
           domain: https://eu.infisical.com
           secret-path: /postil
           secret-name: ILERT_INTEGRATION_KEY
+      - name: Warn when routine alert resolution is unavailable
+        if: ${{ steps.load-alerting-secret.outcome == 'failure' }}
+        run: echo "::warning::The optional iLert integration key could not be loaded; the resolve action safely no-ops when the key is absent."
       - name: Resolve ilert alert
         uses: ./.github/actions/ilert-event
         with:

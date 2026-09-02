@@ -207,7 +207,10 @@ describe("production monitor workflow", () => {
           outputs?: Record<string, string>;
           "timeout-minutes"?: number;
           steps?: Array<{
+            "continue-on-error"?: boolean;
             env?: Record<string, string>;
+            id?: string;
+            if?: string;
             name?: string;
             run?: string;
             uses?: string;
@@ -228,10 +231,10 @@ describe("production monitor workflow", () => {
       "HIGH-priority production test alert that can invoke the escalation path",
     );
     expect(architecture).toContain(
-      "primary canary already proved exact\npersisted receiver create and resolve events",
+      "A `cleaned` handoff means\nthe primary canary also proves the exact persisted `alert-resolved` receiver\nevent",
     );
     expect(architecture).toContain(
-      "independent cleanup-only finalizer proves that iLert management\nstate has no open deterministic alert",
+      "independent cleanup-only finalizer\nreconstructs both keys for attempts 1 through the current attempt",
     );
     expect(source).toContain(
       "primary canary already proved exact persisted\n    # receiver create and resolve events",
@@ -240,7 +243,7 @@ describe("production monitor workflow", () => {
       "Other handoffs prove iLert management\n    # state has no open deterministic alert, or fail closed.",
     );
     expect(source).not.toContain("test_alert");
-    expect(source).not.toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");
+    expect(source).toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");
     const alertStream = workflow.jobs["alert-stream"];
     expect(alertStream?.needs).toEqual(["smoke", "release-recovery"]);
     expect(alertStream?.["timeout-minutes"]).toBe(24);
@@ -251,28 +254,30 @@ describe("production monitor workflow", () => {
     expect(alertStream?.if).toContain("needs.release-recovery.result == 'success'");
     expect(alertStream?.outputs).toMatchObject({
       "alert-submitted": "${{ steps.canary.outputs.alert_submitted }}",
+      "started-at": "${{ steps.canary.outputs.started_at }}",
     });
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
       "Preview iLert alert-stream reconciliation",
     );
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
-      "Reconcile and verify the run-stable iLert webhook canary",
+      "Reconcile and verify the attempt-specific iLert webhook canary",
     );
     expect(alertStream?.steps?.find(
       (step) => step.name === "Preview iLert alert-stream reconciliation",
     )?.run).toContain("timeout 7m");
     expect(alertStream?.steps?.find(
-      (step) => step.name === "Reconcile and verify the run-stable iLert webhook canary",
+      (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
     )?.run).toContain("timeout 13m");
     expect(alertStream?.steps?.find(
-      (step) => step.name === "Reconcile and verify the run-stable iLert webhook canary",
+      (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
     )?.env).toMatchObject({
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
       POSTIL_ILERT_RECEIVER_ORIGIN: "https://postil.dev",
     });
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
-    expect(finalizer?.["timeout-minutes"]).toBe(17);
+    expect(finalizer?.["timeout-minutes"]).toBe(20);
     expect(finalizer?.if).toContain("always()");
     expect(finalizer?.name).toBe("Finalize iLert webhook canary cleanup");
     expect(finalizer?.if).toContain("inputs.reconcile_alert_stream == true");
@@ -293,7 +298,10 @@ describe("production monitor workflow", () => {
     )?.env).toMatchObject({
       POSTIL_ILERT_CANARY_ALERT_SUBMITTED:
         "${{ needs.alert-stream.outputs.alert-submitted }}",
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
+      POSTIL_ILERT_CANARY_STARTED_AT:
+        "${{ needs.alert-stream.outputs.started-at }}",
     });
     const expectScopedSecretLoads = (
       job: typeof alertStream,
@@ -308,6 +316,8 @@ describe("production monitor workflow", () => {
     };
     expectScopedSecretLoads(alertStream, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY", "POSTIL_ILERT_WEBHOOK_SECRET"]);
     expectScopedSecretLoads(finalizer, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY"]);
+    expect(finalizer?.steps?.filter((step) => step.with?.["secret-name"])
+      .every((step) => step.if?.includes("alert-submitted != 'cleaned'"))).toBe(true);
     expect(workflow.jobs.notify?.if).not.toContain("reconcile_alert_stream");
     expect(workflow.jobs.resolve?.if).toContain(
       "needs.smoke.result == 'success'",
@@ -366,7 +376,9 @@ describe("production monitor workflow", () => {
         resolve: {
           if: string;
           steps: Array<{
+            "continue-on-error"?: boolean;
             if?: string;
+            id?: string;
             name?: string;
             uses?: string;
             with?: Record<string, string>;
@@ -379,17 +391,48 @@ describe("production monitor workflow", () => {
     expect(resolve.if).toContain("github.event_name != 'workflow_dispatch'");
     expect(resolve.if).toContain("inputs.reconcile_alert_stream != true");
     expect(resolve.steps.some((step) => step.name === "Check whether the previous run failed")).toBe(false);
-    expect(resolve.steps.find((step) => step.name === "Load alerting secret from Infisical")?.if).toBeUndefined();
-    expect(resolve.steps.find((step) => step.name === "Load alerting secret from Infisical")).toMatchObject({
+    expect(resolve.steps.find((step) => step.name === "Load iLert integration secret from Infisical")).toMatchObject({
+      "continue-on-error": true,
+      id: "load-alerting-secret",
       uses: "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db",
       with: {
         "secret-name": "ILERT_INTEGRATION_KEY",
         "secret-path": "/postil",
       },
     });
+    expect(resolve.steps.find(
+      (step) => step.name === "Warn when routine alert resolution is unavailable",
+    )?.if).toContain("steps.load-alerting-secret.outcome == 'failure'");
     expect(resolve.steps.find((step) => step.name === "Resolve ilert alert")).toMatchObject({
       uses: "./.github/actions/ilert-event",
     });
+  });
+
+  test("routine iLert resolve safely no-ops when its optional key is absent", async () => {
+    const source = await readFile(
+      new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+      "utf8",
+    );
+    const action = parse(source) as {
+      runs: { steps: Array<{ name?: string; run?: string }> };
+    };
+    const run = action.runs.steps.find((step) => step.name === "Send event")?.run;
+    expect(run).toBeDefined();
+    const result = spawnSync("bash", ["-c", run!], {
+      encoding: "utf8",
+      env: {
+        ALERT_KEY: "test-alert",
+        DETAILS: "",
+        EVENT_TYPE: "RESOLVE",
+        NODE_ENV: "test",
+        PATH: process.env.PATH,
+        PRIORITY: "HIGH",
+        REQUIRE_DELIVERY: "false",
+        SUMMARY: "test resolve",
+      } as NodeJS.ProcessEnv,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("nothing to resolve");
   });
 
   test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {

@@ -491,14 +491,21 @@ it sends and resolves a unique production Event API binding probe and verifies
 its management API alert-source id. The probe requests LOW priority, although
 source configuration can override it. Manual canaries send and resolve a
 HIGH-priority production test alert that can invoke the escalation path. They
-use a workflow-serialized key derived from the stable workflow run id, distinct
-from production monitor keys. Each canary pre-cleans every open alert with that
-key and requires exact persisted `alert-created` and `alert-resolved` receiver
-events during a bounded interval. Resolved alerts with the same key remain
-history. A `cleaned` handoff means the primary canary already proved exact
-persisted receiver create and resolve events. For a `true` or `unknown`
-handoff, the independent cleanup-only finalizer proves that iLert management
-state has no open deterministic alert or fails closed. It never reads receiver
+use attempt-specific keys derived from the workflow run id and run attempt,
+distinct from production monitor keys. Before action mutation or the current
+HIGH alert, reconciliation resolves the probe and main keys for each earlier
+attempt. The current probe is discovered globally and its source identity is
+verified; the main canary is discovered within the configured source. Both
+lookups use a bounded report-time window around submission. The main alert must
+remain PENDING or ACCEPTED at HIGH priority and have an exact persisted
+`alert-created` receiver event. Cleanup retains every discovered alert id and
+polls its detail until management reports RESOLVED. A `cleaned` handoff means
+the primary canary also proves the exact persisted `alert-resolved` receiver
+event. For a `true` or `unknown` handoff, the independent cleanup-only finalizer
+reconstructs both keys for attempts 1 through the current attempt, up to the
+explicit 20-attempt safety bound. It submits RESOLVE throughout a bounded
+settling window, performs terminal discovery, and uses a reserved cleanup
+window to verify every discovered id as RESOLVED. It never reads receiver
 configuration or reconciles the action. The command supports `--dry-run`,
 `--canary`, and `--finalize-canary`; unflagged live reconciliation is rejected
 because it has no recoverable run identity. The canary does not open the
