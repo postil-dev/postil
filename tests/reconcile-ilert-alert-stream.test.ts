@@ -830,7 +830,7 @@ describe("iLert webhook canary", () => {
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
     });
-    expect(service.alertListRequests).toBeGreaterThanOrEqual(38);
+    expect(service.alertListRequests).toBeGreaterThanOrEqual(36);
     expect(service.events).toEqual([{
       alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
       eventType: "RESOLVE",
@@ -878,8 +878,8 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
-  test("finds a terminal late alert and resolves its retained ID in reserve", async () => {
-    const service = canaryService({ lateAlertAtListing: 37 });
+  test("finds a late discovery alert and resolves its retained ID in reserve", async () => {
+    const service = canaryService({ lateAlertAtListing: 36 });
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
@@ -972,8 +972,157 @@ describe("iLert webhook canary", () => {
         eventType: "RESOLVE",
       }]);
       expect(service.statuses).toEqual(["RESOLVED"]);
+      expect(service.requests.some((request) =>
+        request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
+      )).toBe(true);
     });
   }
+
+  for (const status of ["UNKNOWN", undefined] as const) {
+    test(`primary and finalizer retain an exact ID after ${status ?? "missing"} detail status`, async () => {
+      let primaryDetailRead = false;
+      const primary = canaryService();
+      await expect(verifyIlertWebhookCanary({
+        ...canaryOptions,
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          if (!primaryDetailRead && request.url.endsWith("/alerts/99")) {
+            primaryDetailRead = true;
+            return Response.json({
+              alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+              alertSource: { id: SOURCE_ID },
+              id: 99,
+              priority: "HIGH",
+              ...(status === undefined ? {} : { status }),
+            });
+          }
+          return primary.fetchFn(input, init);
+        },
+      })).rejects.toThrow("invalid status");
+      expect(primary.requests.filter((request) =>
+        request.method === "PUT" && request.url.endsWith("/alerts/99/resolve")
+      ).length).toBeGreaterThanOrEqual(2);
+
+      let finalizerDetailRead = false;
+      const finalizer = canaryService({ existing: true });
+      await expect(finalizeIlertWebhookCanary({
+        ...finalizerOptions(),
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          if (!finalizerDetailRead && request.url.endsWith("/alerts/98")) {
+            finalizerDetailRead = true;
+            return Response.json({
+              alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+              alertSource: { id: SOURCE_ID },
+              id: 98,
+              priority: "HIGH",
+              ...(status === undefined ? {} : { status }),
+            });
+          }
+          return finalizer.fetchFn(input, init);
+        },
+      })).rejects.toThrow("invalid status");
+      expect(finalizer.requests.filter((request) =>
+        request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
+      ).length).toBeGreaterThanOrEqual(2);
+    });
+
+    test(`matching list ${status ?? "missing"} status retains the primary exact ID for cleanup`, async () => {
+      let invalidListingReturned = false;
+      const service = canaryService();
+      await expect(verifyIlertWebhookCanary({
+        ...canaryOptions,
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          if (!invalidListingReturned && request.url.includes("/alerts?")) {
+            invalidListingReturned = true;
+            return Response.json([{
+              alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+              alertSource: { id: SOURCE_ID },
+              id: 99,
+              priority: "HIGH",
+              ...(status === undefined ? {} : { status }),
+            }]);
+          }
+          return service.fetchFn(input, init);
+        },
+      })).rejects.toThrow("invalid status");
+      expect(service.requests.some((request) =>
+        request.method === "PUT" && request.url.endsWith("/alerts/99/resolve")
+      )).toBe(true);
+      expect(service.events.filter((event) => event.eventType === "RESOLVE")).toEqual([]);
+    });
+  }
+
+  test("fails closed after a discovery-deadline pagination failure while resolving IDs from prior pages", async () => {
+    const requests: Request[] = [];
+    let currentTime = 0;
+    let resolved = false;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+      if (request.method === "PUT" && url.pathname === "/api/alerts/98/resolve") {
+        resolved = true;
+        return new Response(null, { status: 200 });
+      }
+      if (url.pathname === "/api/alerts/98") {
+        return Response.json({
+          alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+          alertSource: { id: SOURCE_ID },
+          id: 98,
+          priority: "HIGH",
+          status: resolved ? "RESOLVED" : "PENDING",
+        });
+      }
+      if (url.pathname === "/api/alerts") {
+        const start = Number(url.searchParams.get("start-index"));
+        if (start === 0) {
+          return Response.json([
+            {
+              alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+              alertSource: { id: SOURCE_ID },
+              id: 98,
+              priority: "HIGH",
+              status: "PENDING",
+            },
+            ...Array.from({ length: 99 }, (_, index) => ({
+              alertKey: `unrelated-${index}`,
+              alertSource: { id: SOURCE_ID },
+              id: index + 100,
+              priority: "HIGH",
+              status: "PENDING",
+            })),
+          ]);
+        }
+        if (start === 100) {
+          currentTime = 360_000;
+          return Response.json(Array.from({ length: 100 }, (_, index) => ({
+            alertKey: `unrelated-page-two-${index}`,
+            alertSource: { id: SOURCE_ID },
+            id: index + 200,
+            priority: "HIGH",
+            status: "PENDING",
+          })));
+        }
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await expect(finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    })).rejects.toThrow("inventory was incomplete");
+    const alertPages = requests.filter((request) => new URL(request.url).pathname === "/api/alerts");
+    expect(alertPages.map((request) => new URL(request.url).searchParams.get("start-index")))
+      .toEqual(["0", "100"]);
+    expect(requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
+    )).toBe(true);
+  });
 
   test("finalizer CLI is cleanup-only and never reads or mutates alert actions", async () => {
     const service = canaryService({ existing: true, staleOpenReadsAfterResolve: 2, status: "PENDING" });
