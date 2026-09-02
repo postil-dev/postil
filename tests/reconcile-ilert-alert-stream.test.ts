@@ -10,7 +10,6 @@ import {
   parseReceiverOrigin,
   reconcileIlertAlertAction,
   runCli,
-  sourceBindingProbeKey,
   verifyIlertWebhookCanary,
 } from "../scripts/reconcile-ilert-alert-stream";
 
@@ -110,52 +109,54 @@ describe("iLert webhook-action reconciliation", () => {
           Response.json({ ...SOURCE, integrationType: "GITHUB" }),
         ]),
       }),
-    ).rejects.toThrow("configured identity");
+    ).rejects.toThrow("integration binding validation failed");
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.url).toContain(`/alert-sources/${SOURCE_ID}`);
+    expect(new URL(requests[0]!.url).pathname).toMatch(/^\/api\/alert-sources\/[^/]+$/u);
     expect(requests[0]!.method).toBe("GET");
   });
 
-  test("rejects a mismatched Event API route before action mutation and resolves its probe", async () => {
+  test("rejects a mismatched management binding before action mutation or Event API use", async () => {
     const requests: Request[] = [];
-    let probe: { key: string; status: "PENDING" | "RESOLVED" } | undefined;
     const fetchFn: Fetch = async (input, init) => {
       const request = new Request(input, init);
       requests.push(request);
-      if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) return Response.json(SOURCE);
-      if (request.url.includes("/alert-actions?")) return Response.json([]);
-      if (request.url.endsWith("/events")) {
-        const body = await request.json() as { alertKey: string; eventType: string };
-        if (body.eventType === "ALERT") probe = { key: body.alertKey, status: "PENDING" };
-        if (body.eventType === "RESOLVE" && probe?.key === body.alertKey) probe.status = "RESOLVED";
-        return new Response(null, { status: 202 });
-      }
-      if (request.url.endsWith("/alerts/91") && probe) {
-        return Response.json({
-          alertKey: probe.key,
-          alertSource: { id: SOURCE_ID + 1 },
-          id: 91,
-          priority: "LOW",
-          status: probe.status,
-        });
-      }
-      if (request.url.includes("/alerts?")) {
-        return Response.json(probe ? [{
-          alertKey: probe.key,
-          alertSource: { id: SOURCE_ID + 1 },
-          id: 91,
-          priority: "LOW",
-          status: probe.status,
-        }] : []);
-      }
-      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      return Response.json({ ...SOURCE, id: SOURCE_ID + 1 });
     };
     await expect(reconcileIlertAlertAction({ ...reconcileOptions, fetchFn }))
-      .rejects.toThrow("does not route to the configured alert source");
+      .rejects.toThrow("integration binding validation failed");
     expect(requests.filter((request) =>
-      request.url.includes("/alert-actions") && request.method !== "GET"
+      request.url.endsWith("/events") ||
+      (request.url.includes("/alert-actions") && request.method !== "GET")
     )).toHaveLength(0);
-    expect(probe?.status).toBe("RESOLVED");
+    expect(requests).toHaveLength(1);
+  });
+
+  test("redacts a sensitive binding failure and emits no Event API mutation", async () => {
+    const integrationKey = "sensitive-integration-key";
+    const apiKey = "sensitive-management-key";
+    const requests: Request[] = [];
+    const logs: string[] = [];
+    let error: unknown;
+    try {
+      await runCli({
+        args: ["--dry-run"],
+        env: cliEnvironment({ ILERT_API_KEY: apiKey, ILERT_INTEGRATION_KEY: integrationKey }),
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          throw new Error(`request failed for ${request.url} with Bearer ${apiKey}`);
+        },
+        log: (message) => logs.push(message),
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).toBe("Error: iLert integration binding validation failed");
+    expect(String(error)).not.toContain(integrationKey);
+    expect(String(error)).not.toContain(apiKey);
+    expect(logs.join("\n")).not.toContain(integrationKey);
+    expect(logs.join("\n")).not.toContain(apiKey);
+    expect(requests.every((request) => !request.url.endsWith("/events"))).toBe(true);
   });
 
   test("scans the global inventory and avoids detail calls for unrelated actions", async () => {
@@ -206,12 +207,6 @@ describe("iLert webhook-action reconciliation", () => {
     expect(preflight?.headers.get("authorization")).toStartWith("Basic ");
     const update = requests.find((request) => request.method === "PUT");
     expect(update?.url).toContain("include=conditions");
-    const resolvedProbeDetail = requests.findIndex((request) =>
-      request.url.endsWith("/alerts/991")
-    );
-    expect(resolvedProbeDetail).toBeGreaterThan(-1);
-    expect(resolvedProbeDetail).toBeLessThan(requests.indexOf(preflight!));
-    expect(resolvedProbeDetail).toBeLessThan(requests.indexOf(update!));
     const body = await update!.json() as Record<string, unknown>;
     expect(body.conditions).toBe("");
     expect(body.params).toMatchObject({ bodyTemplate: "" });
@@ -241,7 +236,7 @@ describe("iLert webhook-action reconciliation", () => {
     expect(await update!.json()).toMatchObject({ alertFilter: null, conditions: "" });
   });
 
-  test("runs the receiver and deterministic source-binding preflights for an equivalent action", async () => {
+  test("runs the receiver preflight without Event API mutation for an equivalent action", async () => {
     const desired = { ...desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN), id: "72" };
     const actionName = "Postil operator alert stream";
     const requests: Request[] = [];
@@ -255,14 +250,7 @@ describe("iLert webhook-action reconciliation", () => {
       ]),
     });
     expect(result).toEqual({ actionId: "72", operation: "unchanged" });
-    const events = await Promise.all(requests.filter((request) =>
-      request.url.endsWith("/events")
-    ).map(async (request) => request.json() as Promise<{ alertKey: string; eventType: string }>));
-    expect(events.map(({ alertKey, eventType }) => ({ alertKey, eventType }))).toEqual([
-      { alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT), eventType: "ALERT" },
-      { alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT), eventType: "RESOLVE" },
-      { alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT), eventType: "RESOLVE" },
-    ]);
+    expect(requests.filter((request) => request.url.endsWith("/events"))).toHaveLength(0);
     expect(requests.some((request) => request.url === `${RECEIVER_ORIGIN}/api/webhooks/ilert`)).toBe(true);
     expect(requests.some((request) => request.method === "PUT")).toBe(false);
   });
@@ -282,75 +270,14 @@ describe("iLert webhook-action reconciliation", () => {
     expect(requests[1]!.url).not.toContain("source=");
   });
 
-  test("uses the deterministic binding key for cleanup after its discovery deadline and lets the finalizer reconstruct it", async () => {
-    const events: Array<{ alertKey: string; eventType: string }> = [];
-    let currentTime = 0;
-    const fetchFn: Fetch = async (input, init) => {
-      const request = new Request(input, init);
-      if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) return Response.json(SOURCE);
-      if (request.url.includes("/alert-actions?")) return Response.json([]);
-      if (request.url.endsWith("/events")) {
-        events.push(await request.json() as { alertKey: string; eventType: string });
-        return new Response(null, { status: 202 });
-      }
-      if (request.url.includes("/alerts?")) return Response.json([]);
-      throw new Error(`unexpected request: ${request.method} ${request.url}`);
-    };
-    await expect(reconcileIlertAlertAction({
-      ...reconcileOptions,
-      fetchFn,
-      now: () => currentTime,
-      sleep: async (milliseconds) => { currentTime += milliseconds; },
-    })).rejects.toThrow("probe cleanup could not be verified");
-    expect(events.map(({ alertKey, eventType }) => ({ alertKey, eventType }))).toEqual([
-      { alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT), eventType: "ALERT" },
-      { alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT), eventType: "RESOLVE" },
-    ]);
-    await finalizeIlertWebhookCanary({
-      ...canaryOptions,
-      fetchFn,
-      now: () => currentTime,
-      sleep: async (milliseconds) => { currentTime += milliseconds; },
-    });
-    expect(events.map(({ alertKey, eventType }) => ({ alertKey, eventType }))).toEqual(expect.arrayContaining([
-      { alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT), eventType: "RESOLVE" },
-      { alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT), eventType: "RESOLVE" },
-    ]));
-  });
-
   test("adopts one equivalent action after an ambiguous committed POST without retrying", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
     const requests: Request[] = [];
     let created = false;
-    let probe: { key: string; status: "PENDING" | "RESOLVED" } | undefined;
     const fetchFn: Fetch = async (input, init) => {
       const request = new Request(input, init);
       requests.push(request);
-      if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) return Response.json(SOURCE);
-      if (request.url.endsWith("/events")) {
-        const body = await request.json() as { alertKey: string; eventType: string };
-        if (body.eventType === "ALERT") probe = { key: body.alertKey, status: "PENDING" };
-        if (body.eventType === "RESOLVE" && probe?.key === body.alertKey) probe.status = "RESOLVED";
-        return new Response(null, { status: 202 });
-      }
-      if (request.url.endsWith("/alerts/991") && probe) {
-        return Response.json({
-          alertKey: probe.key,
-          alertSource: { id: SOURCE_ID },
-          id: 991,
-          priority: "LOW",
-          status: probe.status,
-        });
-      }
-      if (request.url.includes("/alerts?")) {
-        return Response.json(probe ? [{
-          alertKey: probe.key,
-          alertSource: { id: SOURCE_ID },
-          id: 991,
-          priority: "LOW",
-          status: probe.status,
-        }] : []);
-      }
+      if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
       if (request.url === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
       if (request.method === "POST" && request.url.includes("/alert-actions")) {
         created = true;
@@ -374,6 +301,37 @@ describe("iLert webhook-action reconciliation", () => {
     )).toHaveLength(1);
   });
 
+  test("fails closed when ambiguous action creation finds an equivalent and a conflicting reserved candidate", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    let created = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (request.url === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+        if (request.method === "POST" && request.url.includes("/alert-actions")) {
+          created = true;
+          throw new Error("connection reset after commit");
+        }
+        if (request.url.includes("/alert-actions")) {
+          if (!created) return Response.json([]);
+          if (request.url.includes("include=conditions")) {
+            const id = new URL(request.url).pathname.split("/").at(-1);
+            return Response.json(id === "73"
+              ? { ...desired, id: "73" }
+              : { ...desired, alertSources: [{ id: SOURCE_ID + 1 }], id: "74" });
+          }
+          return Response.json([
+            { id: "73", name: desired.name },
+            { id: "74", name: desired.name },
+          ]);
+        }
+        throw new Error("unexpected request");
+      },
+    })).rejects.toThrow("conflicting Postil alert action");
+  });
+
   test("does not persist a credential when the deployed receiver rejects preflight", async () => {
     const requests: Request[] = [];
     await expect(
@@ -386,7 +344,7 @@ describe("iLert webhook-action reconciliation", () => {
         ]),
       }),
     ).rejects.toThrow("credential preflight failed with HTTP 401");
-    expect(requests.filter((request) => request.url.endsWith("/events"))).toHaveLength(3);
+    expect(requests.filter((request) => request.url.endsWith("/events"))).toHaveLength(0);
     expect(requests.some((request) => request.url.includes("/alert-actions") && request.method !== "GET")).toBe(false);
   });
 
@@ -439,7 +397,9 @@ describe("iLert webhook-action reconciliation", () => {
     try {
       await reconcileIlertAlertAction({
         ...reconcileOptions,
-        fetchFn: async () => new Response(providerBody, { status: 403 }),
+        fetchFn: async (input) => new URL(String(input)).pathname.startsWith("/api/alert-sources/")
+          ? Response.json(SOURCE)
+          : new Response(providerBody, { status: 403 }),
       });
       throw new Error("expected reconciliation to fail");
     } catch (error) {
@@ -457,20 +417,25 @@ describe("iLert webhook canary", () => {
     expect(canaryAlertKey(RUN_ID, "2")).toBe(
       "postil-ilert-webhook-canary-12345-2",
     );
-    expect(sourceBindingProbeKey(RUN_ID, "1")).not.toBe(
-      sourceBindingProbeKey(RUN_ID, "2"),
+    expect(canaryAlertKey(RUN_ID, "50")).toBe(
+      "postil-ilert-webhook-canary-12345-50",
     );
   });
 
-  test("attempt 2 pre-cleans attempt 1 probe and main keys before its HIGH alert", async () => {
+  test("accepts attempt 50 as a finalizer sweep ceiling", async () => {
+    const service = canaryService();
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      fetchFn: service.fetchFn,
+      runAttempt: "1",
+      sweepAttempt: "50",
+    });
+    expect(service.alertListRequests).toBeGreaterThan(0);
+  });
+
+  test("attempt 2 pre-cleans attempt 1 main key before its HIGH alert", async () => {
     const service = canaryService({
       initialAlerts: [
-        {
-          alertKey: sourceBindingProbeKey(RUN_ID, "1"),
-          id: 97,
-          priority: "LOW",
-          status: "PENDING",
-        },
         {
           alertKey: canaryAlertKey(RUN_ID, "1"),
           id: 98,
@@ -486,12 +451,8 @@ describe("iLert webhook canary", () => {
     const highAlertIndex = service.events.findIndex((event) =>
       event.alertKey === canaryAlertKey(RUN_ID, "2") && event.eventType === "ALERT"
     );
-    expect(highAlertIndex).toBeGreaterThan(1);
-    expect(service.events.slice(0, highAlertIndex)).toEqual(expect.arrayContaining([
-      { alertKey: sourceBindingProbeKey(RUN_ID, "1"), eventType: "RESOLVE" },
-      { alertKey: canaryAlertKey(RUN_ID, "1"), eventType: "RESOLVE" },
-    ]));
-    expect(service.statuses).toEqual(["RESOLVED", "RESOLVED", "RESOLVED"]);
+    expect(highAlertIndex).toBeGreaterThan(-1);
+    expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
   });
 
   test("does not let a delayed prior-attempt event satisfy the current identity", async () => {
@@ -510,9 +471,7 @@ describe("iLert webhook canary", () => {
       fetchFn: service.fetchFn,
       runAttempt: "2",
     })).rejects.toBeInstanceOf(AggregateError);
-    expect(service.events.some((event) =>
-      event.alertKey === canaryAlertKey(RUN_ID, "1") && event.eventType === "RESOLVE"
-    )).toBe(true);
+    expect(service.statuses[0]).toBe("RESOLVED");
   });
 
   test("rejects a non-API source before ALERT", async () => {
@@ -522,11 +481,11 @@ describe("iLert webhook canary", () => {
         ...canaryOptions,
         fetchFn: service.fetchFn,
       }),
-    ).rejects.toThrow("configured identity");
+    ).rejects.toThrow("integration binding validation failed");
     expect(service.events).toHaveLength(0);
   });
 
-  test("submits same-key RESOLVE cleanup when management fails after ALERT", async () => {
+  test("uses a same-key Event RESOLVE only while the current alert is undiscovered", async () => {
     const service = canaryService({ managementFailsAfterAlert: true });
     await expect(
       verifyIlertWebhookCanary({
@@ -553,7 +512,7 @@ describe("iLert webhook canary", () => {
       ...canaryOptions,
       fetchFn: service.fetchFn,
     });
-    expect(service.events.filter((event) => event.eventType === "RESOLVE")).toHaveLength(3);
+    expect(service.requests.filter((request) => request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname))).toHaveLength(3);
     expect(service.receiverObservationRequests).toBeGreaterThanOrEqual(4);
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
@@ -593,6 +552,21 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
+  test("uses successful Event API acceptance time after a bounded 429 retry for discovery", async () => {
+    let currentTime = 0;
+    const service = canaryService({ alertRetryAfter: "10" });
+    await verifyIlertWebhookCanary({
+      ...canaryOptions,
+      fetchFn: service.fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+    const discovery = service.requests.find((request) => request.url.includes("/alerts?"));
+    expect(discovery).toBeDefined();
+    expect(Date.parse(new URL(discovery!.url).searchParams.get("until")!))
+      .toBeGreaterThanOrEqual(15_000);
+  });
+
   test("rejects a LOW management result for the HIGH canary", async () => {
     const service = canaryService({ mainPriority: "LOW" });
     await expect(verifyIlertWebhookCanary({
@@ -617,7 +591,8 @@ describe("iLert webhook canary", () => {
   test("uses exact alert detail instead of a stale open-alert listing after RESOLVE", async () => {
     const service = canaryService({ staleOpenReadsAfterResolve: 1 });
     await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn });
-    expect(service.events.filter((event) => event.eventType === "RESOLVE")).toHaveLength(1);
+    expect(service.requests.some((request) => request.method === "PUT" && request.url.endsWith("/alerts/99/resolve"))).toBe(true);
+    expect(service.events.filter((event) => event.eventType === "RESOLVE")).toHaveLength(0);
     expect(service.requests.some((request) => request.url.endsWith("/alerts/99"))).toBe(true);
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
@@ -637,16 +612,14 @@ describe("iLert webhook canary", () => {
   test("retries a stale open-state read after an accepted RESOLVE", async () => {
     const service = canaryService({ existing: true, staleOpenReadsAfterResolve: 2 });
     await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn: service.fetchFn });
-    expect(service.events.filter((event) =>
-      event.alertKey === canaryAlertKey(RUN_ID, RUN_ATTEMPT) && event.eventType === "RESOLVE"
-    ).length).toBeGreaterThanOrEqual(2);
+    expect(service.requests.filter((request) => request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")).length).toBeGreaterThanOrEqual(2);
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
-  test("finalizer resolves both deterministic keys before asynchronous discovery", async () => {
+  test("finalizer resolves a discovered deterministic key by management identity", async () => {
     const service = canaryService({
       existing: true,
-      deferredListings: 2,
+      deferredListings: 0,
       staleOpenReadsAfterResolve: 2,
       status: "PENDING",
     });
@@ -654,10 +627,7 @@ describe("iLert webhook canary", () => {
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
     });
-    expect(service.events).toEqual(expect.arrayContaining([
-      { alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT), eventType: "RESOLVE" },
-      { alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT), eventType: "RESOLVE" },
-    ]));
+    expect(service.requests.some((request) => request.method === "PUT" && request.url.endsWith("/alerts/98/resolve"))).toBe(true);
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
@@ -673,61 +643,10 @@ describe("iLert webhook canary", () => {
         alertSubmitted,
         fetchFn: service.fetchFn,
       });
-      expect(service.events.filter((event) => event.eventType === "RESOLVE").length).toBeGreaterThan(4);
+      expect(service.requests.some((request) => request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname))).toBe(true);
       expect(service.statuses).toEqual(["RESOLVED"]);
     });
   }
-
-  test("finalizer discovers a wrong-source binding probe globally", async () => {
-    const events: Array<{ alertKey: string; eventType: string }> = [];
-    const requests: Request[] = [];
-    let globalReads = 0;
-    let status: "PENDING" | "RESOLVED" = "PENDING";
-    const fetchFn: Fetch = async (input, init) => {
-      const request = new Request(input, init);
-      requests.push(request.clone());
-      if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) return Response.json(SOURCE);
-      if (request.url.endsWith("/events")) {
-        const event = await request.json() as { alertKey: string; eventType: string };
-        events.push(event);
-        if (
-          event.alertKey === sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT) &&
-          event.eventType === "RESOLVE"
-        ) {
-          status = "RESOLVED";
-        }
-        return new Response(null, { status: 202 });
-      }
-      if (request.url.endsWith("/alerts/99")) {
-        return Response.json({
-          alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT),
-          alertSource: { id: SOURCE_ID + 1 },
-          id: 99,
-          priority: "LOW",
-          status,
-        });
-      }
-      if (request.url.includes("/alerts?")) {
-        const query = new URL(request.url).searchParams;
-        if (!query.has("sources") && globalReads++ === 0) {
-          return Response.json([{
-            alertKey: sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT),
-            alertSource: { id: SOURCE_ID + 1 },
-            id: 99,
-            priority: "LOW",
-            status: "PENDING",
-          }]);
-        }
-        return Response.json([]);
-      }
-      throw new Error(`unexpected request: ${request.method} ${request.url}`);
-    };
-    await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn });
-    expect(requests.some((request) =>
-      request.url.includes("/alerts?") && !new URL(request.url).searchParams.has("sources"),
-    )).toBe(true);
-    expect(events.some((event) => event.alertKey === sourceBindingProbeKey(RUN_ID, RUN_ATTEMPT))).toBe(true);
-  });
 
   test("management listing failure leaves cleanup required for the attempt key", async () => {
     const service = canaryService({
@@ -740,7 +659,7 @@ describe("iLert webhook canary", () => {
       verifyIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn }),
     ).rejects.toThrow("cleanup could not be verified");
     await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn: service.fetchFn });
-    expect(service.events.some((event) => event.eventType === "RESOLVE")).toBe(true);
+    expect(service.requests.some((request) => request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname))).toBe(true);
     expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
   });
 
@@ -750,7 +669,7 @@ describe("iLert webhook canary", () => {
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
     });
-    expect(service.alertListRequests).toBeGreaterThanOrEqual(74);
+    expect(service.alertListRequests).toBeGreaterThanOrEqual(38);
   });
 
   test("continues the finalizer after repeated management 503 responses", async () => {
@@ -767,7 +686,7 @@ describe("iLert webhook canary", () => {
   });
 
   test("finds a terminal late alert and resolves its retained ID in reserve", async () => {
-    const service = canaryService({ lateAlertAtListing: 73 });
+    const service = canaryService({ lateAlertAtListing: 37 });
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
@@ -792,6 +711,18 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
+  test("uses the producer attempt for accepted-current finalizer proof", async () => {
+    const service = canaryService({ existing: true, status: "RESOLVED" });
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "true",
+      fetchFn: service.fetchFn,
+      runAttempt: "1",
+      sweepAttempt: "2",
+    });
+    expect(service.statuses).toEqual(["RESOLVED"]);
+  });
+
   test("does not enumerate 1,100 resolved alerts while checking deterministic open keys", async () => {
     const requests: Request[] = [];
     const historical = Array.from({ length: 1_100 }, (_, index) => ({
@@ -802,7 +733,7 @@ describe("iLert webhook canary", () => {
     const fetchFn: Fetch = async (input, init) => {
       const request = new Request(input, init);
       requests.push(request);
-      if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) return Response.json(SOURCE);
+      if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
       if (request.url.endsWith("/events")) return new Response(null, { status: 202 });
       if (request.url.includes("/alerts?")) {
         const query = new URL(request.url).searchParams;
@@ -827,7 +758,7 @@ describe("iLert webhook canary", () => {
     });
     expect(service.requests.some((request) => request.url.includes("/alert-actions"))).toBe(false);
     expect(service.events.some((event) => event.eventType === "ALERT")).toBe(false);
-    expect(service.events.some((event) => event.eventType === "RESOLVE")).toBe(true);
+    expect(service.requests.some((request) => request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname))).toBe(true);
   });
 
   test("cleaned finalizer CLI requires no credential or run configuration", async () => {
@@ -885,6 +816,7 @@ function finalizerOptions() {
 }
 
 function canaryService(options: {
+  alertRetryAfter?: string;
   deferredListings?: number;
   detailPendingReads?: number;
   detailAlwaysPending?: boolean;
@@ -942,6 +874,7 @@ function canaryService(options: {
       }]
     : [];
   let alertSent = false;
+  let alertRetryPending = options.alertRetryAfter !== undefined;
   let alertListRequests = 0;
   let failAlertListings = options.failAlertListings ?? 0;
   let detailPendingReads = options.detailPendingReads ?? 0;
@@ -954,7 +887,7 @@ function canaryService(options: {
   const fetchFn: Fetch = async (input, init) => {
     const request = new Request(input, init);
     requests.push(request.clone());
-    if (request.url.endsWith(`/alert-sources/${SOURCE_ID}`)) {
+    if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) {
       return Response.json({
         ...SOURCE,
         integrationType: options.sourceIntegrationType ?? SOURCE.integrationType,
@@ -967,6 +900,13 @@ function canaryService(options: {
         priority?: "HIGH" | "LOW";
       };
       events.push({ alertKey: body.alertKey, eventType: body.eventType });
+      if (body.eventType === "ALERT" && alertRetryPending) {
+        alertRetryPending = false;
+        return new Response(null, {
+          status: 429,
+          headers: { "retry-after": options.alertRetryAfter! },
+        });
+      }
       if (body.eventType === "ALERT" && !options.dropAlertCreation) {
         alertSent = true;
         const id = alerts.length === 0
@@ -995,6 +935,18 @@ function canaryService(options: {
         }
       }
       return new Response(null, { status: 202 });
+    }
+    const resolveId = /\/alerts\/([1-9][0-9]*)\/resolve$/u.exec(new URL(request.url).pathname)?.[1];
+    if (request.method === "PUT" && resolveId) {
+      const alert = alerts.find((item) => String(item.id) === resolveId);
+      if (!alert) return new Response(null, { status: 404 });
+      if (resolveRequestFailures > 0) {
+        resolveRequestFailures -= 1;
+        return new Response(null, { status: 503 });
+      }
+      alert.status = "RESOLVED";
+      if (!options.dropResolvedReceiverEvent) alert.resolvedReceived = true;
+      return new Response(null, { status: 200 });
     }
     const detailId = /\/alerts\/([1-9][0-9]*)$/u.exec(new URL(request.url).pathname)?.[1];
     if (detailId) {
@@ -1099,36 +1051,9 @@ function canaryService(options: {
 }
 
 function queuedFetch(requests: Request[], responses: Response[]): Fetch {
-  let probe: { key: string; status: "PENDING" | "RESOLVED" } | undefined;
   return async (input, init) => {
     const request = new Request(input, init);
     requests.push(request.clone());
-    if (request.method === "POST" && request.url.endsWith("/events")) {
-      const body = await request.json() as { alertKey: string; eventType: string };
-      if (body.eventType === "ALERT") probe = { key: body.alertKey, status: "PENDING" };
-      if (body.eventType === "RESOLVE" && probe?.key === body.alertKey) {
-        probe.status = "RESOLVED";
-      }
-      return new Response(null, { status: 202 });
-    }
-    if (request.url.endsWith("/alerts/991") && probe) {
-      return Response.json({
-        alertKey: probe.key,
-        alertSource: { id: SOURCE_ID },
-        id: 991,
-        priority: "LOW",
-        status: probe.status,
-      });
-    }
-    if (request.url.includes("/alerts?")) {
-      return Response.json(probe ? [{
-        alertKey: probe.key,
-        alertSource: { id: SOURCE_ID },
-        id: 991,
-        priority: "LOW",
-        status: probe.status,
-      }] : []);
-    }
     const response = responses.shift();
     if (!response) throw new Error("unexpected request");
     return response;

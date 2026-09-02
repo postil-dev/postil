@@ -542,11 +542,12 @@ jobs:
     needs: [smoke, release-recovery]
     outputs:
       alert-submitted: ${{ steps.canary.outputs.alert_submitted }}
+      producer-attempt: ${{ steps.canary.outputs.producer_attempt }}
       started-at: ${{ steps.canary.outputs.started_at }}
     # Manual canaries run only after smoke succeeds; failed or cancelled
     # production checks must not emit a test page. Production failures use the
     # stable alert key owned by the notify and resolve jobs below.
-    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' }}
+    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -558,6 +559,8 @@ jobs:
     timeout-minutes: 24
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
@@ -612,7 +615,7 @@ jobs:
     # A cleaned handoff means the primary canary already proved exact persisted
     # receiver create and resolve events. Other handoffs prove iLert management
     # state has no open deterministic alert, or fail closed.
-    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' }}
+    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -622,6 +625,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
@@ -651,7 +656,8 @@ jobs:
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
           POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ needs.alert-stream.outputs.alert-submitted }}
-          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ needs.alert-stream.outputs.producer-attempt }}
+          POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: ${{ github.run_attempt }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
           POSTIL_ILERT_CANARY_STARTED_AT: ${{ needs.alert-stream.outputs.started-at }}
         run: timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary

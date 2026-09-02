@@ -486,27 +486,29 @@ password embedded as URL-encoded HTTP Basic credentials in that action, and
 `POSTIL_ILERT_RECEIVER_ORIGIN` selects its strictly validated HTTPS origin. The
 deployment and reconciliation workflows load the receiver password from one
 secret record. Reconciliation verifies that the deployed receiver accepts the
-credential before it creates or updates the action. Before any action mutation,
-it sends and resolves a unique production Event API binding probe and verifies
-its management API alert-source id. The probe requests LOW priority, although
-source configuration can override it. Manual canaries send and resolve a
+credential before it creates or updates the action. Before any action mutation
+or Event API mutation, reconciliation reads `GET /api/alert-sources/{id}` with
+the URL-encoded Event API integration key and the management bearer credential.
+The returned numeric source id and Event API type must match the configured
+source. The key, management authorization, integration fields, and full lookup
+URL remain confined to the sensitive request. Manual canaries send a
 HIGH-priority production test alert that can invoke the escalation path. They
-use attempt-specific keys derived from the workflow run id and run attempt,
-distinct from production monitor keys. Before action mutation or the current
-HIGH alert, reconciliation resolves the probe and main keys for each earlier
-attempt. The current probe is discovered globally and its source identity is
-verified; the main canary is discovered within the configured source. Both
-lookups use a bounded report-time window around submission. The main alert must
-remain PENDING or ACCEPTED at HIGH priority and have an exact persisted
-`alert-created` receiver event. Cleanup retains every discovered alert id and
-polls its detail until management reports RESOLVED. A `cleaned` handoff means
-the primary canary also proves the exact persisted `alert-resolved` receiver
-event. For a `true` or `unknown` handoff, the independent cleanup-only finalizer
-reconstructs both keys for attempts 1 through the current attempt, up to the
-explicit 20-attempt safety bound. It submits RESOLVE throughout a bounded
-settling window, performs terminal discovery, and uses a reserved cleanup
-window to verify every discovered id as RESOLVED. It never reads receiver
-configuration or reconciles the action. The command supports `--dry-run`,
+use attempt-specific keys derived from the workflow run id and producer run
+attempt, distinct from production monitor keys. Earlier main keys are swept
+through the current attempt and every discovered open alert is resolved with
+`PUT /api/alerts/{id}/resolve` then polled by that exact id until management
+reports RESOLVED. A blind same-key Event API RESOLVE is limited to an
+undiscovered current key. The main alert is discovered within the configured
+source using a report-time window whose upper bound follows successful Event API
+acceptance. It must remain PENDING or ACCEPTED at HIGH priority and have an
+exact persisted `alert-created` receiver event. A `cleaned` handoff means the
+primary canary also proves the exact persisted `alert-resolved` receiver event.
+For a `true` or `unknown` handoff, the independent cleanup-only finalizer uses
+the producer attempt for accepted-current proof and the running attempt as a
+sweep ceiling. It accepts GitHub's 1 through 50 attempt range, bounds work per
+attempt, performs terminal discovery, and verifies every retained id as
+RESOLVED. It never reads receiver configuration or reconciles the action. The
+command supports `--dry-run`,
 `--canary`, and `--finalize-canary`; unflagged live reconciliation is rejected
 because it has no recoverable run identity. The canary does not open the
 authenticated operator SSE stream.

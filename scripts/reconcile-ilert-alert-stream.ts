@@ -19,12 +19,10 @@ const CANARY_FINALIZER_DEADLINE_MS = 600_000;
 const CANARY_FINALIZER_DISCOVERY_DEADLINE_MS = 360_000;
 const CANARY_FINALIZER_DISCOVERY_RETRY_MS = 10_000;
 const CANARY_CLEANUP_ATTEMPTS = 4;
-const SOURCE_BINDING_CLEANUP_RESERVE_MS = 60_000;
 const ALERT_REPORT_TIME_SKEW_MS = 5_000;
-const MAX_CANARY_RUN_ATTEMPT = 20;
+const MAX_CANARY_RUN_ATTEMPT = 50;
 const FINALIZER_STABLE_EMPTY_SCANS = 2;
 const CANARY_KEY_PREFIX = "postil-ilert-webhook-canary";
-const SOURCE_BINDING_PROBE_PREFIX = "postil-ilert-source-binding";
 
 export const ALERT_TRIGGER_TYPES = [
   "alert-created",
@@ -86,6 +84,7 @@ interface FinalizerOptions {
   integrationKey: string;
   runId: string;
   runAttempt: string;
+  sweepAttempt?: string;
   sourceId: number;
   fetchFn?: Fetch;
   sleep?: Sleep;
@@ -101,11 +100,6 @@ export interface ReconcileResult {
 export function canaryAlertKey(runId: string, runAttempt: string): string {
   const identity = canaryRunIdentity(runId, runAttempt);
   return `${CANARY_KEY_PREFIX}-${identity.runId}-${identity.runAttempt}`;
-}
-
-export function sourceBindingProbeKey(runId: string, runAttempt: string): string {
-  const identity = canaryRunIdentity(runId, runAttempt);
-  return `${SOURCE_BINDING_PROBE_PREFIX}-${identity.runId}-${identity.runAttempt}`;
 }
 
 export function parseReceiverOrigin(value: string): string {
@@ -185,9 +179,10 @@ export async function reconcileIlertAlertAction(
   const deadline = { expiresAt: now() + RECONCILE_DEADLINE_MS, now };
   const receiverOrigin = parseReceiverOrigin(options.receiverOrigin);
   requireWebhookSecret(options.webhookSecret);
-  const source = await loadBoundAlertSource(
+  const source = await loadIntegrationBoundAlertSource(
     fetchFn,
     options.apiKey,
+    options.integrationKey,
     options.sourceId,
     deadline,
     sleep,
@@ -204,27 +199,7 @@ export async function reconcileIlertAlertAction(
     deadline,
     sleep,
   );
-  if (
-    actions.some((action) => {
-      const actionRelationIds = relationIds(action.alertSources);
-      return (
-        action.connectorType !== "webhook" ||
-        actionRelationIds === null ||
-        !sameSet(actionRelationIds, [options.sourceId])
-      );
-    })
-  ) {
-    throw new Error(
-      "A conflicting Postil alert action exists; refusing to change its type or source scope",
-    );
-  }
-  if (actions.length > 1) {
-    throw new Error(
-      "Multiple Postil webhook alert actions exist; refusing to choose or delete one",
-    );
-  }
-
-  const existing = actions[0];
+  const existing = reservedCandidate(actions, desired, options.sourceId);
   const operation: Operation = !existing
     ? "create"
     : equivalentAlertAction(existing, desired)
@@ -241,20 +216,6 @@ export async function reconcileIlertAlertAction(
     integrationKey: options.integrationKey,
     runAttempt: identity.runAttempt,
     runId: identity.runId,
-    sleep,
-    sourceId: options.sourceId,
-  });
-
-  // The Event API documents that an integration key routes events to its
-  // alert source. The management source resource deliberately does not expose
-  // that key, so prove the binding before mutating the action.
-  await verifyIntegrationBinding({
-    apiKey: options.apiKey,
-    cleanupDeadline: { expiresAt: deadline.expiresAt, now },
-    deadline: { expiresAt: deadline.expiresAt - SOURCE_BINDING_CLEANUP_RESERVE_MS, now },
-    fetchFn,
-    integrationKey: options.integrationKey,
-    key: sourceBindingProbeKey(identity.runId, String(identity.runAttempt)),
     sleep,
     sourceId: options.sourceId,
   });
@@ -288,6 +249,7 @@ export async function reconcileIlertAlertAction(
       desired,
       fetchFn,
       sleep,
+      sourceId: options.sourceId,
     });
   const resultId = actionId(result);
   if (id && resultId !== id) {
@@ -331,9 +293,10 @@ export async function verifyIlertWebhookCanary(
   };
   const receiverOrigin = parseReceiverOrigin(options.receiverOrigin);
   requireWebhookSecret(options.webhookSecret);
-  await loadBoundAlertSource(
+  await loadIntegrationBoundAlertSource(
     fetchFn,
     options.apiKey,
+    options.integrationKey,
     options.sourceId,
     primaryDeadline,
     sleep,
@@ -352,11 +315,10 @@ export async function verifyIlertWebhookCanary(
   let alertAttempted = false;
   let resolutionConfirmed = false;
   let created: CanaryObservation | undefined;
-  let submittedAt = startedAtMs;
+  let acceptedAt = startedAtMs;
   let primaryError: unknown;
   try {
     assertCleanupReserve(canaryDeadline);
-    submittedAt = now();
     const submittedOptions: WaitOptions = {
       apiKey: options.apiKey,
       deadline: primaryDeadline,
@@ -366,12 +328,12 @@ export async function verifyIlertWebhookCanary(
       receiverOrigin,
       sleep,
       sourceId: options.sourceId,
-      submittedAt,
+      acceptedAt,
       webhookSecret: options.webhookSecret,
     };
     alertAttempted = true;
     await options.onAlertAttempted?.();
-    await event(
+    acceptedAt = await event(
       fetchFn,
       options.integrationKey,
       "ALERT",
@@ -379,6 +341,7 @@ export async function verifyIlertWebhookCanary(
       primaryDeadline,
       sleep,
     );
+    submittedOptions.acceptedAt = acceptedAt;
     await options.onAlertSubmitted?.();
     created = await waitForCreatedDelivery(submittedOptions);
     await resolveAndStabilize(submittedOptions, created, canaryDeadline);
@@ -397,7 +360,7 @@ export async function verifyIlertWebhookCanary(
           key,
           receiverOrigin,
           sleep,
-          submittedAt,
+          acceptedAt,
           sourceId: options.sourceId,
           webhookSecret: options.webhookSecret,
         },
@@ -421,6 +384,8 @@ export async function finalizeIlertWebhookCanary(
   const sleep = options.sleep ?? Bun.sleep;
   const now = options.now ?? Date.now;
   const identity = canaryRunIdentity(options.runId, options.runAttempt);
+  const sweepAttempt = canaryRunIdentity(options.runId, options.sweepAttempt ?? options.runAttempt)
+    .runAttempt;
   const deadline: Deadline = {
     expiresAt: now() + CANARY_FINALIZER_DEADLINE_MS,
     now,
@@ -436,20 +401,28 @@ export async function finalizeIlertWebhookCanary(
     integrationKey: options.integrationKey,
     sleep,
   };
+  await loadIntegrationBoundAlertSource(
+    fetchFn,
+    options.apiKey,
+    options.integrationKey,
+    options.sourceId,
+    deadline,
+    sleep,
+  );
   const keys = deterministicCanaryKeys(
     identity.runId,
-    identity.runAttempt,
+    sweepAttempt,
     options.sourceId,
   );
   const handoff = options.alertSubmitted ?? "unknown";
-  const currentMain = keys.find((key) =>
-    key.kind === "main" && key.runAttempt === identity.runAttempt
-  )!;
+  const currentMain = keys.find((key) => key.runAttempt === identity.runAttempt);
+  if (!currentMain) {
+    throw new Error("iLert canary cleanup could not reconstruct the producer attempt");
+  }
   const currentWindow = handoff === "true"
     ? finalizerCurrentAttemptWindow(options.startedAt)
     : undefined;
 
-  await submitResolves(cleanup, keys);
   await finalizeDeterministicCanaryKeys(
     cleanup,
     keys,
@@ -472,7 +445,7 @@ interface WaitOptions extends CleanupOptions {
   key: string;
   receiverOrigin: string;
   sourceId: number;
-  submittedAt: number;
+  acceptedAt: number;
   webhookSecret: string;
 }
 
@@ -486,9 +459,8 @@ interface CanaryObservation {
 
 interface DeterministicCanaryKey {
   key: string;
-  kind: "main" | "probe";
   runAttempt: number;
-  sourceId?: number;
+  sourceId: number;
 }
 
 interface ReportTimeWindow {
@@ -502,14 +474,16 @@ async function cleanupAfterAlertAttempt(
 ): Promise<void> {
   let submissionError: unknown;
   try {
-    await event(
-      options.fetchFn,
-      options.integrationKey,
-      "RESOLVE",
-      options.key,
-      options.deadline,
-      options.sleep,
-    );
+    if (!created) {
+      await event(
+        options.fetchFn,
+        options.integrationKey,
+        "RESOLVE",
+        options.key,
+        options.deadline,
+        options.sleep,
+      );
+    }
   } catch (error) {
     submissionError = error;
   }
@@ -540,14 +514,7 @@ async function resolveAndStabilize(
   for (let attempt = 0; attempt < CANARY_CLEANUP_ATTEMPTS; attempt += 1) {
     assertBeforeDeadline(deadline);
     try {
-      await event(
-        options.fetchFn,
-        options.integrationKey,
-        "RESOLVE",
-        options.key,
-        deadline,
-        options.sleep,
-      );
+      await resolveAlertById(cleanupOptions, target.alertId);
       const observed = await observeAlertById(cleanupOptions, target);
       if (
         observed.status === "RESOLVED" &&
@@ -618,7 +585,7 @@ async function findSubmittedAlert(
     apiKey: options.apiKey,
     deadline: options.deadline,
     fetchFn: options.fetchFn,
-    ...submissionWindow(options.submittedAt),
+    ...submissionWindow(options.acceptedAt),
     key: options.key,
     sleep: options.sleep,
     sourceId: options.sourceId,
@@ -696,14 +663,7 @@ async function driveAlertToResolved(
   let lastError: unknown;
   for (let attempt = 0; attempt < CANARY_CLEANUP_ATTEMPTS; attempt += 1) {
     try {
-      await event(
-        options.fetchFn,
-        options.integrationKey,
-        "RESOLVE",
-        target.alertKey,
-        deadline,
-        options.sleep,
-      );
+      await resolveAlertById(options, target.alertId);
       const observed = await observeAlertById(options, target);
       if (observed.status === "RESOLVED") return;
     } catch (error) {
@@ -713,7 +673,7 @@ async function driveAlertToResolved(
       await options.sleep(Math.min(CANARY_CLEANUP_RETRY_MS, remaining(deadline)));
     }
   }
-  throw new Error(`iLert did not resolve canary alert ${target.alertId}`, {
+  throw new Error("iLert did not resolve the canary alert", {
     cause: lastError,
   });
 }
@@ -742,7 +702,7 @@ async function precleanPriorAttemptKeys(
     stableEmptyScans = discovered.complete && discovered.alerts.length === 0
       ? stableEmptyScans + 1
       : 0;
-    await submitResolves(options, keys);
+    await resolveKnownAlerts(options, targets);
     const observed = await observeKnownAlerts(options, targets);
     lastErrors = [...lastErrors, ...observed.errors];
     if (stableEmptyScans >= FINALIZER_STABLE_EMPTY_SCANS && observed.allResolved) {
@@ -768,6 +728,7 @@ async function finalizeDeterministicCanaryKeys(
 ): Promise<void> {
   const targets = new Map<string, CanaryObservation>();
   let currentAccountedFor = handoff !== "true";
+  let currentResolveSubmitted = false;
   let fatalError: unknown;
   let recentErrors: unknown[] = [];
 
@@ -807,12 +768,30 @@ async function finalizeDeterministicCanaryKeys(
         retainErrors([error]);
       }
     }
+    if (
+      !currentResolveSubmitted &&
+      ![...targets.values()].some((target) => target.alertKey === currentMain.key)
+    ) {
+      try {
+        await event(
+          options.fetchFn,
+          options.integrationKey,
+          "RESOLVE",
+          currentMain.key,
+          options.deadline,
+          options.sleep,
+        );
+        currentResolveSubmitted = true;
+      } catch (error) {
+        retainErrors([error]);
+      }
+    }
     return { complete: result.complete, open: result.alerts.length };
   };
 
   while (remaining(discoveryDeadline) > 0) {
     await discover();
-    retainErrors(await submitResolves(options, keys));
+    retainErrors(await resolveKnownAlerts(options, targets));
     retainErrors((await observeKnownAlerts(options, targets)).errors);
     const delay = Math.min(
       CANARY_FINALIZER_DISCOVERY_RETRY_MS,
@@ -823,7 +802,7 @@ async function finalizeDeterministicCanaryKeys(
   }
 
   const terminal = await discover();
-  retainErrors(await submitResolves(options, keys));
+  retainErrors(await resolveKnownAlerts(options, targets));
   let stableEmptyScans = terminal.complete && terminal.open === 0 ? 1 : 0;
 
   while (remaining(options.deadline) > 0) {
@@ -831,7 +810,7 @@ async function finalizeDeterministicCanaryKeys(
     stableEmptyScans = discovered.complete && discovered.open === 0
       ? stableEmptyScans + 1
       : 0;
-    retainErrors(await submitResolves(options, keys));
+    retainErrors(await resolveKnownAlerts(options, targets));
     const observed = await observeKnownAlerts(options, targets);
     retainErrors(observed.errors);
     if (
@@ -873,10 +852,7 @@ async function discoverOpenDeterministicAlerts(
 }> {
   const alerts: CanaryObservation[] = [];
   const errors: unknown[] = [];
-  const groups = [
-    keys.filter((key) => key.kind === "main"),
-    keys.filter((key) => key.kind === "probe"),
-  ];
+  const groups = [keys];
   for (const group of groups) {
     if (group.length === 0) continue;
     try {
@@ -924,25 +900,14 @@ async function observeKnownAlerts(
   return { allResolved, errors };
 }
 
-async function submitResolves(
+async function resolveKnownAlerts(
   options: CleanupOptions,
-  keys: readonly DeterministicCanaryKey[],
+  targets: ReadonlyMap<string, CanaryObservation>,
 ): Promise<unknown[]> {
   const errors: unknown[] = [];
-  for (const { key, kind } of keys) {
+  for (const target of targets.values()) {
     try {
-      await event(
-        options.fetchFn,
-        options.integrationKey,
-        "RESOLVE",
-        key,
-        options.deadline,
-        options.sleep,
-        undefined,
-        kind === "probe"
-          ? "Postil Event API source-binding probe"
-          : "Postil iLert webhook canary",
-      );
+      await resolveAlertById(options, target.alertId);
     } catch (error) {
       errors.push(error);
     }
@@ -966,13 +931,7 @@ function deterministicCanaryKeys(
   for (let runAttempt = 1; runAttempt <= throughAttempt; runAttempt += 1) {
     const attempt = String(runAttempt);
     keys.push({
-      key: sourceBindingProbeKey(runId, attempt),
-      kind: "probe",
-      runAttempt,
-    });
-    keys.push({
       key: canaryAlertKey(runId, attempt),
-      kind: "main",
       runAttempt,
       sourceId,
     });
@@ -980,10 +939,10 @@ function deterministicCanaryKeys(
   return keys;
 }
 
-function submissionWindow(submittedAt: number): ReportTimeWindow {
+function submissionWindow(acceptedAt: number): ReportTimeWindow {
   return {
-    from: reportTime(submittedAt - ALERT_REPORT_TIME_SKEW_MS),
-    until: reportTime(submittedAt + ALERT_REPORT_TIME_SKEW_MS),
+    from: reportTime(acceptedAt - ALERT_REPORT_TIME_SKEW_MS),
+    until: reportTime(acceptedAt + ALERT_REPORT_TIME_SKEW_MS),
   };
 }
 
@@ -1066,7 +1025,7 @@ async function event(
   sleep: Sleep,
   priority?: "HIGH" | "LOW",
   summary = "Postil iLert webhook canary",
-): Promise<void> {
+): Promise<number> {
   const response = await requestWithRetry(
     fetchFn,
     `${API_BASE}/events`,
@@ -1093,6 +1052,7 @@ async function event(
   if (!response.ok) {
     throw new Error(`iLert event request failed with HTTP ${response.status}`);
   }
+  return deadline.now();
 }
 
 async function management(
@@ -1102,6 +1062,7 @@ async function management(
   init: RequestInit,
   deadline: Deadline,
   sleep: Sleep,
+  sensitive = false,
 ): Promise<unknown> {
   const response = await requestWithRetry(
     fetchFn,
@@ -1123,130 +1084,23 @@ async function management(
   return parseJson(response);
 }
 
-interface IntegrationBindingOptions {
-  apiKey: string;
-  cleanupDeadline: Deadline;
-  deadline: Deadline;
-  fetchFn: Fetch;
-  integrationKey: string;
-  key: string;
-  sleep: Sleep;
-  sourceId: number;
-}
-
-async function verifyIntegrationBinding(
-  options: IntegrationBindingOptions,
+async function resolveAlertById(
+  options: CleanupOptions,
+  alertId: string,
 ): Promise<void> {
-  const submittedAt = options.deadline.now();
-  let alertAttempted = false;
-  let primaryError: unknown;
-  let probe: CanaryObservation | undefined;
-  try {
-    alertAttempted = true;
-    await event(
-      options.fetchFn,
-      options.integrationKey,
-      "ALERT",
-      options.key,
-      options.deadline,
-      options.sleep,
-      "LOW",
-      "Postil Event API source-binding probe",
-    );
-    probe = await waitForProbeAlert(
-      options,
-      submittedAt,
-      ["PENDING", "ACCEPTED"],
-    );
-    if (!probe) {
-      throw new Error("iLert did not expose the source-binding probe alert");
-    }
-    if (probe.sourceId !== options.sourceId) {
-      throw new Error("iLert Event API key does not route to the configured alert source");
-    }
-  } catch (error) {
-    primaryError = error;
-  }
-
-  if (alertAttempted) {
-    try {
-      await resolveProbeAlert(options, submittedAt, probe);
-    } catch (cleanupError) {
-      throw new AggregateError(
-        primaryError ? [primaryError, cleanupError] : [cleanupError],
-        "iLert Event API source-binding probe cleanup could not be verified",
-      );
-    }
-  }
-  if (primaryError) throw primaryError;
-}
-
-async function waitForProbeAlert(
-  options: IntegrationBindingOptions,
-  submittedAt: number,
-  states: readonly ("PENDING" | "ACCEPTED" | "RESOLVED")[],
-): Promise<CanaryObservation | undefined> {
-  for (let attempt = 0; attempt < CANARY_DISCOVERY_ATTEMPTS; attempt += 1) {
-    const matches = await findAlertsByKey({
-      apiKey: options.apiKey,
-      deadline: options.deadline,
-      fetchFn: options.fetchFn,
-      ...submissionWindow(submittedAt),
-      key: options.key,
-      sleep: options.sleep,
-      states,
-    });
-    if (matches.length === 1) {
-      return canaryObservation(matches[0]!, options.key);
-    }
-    if (matches.length > 1) {
-      throw new Error("iLert created multiple source-binding probe alerts");
-    }
-    if (attempt + 1 < CANARY_DISCOVERY_ATTEMPTS) {
-      await options.sleep(Math.min(CANARY_RETRY_MS, remaining(options.deadline)));
-    }
-  }
-  return undefined;
-}
-
-async function resolveProbeAlert(
-  options: IntegrationBindingOptions,
-  submittedAt: number,
-  observed: CanaryObservation | undefined,
-): Promise<void> {
-  try {
-    await event(
-      options.fetchFn,
-      options.integrationKey,
-      "RESOLVE",
-      options.key,
-      options.cleanupDeadline,
-      options.sleep,
-      undefined,
-      "Postil Event API source-binding probe",
-    );
-  } catch {
-    // Exact-ID stabilization below retries the resolve without abandoning cleanup.
-  }
-  const target = observed ?? await waitForProbeAlert(
-    { ...options, deadline: options.cleanupDeadline },
-    submittedAt,
-    ["PENDING", "ACCEPTED", "RESOLVED"],
-  );
-  if (!target) {
-    throw new Error("iLert could not identify the source-binding probe for cleanup");
-  }
-  await driveAlertToResolved(
+  const response = await requestWithRetry(
+    options.fetchFn,
+    `${API_BASE}/alerts/${encodeURIComponent(alertId)}/resolve`,
     {
-      apiKey: options.apiKey,
-      deadline: options.cleanupDeadline,
-      fetchFn: options.fetchFn,
-      integrationKey: options.integrationKey,
-      sleep: options.sleep,
+      method: "PUT",
+      headers: { accept: "application/json", authorization: `Bearer ${options.apiKey}` },
     },
-    target,
-    options.cleanupDeadline,
+    options.deadline,
+    options.sleep,
   );
+  if (response.status !== 200) {
+    throw new Error("iLert management alert resolution failed");
+  }
 }
 
 interface AlertKeyLookupOptions {
@@ -1318,6 +1172,7 @@ interface CreateAlertActionOptions {
   desired: Json;
   fetchFn: Fetch;
   sleep: Sleep;
+  sourceId: number;
 }
 
 async function createAlertActionSafely(
@@ -1342,15 +1197,35 @@ async function createAlertActionSafely(
       options.deadline,
       options.sleep,
     );
-    const equivalent = candidates.filter((candidate) =>
-      equivalentAlertAction(candidate, options.desired)
-    );
-    if (equivalent.length === 1) return equivalent[0]!;
+    const candidate = reservedCandidate(candidates, options.desired, options.sourceId);
+    if (candidate && equivalentAlertAction(candidate, options.desired)) return candidate;
     throw new Error(
       "iLert alert-action creation was ambiguous; refusing to submit a second POST",
-      { cause: error },
     );
   }
+}
+
+function reservedCandidate(
+  candidates: readonly Json[],
+  desired: Json,
+  sourceId: number,
+): Json | undefined {
+  if (candidates.some((action) => {
+    const actionRelationIds = relationIds(action.alertSources);
+    return action.connectorType !== "webhook" ||
+      actionRelationIds === null ||
+      !sameSet(actionRelationIds, [sourceId]);
+  })) {
+    throw new Error(
+      "A conflicting Postil alert action exists; refusing to change its type or source scope",
+    );
+  }
+  if (candidates.length > 1) {
+    throw new Error(
+      "Multiple Postil webhook alert actions exist; refusing to choose or delete one",
+    );
+  }
+  return candidates[0];
 }
 
 async function managementOnce(
@@ -1395,6 +1270,7 @@ async function requestWithRetry(
   init: RequestInit,
   deadline: Deadline,
   sleep: Sleep,
+  sensitive = false,
 ): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt < REQUEST_ATTEMPTS; attempt += 1) {
@@ -1416,6 +1292,7 @@ async function requestWithRetry(
       await sleep(Math.min(REQUEST_RETRY_MS * (attempt + 1), remaining(deadline)));
     }
   }
+  if (sensitive) throw new Error("Sensitive remote request failed after bounded retries");
   throw new Error("Remote request failed after bounded retries", { cause: lastError });
 }
 
@@ -1493,24 +1370,28 @@ async function loadCandidateActions(
   }));
 }
 
-async function loadBoundAlertSource(
+async function loadIntegrationBoundAlertSource(
   fetchFn: Fetch,
   apiKey: string,
+  integrationKey: string,
   sourceId: number,
   deadline: Deadline,
   sleep: Sleep,
 ): Promise<Json> {
-  return alertSource(
-    await management(
+  try {
+    const response = await requestWithRetry(
       fetchFn,
-      apiKey,
-      `/alert-sources/${sourceId}`,
-      {},
+      `${API_BASE}/alert-sources/${encodeURIComponent(integrationKey)}`,
+      { headers: { accept: "application/json", authorization: `Bearer ${apiKey}` } },
       deadline,
       sleep,
-    ),
-    sourceId,
-  );
+      true,
+    );
+    if (response.status !== 200) throw new Error("binding request failed");
+    return alertSource(await parseJson(response), sourceId);
+  } catch {
+    throw new Error("iLert integration binding validation failed");
+  }
 }
 
 function alertSource(
@@ -1518,14 +1399,10 @@ function alertSource(
   expectedId: number,
 ): Json {
   const source = requireObject(value, "iLert returned an invalid alert source");
-  const policy = object(source.escalationPolicy);
   const id = positiveNumber(source.id);
   if (
     id !== expectedId ||
-    !nonempty(source.name) ||
-    source.integrationType !== "API" ||
-    !nonempty(policy?.name) ||
-    !Array.isArray(policy?.escalationRules)
+    source.integrationType !== "API"
   ) {
     throw new Error("iLert alert source does not match the configured identity");
   }
@@ -1760,6 +1637,7 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
       integrationKey: environment(values, "ILERT_INTEGRATION_KEY"),
       now: options.now,
       runAttempt: environment(values, "POSTIL_ILERT_CANARY_RUN_ATTEMPT"),
+      sweepAttempt: values.POSTIL_ILERT_CANARY_SWEEP_ATTEMPT,
       runId: environment(values, "POSTIL_ILERT_CANARY_RUN_ID"),
       sleep: options.sleep,
       sourceId: requiredSourceId(values),
@@ -1790,7 +1668,7 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     ? new Date((options.now ?? Date.now)()).toISOString()
     : undefined;
   if (canary) {
-    await recordCanaryAlertSubmission(values, "unknown", startedAt);
+    await recordCanaryAlertSubmission(values, "unknown", startedAt, runAttempt);
   }
   const result = await reconcileIlertAlertAction({
     ...shared,
@@ -1804,10 +1682,10 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     try {
       await verifyIlertWebhookCanary({
         ...shared,
-        onAlertAttempted: () => recordCanaryAlertSubmission(values, "unknown"),
+        onAlertAttempted: () => recordCanaryAlertSubmission(values, "unknown", startedAt, runAttempt),
         onAlertSubmitted: async () => {
           alertAccepted = true;
-          await recordCanaryAlertSubmission(values, "true");
+          await recordCanaryAlertSubmission(values, "true", startedAt, runAttempt);
         },
         runAttempt: runAttempt!,
         runId: runId!,
@@ -1817,10 +1695,12 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
       await recordCanaryAlertSubmission(
         values,
         alertAccepted ? "true" : "unknown",
+        startedAt,
+        runAttempt,
       );
       throw error;
     }
-    await recordCanaryAlertSubmission(values, "cleaned");
+    await recordCanaryAlertSubmission(values, "cleaned", startedAt, runAttempt);
     log("Postil persisted the iLert canary create and resolve webhooks");
   }
 }
@@ -1847,12 +1727,13 @@ async function recordCanaryAlertSubmission(
   values: Record<string, string | undefined>,
   submitted: CanaryHandoff,
   startedAt?: string,
+  producerAttempt?: string,
 ): Promise<void> {
   const output = values.GITHUB_OUTPUT;
   if (!output) return;
   await appendFile(
     output,
-    `alert_submitted=${submitted}\n${startedAt ? `started_at=${startedAt}\n` : ""}`,
+    `alert_submitted=${submitted}\n${startedAt ? `started_at=${startedAt}\n` : ""}${producerAttempt ? `producer_attempt=${producerAttempt}\n` : ""}`,
     "utf8",
   );
 }

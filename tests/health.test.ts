@@ -231,10 +231,10 @@ describe("production monitor workflow", () => {
       "HIGH-priority production test alert that can invoke the escalation path",
     );
     expect(architecture).toContain(
-      "A `cleaned` handoff means\nthe primary canary also proves the exact persisted `alert-resolved` receiver\nevent",
+      "A `cleaned` handoff means the\nprimary canary also proves the exact persisted `alert-resolved` receiver event.",
     );
     expect(architecture).toContain(
-      "independent cleanup-only finalizer\nreconstructs both keys for attempts 1 through the current attempt",
+      "independent cleanup-only finalizer uses\nthe producer attempt for accepted-current proof and the running attempt as a\nsweep ceiling.",
     );
     expect(source).toContain(
       "primary canary already proved exact persisted\n    # receiver create and resolve events",
@@ -252,8 +252,10 @@ describe("production monitor workflow", () => {
     expect(alertStream?.if).toContain("inputs.reconcile_alert_stream == true");
     expect(alertStream?.if).toContain("needs.smoke.result == 'success'");
     expect(alertStream?.if).toContain("needs.release-recovery.result == 'success'");
+    expect(alertStream?.if).toContain("github.ref == 'refs/heads/main'");
     expect(alertStream?.outputs).toMatchObject({
       "alert-submitted": "${{ steps.canary.outputs.alert_submitted }}",
+      "producer-attempt": "${{ steps.canary.outputs.producer_attempt }}",
       "started-at": "${{ steps.canary.outputs.started_at }}",
     });
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
@@ -282,6 +284,7 @@ describe("production monitor workflow", () => {
     expect(finalizer?.name).toBe("Finalize iLert webhook canary cleanup");
     expect(finalizer?.if).toContain("inputs.reconcile_alert_stream == true");
     expect(finalizer?.if).toContain("needs.alert-stream.result != 'skipped'");
+    expect(finalizer?.if).toContain("github.ref == 'refs/heads/main'");
     for (const [result, runs] of [
       ["skipped", false],
       ["failure", true],
@@ -298,11 +301,17 @@ describe("production monitor workflow", () => {
     )?.env).toMatchObject({
       POSTIL_ILERT_CANARY_ALERT_SUBMITTED:
         "${{ needs.alert-stream.outputs.alert-submitted }}",
-      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT:
+        "${{ needs.alert-stream.outputs.producer-attempt }}",
+      POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
       POSTIL_ILERT_CANARY_STARTED_AT:
         "${{ needs.alert-stream.outputs.started-at }}",
     });
+    for (const job of [alertStream, finalizer]) {
+      expect(job?.steps?.find((step) => step.uses?.startsWith("actions/checkout@"))?.with)
+        .toMatchObject({ ref: "${{ github.sha }}" });
+    }
     const expectScopedSecretLoads = (
       job: typeof alertStream,
       expectedSecrets: string[],
