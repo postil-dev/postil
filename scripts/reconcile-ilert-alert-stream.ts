@@ -399,7 +399,7 @@ async function waitForCreatedDelivery(
       options,
       options.preexistingAlertIds ?? new Set(),
     );
-    if (observed && observed.status === "PENDING" && observed.deliveries.count >= 1) {
+    if (observed && observed.status === "PENDING" && observed.deliveries.ids.size >= 1) {
       return observed;
     }
     if (attempt + 1 < CANARY_ATTEMPTS) {
@@ -450,28 +450,43 @@ async function observeCanaryAlert(
   if (actions.some((item) => !object(item))) {
     throw new Error("iLert returned invalid action history during the canary");
   }
-  const history = actions
-    .filter((item) => opaqueId(object(item)?.alertActionId) === options.actionId)
-    .flatMap((item) => {
-      const value = object(item)?.history;
-      return Array.isArray(value) ? value : [];
-    })
-    .filter((item) => object(item)?.success === true);
-  const deliveryIds = new Set(
-    history.flatMap((item) => {
-      const historyId = opaqueId(object(item)?.id);
-      return historyId ? [historyId] : [];
-    }),
-  );
+  const deliveryIds = successfulHistoryDeliveryIds(actions, id, options.actionId);
   return {
     alertId: id,
     deliveries: {
-      count: history.length,
       ids: deliveryIds,
-      hasCompleteUniqueIds: deliveryIds.size === history.length,
     },
     status: alert?.status,
   };
+}
+
+function successfulHistoryDeliveryIds(
+  actions: unknown[],
+  alertId: string,
+  actionId: string,
+): Set<string> {
+  const deliveryIds = new Set<string>();
+  for (const action of actions) {
+    const record = object(action);
+    const history = record?.history;
+    if (!Array.isArray(history)) continue;
+    for (const value of history) {
+      const entry = object(value);
+      if (entry?.success !== true) continue;
+      const historyId = opaqueId(entry.id);
+      if (
+        !historyId ||
+        deliveryIds.has(historyId) ||
+        opaqueId(record?.alertActionId) !== actionId ||
+        positiveId(entry.alertId) !== alertId ||
+        opaqueId(entry.alertActionId) !== actionId
+      ) {
+        throw new Error("iLert returned invalid action history during the canary");
+      }
+      deliveryIds.add(historyId);
+    }
+  }
+  return deliveryIds;
 }
 
 function canaryAlertId(alert: Json): string {
@@ -481,9 +496,7 @@ function canaryAlertId(alert: Json): string {
 }
 
 interface DeliveryObservation {
-  count: number;
   ids: ReadonlySet<string>;
-  hasCompleteUniqueIds: boolean;
 }
 
 interface CanaryObservation {
@@ -496,18 +509,8 @@ function deliveredAfter(
   observed: CanaryObservation,
   baseline: CanaryObservation,
 ): boolean {
-  if (observed.alertId !== baseline.alertId) return observed.deliveries.count >= 1;
-  if (observed.deliveries.count <= baseline.deliveries.count) return false;
-  // The iLert history contract provides an optional entry id but no delivery
-  // timestamp. When every successful entry has a distinct id, require a new
-  // one as well as the append-only count increase.
-  if (
-    baseline.deliveries.hasCompleteUniqueIds &&
-    observed.deliveries.hasCompleteUniqueIds
-  ) {
-    return [...observed.deliveries.ids].some((id) => !baseline.deliveries.ids.has(id));
-  }
-  return true;
+  if (observed.alertId !== baseline.alertId) return observed.deliveries.ids.size >= 1;
+  return [...observed.deliveries.ids].some((id) => !baseline.deliveries.ids.has(id));
 }
 
 async function findCanaryAlerts(options: WaitOptions): Promise<Json[]> {

@@ -15,6 +15,12 @@ const API_KEY = "test-api-key";
 const SOURCE_ID = 42;
 const WEBHOOK_SECRET = "test-webhook-secret-with-at-least-32-bytes";
 const CANARY_CONTEXT = { runId: "12345", runAttempt: "2" };
+type HistoryEntry = {
+  alertActionId: string;
+  alertId: number;
+  id: string;
+  success: true;
+};
 const SOURCE = {
   id: SOURCE_ID,
   name: "Postil test source",
@@ -271,7 +277,7 @@ describe("iLert alert-stream reconciliation", () => {
     }
   });
 
-  test("uses a deterministic run-attempt canary key and stabilizes resolution", async () => {
+  test("accepts a valid new exact-match history record and stabilizes resolution", async () => {
     const service = canaryService();
     await verifyIlertAlertStreamCanary({
       actionId: "72",
@@ -338,6 +344,96 @@ describe("iLert alert-stream reconciliation", () => {
         sleep: async () => undefined,
       }),
     ).rejects.toThrow("did not confirm successful Postil webhook delivery");
+  });
+
+  test("fails closed on a successful history record for another alert", async () => {
+    const service = canaryService({
+      existing: true,
+      historyEntry: (entry) => ({ ...entry, alertId: 100 }),
+    });
+    await expect(
+      finalizeIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("invalid action history");
+  });
+
+  test("fails closed on a successful history record for another action", async () => {
+    const service = canaryService({
+      existing: true,
+      historyEntry: (entry) => ({ ...entry, alertActionId: "73" }),
+    });
+    await expect(
+      finalizeIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("invalid action history");
+  });
+
+  test("fails closed on successful history records missing required identities", async () => {
+    const missingIdentity = [
+      ({ id: _id, ...entry }: HistoryEntry) => entry,
+      ({ alertId: _alertId, ...entry }: HistoryEntry) => entry,
+      ({ alertActionId: _alertActionId, ...entry }: HistoryEntry) => entry,
+    ];
+    for (const historyEntry of missingIdentity) {
+      const service = canaryService({ existing: true, historyEntry });
+      await expect(
+        finalizeIlertAlertStreamCanary({
+          actionId: "72",
+          apiKey: API_KEY,
+          integrationKey: "test-integration-key",
+          ...CANARY_CONTEXT,
+          fetchFn: service.fetchFn,
+          sleep: async () => undefined,
+        }),
+      ).rejects.toThrow("invalid action history");
+    }
+  });
+
+  test("fails closed on a successful history record with a malformed identity", async () => {
+    const service = canaryService({
+      existing: true,
+      historyEntry: (entry) => ({ ...entry, id: "malformed history identity" }),
+    });
+    await expect(
+      finalizeIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("invalid action history");
+  });
+
+  test("fails closed when successful history reuses an identity", async () => {
+    const service = canaryService({
+      existing: true,
+      deliveries: 2,
+      historyEntry: (entry) => ({ ...entry, id: "reused-history-id" }),
+    });
+    await expect(
+      finalizeIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        ...CANARY_CONTEXT,
+        fetchFn: service.fetchFn,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow("invalid action history");
   });
 
   test("selects a new alert ID when the current records are reordered", async () => {
@@ -518,6 +614,7 @@ function canaryService(options: {
   cleanupDeliveryFails?: boolean;
   ambiguousAlert?: boolean;
   delayedPrecleanResolve?: boolean;
+  historyEntry?: (entry: HistoryEntry) => unknown;
 } = {}) {
   const events: Array<{ alertKey: string; eventType: string }> = [];
   const alerts: Array<{
@@ -576,10 +673,19 @@ function canaryService(options: {
       if (!alert) throw new Error(`unknown alert: ${request.url}`);
       return Response.json({
         alertActionId: 72,
-        history: Array.from({ length: alert.deliveries }, (_, index) => ({
-          id: `delivery-${index + 1}`,
-          success: true,
-        })),
+        history: Array.from({ length: alert.deliveries }, (_, index) =>
+          options.historyEntry?.({
+            alertActionId: "72",
+            alertId: alert.id,
+            id: `delivery-${index + 1}`,
+            success: true,
+          }) ?? {
+            alertActionId: "72",
+            alertId: alert.id,
+            id: `delivery-${index + 1}`,
+            success: true,
+          },
+        ),
       });
     }
     throw new Error(`unexpected request: ${request.method} ${request.url}`);
