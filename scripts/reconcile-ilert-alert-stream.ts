@@ -585,7 +585,7 @@ async function findSubmittedAlert(
     apiKey: options.apiKey,
     deadline: options.deadline,
     fetchFn: options.fetchFn,
-    ...submissionWindow(options.acceptedAt),
+    ...submissionWindow(options.acceptedAt, options.deadline.now()),
     key: options.key,
     sleep: options.sleep,
     sourceId: options.sourceId,
@@ -727,7 +727,7 @@ async function finalizeDeterministicCanaryKeys(
   currentWindow: ReportTimeWindow | undefined,
 ): Promise<void> {
   const targets = new Map<string, CanaryObservation>();
-  let currentAccountedFor = handoff !== "true";
+  let currentAccountedFor = false;
   let currentResolveSubmitted = false;
   let fatalError: unknown;
   let recentErrors: unknown[] = [];
@@ -782,6 +782,7 @@ async function finalizeDeterministicCanaryKeys(
           options.sleep,
         );
         currentResolveSubmitted = true;
+        if (handoff === "unknown") currentAccountedFor = true;
       } catch (error) {
         retainErrors([error]);
       }
@@ -791,8 +792,13 @@ async function finalizeDeterministicCanaryKeys(
 
   while (remaining(discoveryDeadline) > 0) {
     await discover();
-    retainErrors(await resolveKnownAlerts(options, targets));
-    retainErrors((await observeKnownAlerts(options, targets)).errors);
+    const resolved = await resolveKnownAlerts(options, targets);
+    retainErrors(resolved.errors);
+    const observed = await observeKnownAlerts(options, targets);
+    retainErrors(observed.errors);
+    if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
+      currentAccountedFor = true;
+    }
     const delay = Math.min(
       CANARY_FINALIZER_DISCOVERY_RETRY_MS,
       remaining(discoveryDeadline),
@@ -802,7 +808,8 @@ async function finalizeDeterministicCanaryKeys(
   }
 
   const terminal = await discover();
-  retainErrors(await resolveKnownAlerts(options, targets));
+  const terminalResolved = await resolveKnownAlerts(options, targets);
+  retainErrors(terminalResolved.errors);
   let stableEmptyScans = terminal.complete && terminal.open === 0 ? 1 : 0;
 
   while (remaining(options.deadline) > 0) {
@@ -810,9 +817,13 @@ async function finalizeDeterministicCanaryKeys(
     stableEmptyScans = discovered.complete && discovered.open === 0
       ? stableEmptyScans + 1
       : 0;
-    retainErrors(await resolveKnownAlerts(options, targets));
+    const resolved = await resolveKnownAlerts(options, targets);
+    retainErrors(resolved.errors);
     const observed = await observeKnownAlerts(options, targets);
     retainErrors(observed.errors);
+    if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
+      currentAccountedFor = true;
+    }
     if (
       !fatalError &&
       currentAccountedFor &&
@@ -884,35 +895,50 @@ async function discoverOpenDeterministicAlerts(
 async function observeKnownAlerts(
   options: CleanupOptions,
   targets: Map<string, CanaryObservation>,
-): Promise<{ allResolved: boolean; errors: unknown[] }> {
+): Promise<{ allResolved: boolean; errors: unknown[]; resolvedIds: Set<string> }> {
   const errors: unknown[] = [];
+  const resolvedIds = new Set<string>();
   let allResolved = true;
   for (const [alertId, target] of targets) {
     try {
       const observed = await observeAlertById(options, target);
       targets.set(alertId, observed);
-      if (observed.status !== "RESOLVED") allResolved = false;
+      if (observed.status === "RESOLVED") resolvedIds.add(alertId);
+      else allResolved = false;
     } catch (error) {
       errors.push(error);
       allResolved = false;
     }
   }
-  return { allResolved, errors };
+  return { allResolved, errors, resolvedIds };
 }
 
 async function resolveKnownAlerts(
   options: CleanupOptions,
   targets: ReadonlyMap<string, CanaryObservation>,
-): Promise<unknown[]> {
+): Promise<{ errors: unknown[]; resolvedIds: Set<string> }> {
   const errors: unknown[] = [];
+  const resolvedIds = new Set<string>();
   for (const target of targets.values()) {
     try {
       await resolveAlertById(options, target.alertId);
+      resolvedIds.add(target.alertId);
     } catch (error) {
       errors.push(error);
     }
   }
-  return errors;
+  return { errors, resolvedIds };
+}
+
+function currentTargetResolved(
+  key: string,
+  targets: ReadonlyMap<string, CanaryObservation>,
+  resolved: { resolvedIds: ReadonlySet<string> },
+  observed: { resolvedIds: ReadonlySet<string> },
+): boolean {
+  return [...resolved.resolvedIds].some((alertId) =>
+    targets.get(alertId)?.alertKey === key && observed.resolvedIds.has(alertId)
+  );
 }
 
 function rememberTargets(
@@ -939,10 +965,10 @@ function deterministicCanaryKeys(
   return keys;
 }
 
-function submissionWindow(acceptedAt: number): ReportTimeWindow {
+function submissionWindow(acceptedAt: number, now: number): ReportTimeWindow {
   return {
     from: reportTime(acceptedAt - ALERT_REPORT_TIME_SKEW_MS),
-    until: reportTime(acceptedAt + ALERT_REPORT_TIME_SKEW_MS),
+    until: reportTime(Math.max(acceptedAt, now) + ALERT_REPORT_TIME_SKEW_MS),
   };
 }
 

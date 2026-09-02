@@ -552,19 +552,24 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
-  test("uses successful Event API acceptance time after a bounded 429 retry for discovery", async () => {
+  test("keeps discovery open for a canary report time 16 seconds after a 202", async () => {
     let currentTime = 0;
-    const service = canaryService({ alertRetryAfter: "10" });
+    const service = canaryService({
+      alertReportTime: new Date(16_000).toISOString(),
+      alertRetryAfter: "10",
+    });
     await verifyIlertWebhookCanary({
       ...canaryOptions,
       fetchFn: service.fetchFn,
       now: () => currentTime,
       sleep: async (milliseconds) => { currentTime += milliseconds; },
     });
-    const discovery = service.requests.find((request) => request.url.includes("/alerts?"));
-    expect(discovery).toBeDefined();
-    expect(Date.parse(new URL(discovery!.url).searchParams.get("until")!))
-      .toBeGreaterThanOrEqual(15_000);
+    const discoveryWindows = service.requests
+      .filter((request) => request.url.includes("/alerts?"))
+      .map((request) => Date.parse(new URL(request.url).searchParams.get("until")!));
+    expect(discoveryWindows).toContain(15_000);
+    expect(discoveryWindows.some((until) => until >= 16_000)).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
   test("rejects a LOW management result for the HIGH canary", async () => {
@@ -663,13 +668,45 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
   });
 
-  test("unknown finalizer accepts stable no-open evidence only after full discovery", async () => {
+  test("unknown finalizer accepts a same-key Event API RESOLVE only after full discovery", async () => {
     const service = canaryService();
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
     });
     expect(service.alertListRequests).toBeGreaterThanOrEqual(38);
+    expect(service.events).toEqual([{
+      alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+      eventType: "RESOLVE",
+    }]);
+  });
+
+  test("unknown finalizer fails closed when every Event API RESOLVE is rejected and management stays empty", async () => {
+    const service = canaryService({ eventResolveAlwaysFails: true });
+    await expect(finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      fetchFn: service.fetchFn,
+    })).rejects.toThrow("could not account for the accepted current-attempt submission");
+    expect(service.events.filter((event) => event.eventType === "RESOLVE").length).toBeGreaterThan(1);
+    expect(service.statuses).toEqual([]);
+  });
+
+  test("unknown finalizer recovers through a discovered ID when Event API RESOLVEs fail", async () => {
+    const service = canaryService({
+      deferredListings: 1,
+      eventResolveAlwaysFails: true,
+      existing: true,
+      staleOpenReadsAfterResolve: 2,
+    });
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      fetchFn: service.fetchFn,
+    });
+    expect(service.events.some((event) => event.eventType === "RESOLVE")).toBe(true);
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
+    )).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
   test("continues the finalizer after repeated management 503 responses", async () => {
@@ -816,6 +853,7 @@ function finalizerOptions() {
 }
 
 function canaryService(options: {
+  alertReportTime?: string;
   alertRetryAfter?: string;
   deferredListings?: number;
   detailPendingReads?: number;
@@ -823,6 +861,7 @@ function canaryService(options: {
   dropAlertCreation?: boolean;
   dropResolvedReceiverEvent?: boolean;
   emptyListsAfterResolve?: boolean;
+  eventResolveAlwaysFails?: boolean;
   existing?: boolean;
   failAlertListings?: number;
   initialAlerts?: Array<{
@@ -849,6 +888,7 @@ function canaryService(options: {
     createdReceived: boolean;
     id: number;
     priority: "HIGH" | "LOW";
+    reportTime?: string;
     resolvedReceived: boolean;
     sourceId: number;
     status: "PENDING" | "ACCEPTED" | "RESOLVED";
@@ -858,6 +898,7 @@ function canaryService(options: {
         createdReceived: true,
         id: alert.id,
         priority: alert.priority ?? "HIGH",
+        reportTime: undefined,
         resolvedReceived: alert.status === "RESOLVED",
         sourceId: alert.sourceId ?? SOURCE_ID,
         status: alert.status,
@@ -868,6 +909,7 @@ function canaryService(options: {
         createdReceived: true,
         id: 98,
         priority: options.mainPriority ?? "HIGH",
+        reportTime: undefined,
         resolvedReceived: options.status === "RESOLVED",
         sourceId: SOURCE_ID,
         status: options.status ?? "PENDING",
@@ -917,12 +959,14 @@ function canaryService(options: {
           createdReceived: true,
           id,
           priority: options.mainPriority ?? body.priority ?? "HIGH",
+          reportTime: options.alertReportTime,
           resolvedReceived: false,
           sourceId: SOURCE_ID,
           status: options.status === "ACCEPTED" ? "ACCEPTED" : "PENDING",
         });
       }
       if (body.eventType === "RESOLVE") {
+        if (options.eventResolveAlwaysFails) return new Response(null, { status: 503 });
         if (resolveRequestFailures > 0) {
           resolveRequestFailures -= 1;
           return new Response(null, { status: 503 });
@@ -987,6 +1031,7 @@ function canaryService(options: {
           createdReceived: true,
           id: 199,
           priority: "HIGH",
+          reportTime: undefined,
           resolvedReceived: false,
           sourceId: SOURCE_ID,
           status: "PENDING",
@@ -996,10 +1041,13 @@ function canaryService(options: {
       if (stale) staleOpenReadsAfterResolve -= 1;
       const query = new URL(request.url).searchParams;
       const states = query.getAll("states");
+      const from = query.get("from");
       const source = query.get("sources");
+      const until = query.get("until");
       return Response.json(alerts.flatMap((alert) => {
         const status = stale && alert.status === "RESOLVED" ? "PENDING" : alert.status;
         if (options.emptyListsAfterResolve && alert.status === "RESOLVED") return [];
+        if (alert.reportTime && ((from && alert.reportTime < from) || (until && alert.reportTime > until))) return [];
         if (source && source !== String(alert.sourceId)) return [];
         if (states.length > 0 && !states.includes(status)) return [];
         return [{
