@@ -209,7 +209,9 @@ describe("production monitor workflow", () => {
     };
     const alertStream = workflow.jobs["alert-stream"];
     expect(alertStream?.needs).toBe("smoke");
+    expect(alertStream?.if).toContain("always()");
     expect(alertStream?.if).toContain("inputs.test_alert == true");
+    expect(alertStream?.if).toContain("needs.smoke.result == 'success'");
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
       "Preview iLert alert-stream reconciliation",
     );

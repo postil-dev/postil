@@ -538,7 +538,9 @@ jobs:
   alert-stream:
     name: Verify operator alert stream
     needs: smoke
-    if: ${{ inputs.test_alert == true }}
+    # Manual canaries run only after smoke succeeds. Production failures use
+    # the stable alert key owned by the notify and resolve jobs below.
+    if: ${{ always() && inputs.test_alert == true && needs.smoke.result == 'success' }}
     permissions:
       contents: read
       id-token: write

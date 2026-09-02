@@ -269,6 +269,33 @@ describe("iLert alert-stream reconciliation", () => {
     expect(eventBodies.map((body) => body.eventType)).toEqual(["ALERT", "RESOLVE"]);
     expect(eventBodies[0]!.alertKey).toBe(eventBodies[1]!.alertKey);
   });
+
+  test("resolves an accepted canary when delivery verification fails", async () => {
+    const eventTypes: unknown[] = [];
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST" && request.url.endsWith("/events")) {
+        const body = (await request.json()) as Record<string, unknown>;
+        eventTypes.push(body.eventType);
+        return new Response(null, { status: 202 });
+      }
+      if (request.url.includes("/alerts?")) return Response.json([]);
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await expect(
+      verifyIlertAlertStreamCanary({
+        actionId: "72",
+        apiKey: API_KEY,
+        integrationKey: "test-integration-key",
+        fetchFn,
+        sleep: async () => undefined,
+        runId: "100",
+        runAttempt: "2",
+      }),
+    ).rejects.toThrow("did not confirm successful Postil webhook delivery");
+    expect(eventTypes).toEqual(["ALERT", "RESOLVE"]);
+  });
 });
 
 function fakeFetch(requests: Request[], responses: Response[]): Fetch {
