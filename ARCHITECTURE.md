@@ -484,9 +484,10 @@ events with the `ILERT_INTEGRATION_KEY` Event API credential. Its
 whose action is reconciled. `POSTIL_ILERT_WEBHOOK_SECRET` supplies the receiver
 password embedded as URL-encoded HTTP Basic credentials in that action. Manual
 canaries use a workflow-serialized stable key distinct from production monitor
-keys. Each canary pre-cleans that key, verifies webhook delivery, repeatedly
-resolves it during a bounded stabilization interval, and a separate finalizer
-repeats the same resolution verification after the main canary job completes.
+keys. Each canary pre-cleans that key, verifies webhook delivery, and resolves
+it during a bounded stabilization interval. A separate finalizer confirms an
+already resolved canary or, when it resolves an open canary, requires a newer
+successful delivery during stabilization.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the

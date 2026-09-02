@@ -84,12 +84,16 @@ export function desiredAlertAction(source: Json, secret: string): Json {
 export function equivalentAlertAction(actual: Json, desired: Json): boolean {
   const left = object(actual.params);
   const right = object(desired.params);
+  const actualRelationIds = relationIds(actual.alertSources);
+  const desiredRelationIds = relationIds(desired.alertSources);
   return (
     actual.name === desired.name &&
     actual.connectorType === desired.connectorType &&
     actual.triggerMode === desired.triggerMode &&
     sameSet(strings(actual.triggerTypes), strings(desired.triggerTypes)) &&
-    sameSet(relationIds(actual.alertSources), relationIds(desired.alertSources)) &&
+    actualRelationIds !== null &&
+    desiredRelationIds !== null &&
+    sameSet(actualRelationIds, desiredRelationIds) &&
     left?.webhookUrl === right?.webhookUrl &&
     hasNoHeaders(left?.headers) &&
     hasNoHeaders(right?.headers)
@@ -136,9 +140,14 @@ export async function reconcileIlertAlertAction(
   });
   if (
     candidates.some(
-      (action) =>
-        action.connectorType !== "webhook" ||
-        !sameSet(relationIds(action.alertSources), [options.sourceId]),
+      (action) => {
+        const actionRelationIds = relationIds(action.alertSources);
+        return (
+          action.connectorType !== "webhook" ||
+          actionRelationIds === null ||
+          !sameSet(actionRelationIds, [options.sourceId])
+        );
+      },
     )
   ) {
     throw new Error(
@@ -688,13 +697,15 @@ function positiveNumber(value: unknown): number | null {
     : null;
 }
 
-function relationIds(value: unknown): number[] {
-  return Array.isArray(value)
-    ? value.flatMap((item) => {
-        const id = positiveNumber(object(item)?.id);
-        return id ? [id] : [];
-      })
-    : [];
+function relationIds(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids: number[] = [];
+  for (const item of value) {
+    const id = positiveNumber(object(item)?.id);
+    if (!id) return null;
+    ids.push(id);
+  }
+  return ids;
 }
 
 function hasNoHeaders(value: unknown): boolean {

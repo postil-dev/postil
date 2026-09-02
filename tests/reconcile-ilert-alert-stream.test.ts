@@ -58,6 +58,20 @@ describe("iLert alert-stream reconciliation", () => {
     expect(equivalentAlertAction(actual, desired)).toBe(false);
   });
 
+  test("fails closed when a valid alert-source relation is mixed with a malformed relation", () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET);
+    const actual = structuredClone(desired) as Record<string, unknown>;
+    actual.alertSources = [SOURCE, { id: "not-a-positive-integer" }];
+    expect(equivalentAlertAction(actual, desired)).toBe(false);
+  });
+
+  test("fails closed when every alert-source relation is malformed", () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET);
+    const actual = structuredClone(desired) as Record<string, unknown>;
+    actual.alertSources = [{ id: 0 }];
+    expect(equivalentAlertAction(actual, desired)).toBe(false);
+  });
+
   test("dry-run reports create without mutating", async () => {
     const requests: Request[] = [];
     const result = await reconcileIlertAlertAction({
@@ -289,7 +303,7 @@ describe("iLert alert-stream reconciliation", () => {
     ))).toBe(true);
   });
 
-  test("finalizer reconstructs, resolves, and verifies the run-attempt canary key", async () => {
+  test("finalizer resolves an open run-attempt canary with newer delivery evidence", async () => {
     const service = canaryService({ existing: true, status: "PENDING", deliveries: 1 });
     await finalizeIlertAlertStreamCanary({
       actionId: "72",
