@@ -458,6 +458,12 @@ interface CanaryObservation {
   status: "PENDING" | "ACCEPTED" | "RESOLVED";
 }
 
+class InvalidCanaryAlertStatusError extends Error {
+  constructor() {
+    super("iLert returned a canary alert with an invalid status");
+  }
+}
+
 interface DeterministicCanaryKey {
   key: string;
   runAttempt: number;
@@ -626,16 +632,16 @@ function canaryObservation(
   expectedKey: string,
   expectedSourceId?: number,
 ): CanaryObservation {
-  const status = alert.status;
-  if (status !== "PENDING" && status !== "ACCEPTED" && status !== "RESOLVED") {
-    throw new Error("iLert returned a canary alert with an invalid status");
-  }
   if (alert.alertKey !== expectedKey) {
     throw new Error("iLert returned a canary alert with a different key");
   }
   const sourceId = alertSourceId(alert);
   if (!sourceId || (expectedSourceId !== undefined && sourceId !== expectedSourceId)) {
     throw new Error("iLert returned a canary alert from a different source");
+  }
+  const status = alert.status;
+  if (status !== "PENDING" && status !== "ACCEPTED" && status !== "RESOLVED") {
+    throw new InvalidCanaryAlertStatusError();
   }
   const priority = alert.priority;
   if (priority !== "HIGH" && priority !== "LOW") {
@@ -766,6 +772,7 @@ async function finalizeDeterministicCanaryKeys(
           currentAccountedFor = true;
         }
       } catch (error) {
+        if (error instanceof InvalidCanaryAlertStatusError) throw error;
         retainErrors([error]);
       }
     }
@@ -887,6 +894,7 @@ async function discoverOpenDeterministicAlerts(
         alerts.push(canaryObservation(alert, key.key, key.sourceId));
       }
     } catch (error) {
+      if (error instanceof InvalidCanaryAlertStatusError) throw error;
       errors.push(error);
     }
   }

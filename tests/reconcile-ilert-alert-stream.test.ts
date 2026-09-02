@@ -944,23 +944,33 @@ describe("iLert webhook canary", () => {
 
   for (const status of ["UNKNOWN", undefined] as const) {
     test(`finalizer fails closed when a matching alert has ${status ?? "no"} status`, async () => {
-      const service = canaryService({ existing: true });
+      const service = canaryService({ existing: true, emptyListsAfterResolve: true });
+      let alertListings = 0;
       await expect(finalizeIlertWebhookCanary({
         ...finalizerOptions(),
+        alertSubmitted: "unknown",
         fetchFn: async (input, init) => {
           const request = new Request(input, init);
           if (request.url.includes("/alerts?")) {
-            return Response.json([{
-              alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
-              alertSource: { id: SOURCE_ID },
-              id: 98,
-              priority: "HIGH",
-              ...(status === undefined ? {} : { status }),
-            }]);
+            alertListings += 1;
+            if (alertListings === 1) return Response.json([]);
+            if (alertListings === 2) {
+              return Response.json([{
+                alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+                alertSource: { id: SOURCE_ID },
+                id: 98,
+                priority: "HIGH",
+                ...(status === undefined ? {} : { status }),
+              }]);
+            }
           }
           return service.fetchFn(input, init);
         },
-      })).rejects.toThrow("did not verify every discovered alert as RESOLVED");
+      })).rejects.toThrow("invalid status");
+      expect(service.events).toEqual([{
+        alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+        eventType: "RESOLVE",
+      }]);
       expect(service.statuses).toEqual(["RESOLVED"]);
     });
   }
