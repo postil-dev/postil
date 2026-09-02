@@ -175,6 +175,10 @@ jobs:
             echo "::error::Infisical did not provide DATABASE_URL."
             exit 1
           fi
+          if [[ -z "${POSTIL_ILERT_WEBHOOK_SECRET:-}" ]]; then
+            echo "::error::Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET."
+            exit 1
+          fi
           staged=""
           token="${POSTHOG_PROJECT_TOKEN:-${NEXT_PUBLIC_POSTHOG_KEY:-}}"
           if [[ -n "${token}" ]]; then

@@ -539,13 +539,13 @@ jobs:
 
   alert-stream:
     name: Reconcile and verify iLert webhook delivery
-    needs: smoke
+    needs: [smoke, release-recovery]
     outputs:
       alert-submitted: ${{ steps.canary.outputs.alert_submitted }}
     # Manual canaries run only after smoke succeeds; failed or cancelled
     # production checks must not emit a test page. Production failures use the
     # stable alert key owned by the notify and resolve jobs below.
-    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' }}
+    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' }}
     permissions:
       contents: read
       id-token: write
@@ -616,8 +616,8 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     # The finalizer has three minutes for setup, ten for bounded discovery and
-    # cleanup, and one minute of runner headroom. It never reconciles the action.
-    timeout-minutes: 14
+    # cleanup, and four minutes of runner headroom. It never reconciles the action.
+    timeout-minutes: 17
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -659,7 +659,7 @@ jobs:
           POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ needs.alert-stream.outputs.alert-submitted }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
           POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
-        run: timeout 10m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
+        run: timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
 
   # Alert delivery is owned by the external alerting service (ilert). The
   # platform and this workflow only report events; paging, escalation, and

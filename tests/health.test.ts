@@ -203,7 +203,7 @@ describe("production monitor workflow", () => {
         {
           if?: string;
           name?: string;
-          needs?: string;
+          needs?: string | string[];
           outputs?: Record<string, string>;
           "timeout-minutes"?: number;
           steps?: Array<{
@@ -230,12 +230,13 @@ describe("production monitor workflow", () => {
     expect(source).not.toContain("test_alert");
     expect(source).not.toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");
     const alertStream = workflow.jobs["alert-stream"];
-    expect(alertStream?.needs).toBe("smoke");
+    expect(alertStream?.needs).toEqual(["smoke", "release-recovery"]);
     expect(alertStream?.["timeout-minutes"]).toBe(24);
     expect(alertStream?.name).toBe("Reconcile and verify iLert webhook delivery");
     expect(alertStream?.if).toContain("always()");
     expect(alertStream?.if).toContain("inputs.reconcile_alert_stream == true");
     expect(alertStream?.if).toContain("needs.smoke.result == 'success'");
+    expect(alertStream?.if).toContain("needs.release-recovery.result == 'success'");
     expect(alertStream?.outputs).toMatchObject({
       "alert-submitted": "${{ steps.canary.outputs.alert_submitted }}",
     });
@@ -259,7 +260,7 @@ describe("production monitor workflow", () => {
     });
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
-    expect(finalizer?.["timeout-minutes"]).toBe(14);
+    expect(finalizer?.["timeout-minutes"]).toBe(17);
     expect(finalizer?.if).toContain("always()");
     expect(finalizer?.name).toBe("Finalize iLert webhook canary cleanup");
     expect(finalizer?.if).toContain("inputs.reconcile_alert_stream == true");
@@ -274,7 +275,7 @@ describe("production monitor workflow", () => {
     }
     expect(finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
-    )?.run).toContain("--finalize-canary");
+    )?.run).toContain("timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary");
     expect(finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
     )?.env).toMatchObject({
@@ -307,7 +308,7 @@ describe("production monitor workflow", () => {
     );
   });
 
-  test("deploy and reconciliation use one receiver-secret source", async () => {
+  test("deploy staging requires the receiver secret before any Fly mutation", async () => {
     const source = await readFile(
       new URL("../.github/workflows/deploy.yml", import.meta.url),
       "utf8",
@@ -326,7 +327,20 @@ describe("production monitor workflow", () => {
     const stage = workflow.jobs.deploy.steps.find(
       (step) => step.name === "Stage runtime secrets",
     );
-    expect(stage?.run).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    const stageRun = stage?.run ?? "";
+    expect(stageRun).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(stageRun).toContain("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.");
+    expect(stageRun.indexOf("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.")).toBeLessThan(
+      stageRun.indexOf("flyctl secrets import --stage"),
+    );
+    const staged = spawnSync("bash", ["-c", stageRun], {
+      encoding: "utf8",
+      env: { DATABASE_URL: "postgresql://test", NODE_ENV: "test" } as NodeJS.ProcessEnv,
+    });
+    expect(staged.status).toBe(1);
+    expect(staged.stdout).toContain(
+      "Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.",
+    );
     expect(stage?.env).not.toHaveProperty("POSTIL_ILERT_WEBHOOK_SECRET");
   });
 
