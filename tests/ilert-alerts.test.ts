@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
   configuredIlertWebhookSecret,
   formatIlertAlertSseEvent,
+  hasIlertAlertEvent,
   ILERT_WEBHOOK_MAX_BODY_BYTES,
   ILERT_WEBHOOK_USERNAME,
   ilertAlertStreamDatabaseUrl,
@@ -17,8 +18,24 @@ import {
 
 const ORIGINAL_WEBHOOK_SECRET = process.env.POSTIL_ILERT_WEBHOOK_SECRET;
 const TEST_WEBHOOK_SECRET = "test-ilert-webhook-password-32-bytes";
+let observationResult: () => Promise<Array<{ sequence: bigint }>> = async () => [];
+
+mock.module("@/lib/db", () => ({
+  getDb: () => ({
+    select: () => ({
+      from: () => ({
+        where: () => ({ limit: observationResult }),
+      }),
+    }),
+  }),
+}));
+
+mock.module("@/lib/server-observability", () => ({
+  reportOperationalFailure: () => undefined,
+}));
 
 afterEach(() => {
+  observationResult = async () => [];
   if (ORIGINAL_WEBHOOK_SECRET === undefined) {
     delete process.env.POSTIL_ILERT_WEBHOOK_SECRET;
   } else {
@@ -175,9 +192,77 @@ describe("iLert webhook input", () => {
       ),
     ).toHaveProperty("status", 413);
   });
+
+  test("the route preflights receiver credentials without reading alert state", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+
+    expect(await GET(new Request("https://postil.dev/api/webhooks/ilert"))).toHaveProperty(
+      "status",
+      401,
+    );
+    expect(await GET(new Request("https://postil.dev/api/webhooks/ilert", {
+      headers: { authorization: validAuthorization() },
+    }))).toHaveProperty("status", 204);
+    expect(await GET(new Request(
+      "https://postil.dev/api/webhooks/ilert?alertId=1&eventType=alert-comment-added&sourceId=2",
+      { headers: { authorization: validAuthorization() } },
+    ))).toHaveProperty("status", 400);
+  });
+
+  test("the route returns an authenticated exact receiver-event observation", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+    observationResult = async () => [{ sequence: 1n }];
+
+    const response = await GET(new Request(
+      "https://postil.dev/api/webhooks/ilert?alertId=12797430&eventType=alert-created&sourceId=2269078",
+      { headers: { authorization: validAuthorization() } },
+    ));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ received: true });
+  });
+
+  test("the route returns 503 when the receiver-event read fails", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+    observationResult = async () => {
+      throw new Error("database unavailable");
+    };
+
+    const response = await GET(new Request(
+      "https://postil.dev/api/webhooks/ilert?alertId=12797430&eventType=alert-resolved&sourceId=2269078",
+      { headers: { authorization: validAuthorization() } },
+    ));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(await response.json()).toEqual({ error: "webhook observation unavailable" });
+  });
 });
 
 describe("iLert operator stream protocol", () => {
+  test("checks exact alert, event type, and source persistence", async () => {
+    let selected = 0;
+    const db = {
+      select() {
+        selected += 1;
+        return {
+          from: () => ({
+            where: () => ({
+              limit: async () => selected === 1 ? [{ sequence: 1n }] : [],
+            }),
+          }),
+        };
+      },
+    } as never;
+    expect(await hasIlertAlertEvent(db, "12797430", "alert-resolved", 2269078n)).toBe(true);
+    expect(await hasIlertAlertEvent(db, "12797430", "alert-created", 2269078n)).toBe(false);
+  });
+
   test("stages the receiver secret and operator allowlist in managed deployments", async () => {
     const deploy = await readFile(
       join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
@@ -188,7 +273,7 @@ describe("iLert operator stream protocol", () => {
     )?.[1];
     expect(operatorSecrets).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
     expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
-    expect(deploy).toContain(
+    expect(deploy).not.toContain(
       "POSTIL_ILERT_WEBHOOK_SECRET: ${{ secrets.POSTIL_ILERT_WEBHOOK_SECRET }}",
     );
     expect(deploy).toContain(

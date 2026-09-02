@@ -277,6 +277,26 @@ export async function getIlertAlertEvent(
   return (rows[0] as StoredIlertAlertEvent | undefined) ?? null;
 }
 
+export async function hasIlertAlertEvent(
+  db: Database,
+  alertId: string,
+  eventType: "alert-created" | "alert-resolved",
+  alertSourceId: bigint,
+): Promise<boolean> {
+  const rows = await db
+    .select({ sequence: schema.ilertAlertEvents.sequence })
+    .from(schema.ilertAlertEvents)
+    .where(
+      and(
+        eq(schema.ilertAlertEvents.alertId, alertId),
+        eq(schema.ilertAlertEvents.eventType, eventType),
+        eq(schema.ilertAlertEvents.alertSourceId, alertSourceId),
+      ),
+    )
+    .limit(1);
+  return rows.length === 1;
+}
+
 /** Require a renewable CLI login and the separate operator allowlist. */
 export async function authorizeIlertAlertStream(
   db: Database,

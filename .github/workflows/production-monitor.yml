@@ -13,8 +13,8 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
-      test_alert:
-        description: Send a test alert after the production checks pass
+      reconcile_alert_stream:
+        description: Reconcile the iLert webhook action and run a receiver canary
         required: false
         type: boolean
         default: false
@@ -25,7 +25,7 @@ permissions:
 concurrency:
   # Deployment-completion monitors keep independent workflow owners, while
   # scheduled and manual checks serialize together. A manual canary therefore
-  # owns its run-attempt iLert key until its independent finalizer has run. Every
+  # owns its run-stable iLert key until its independent finalizer has run. Every
   # recovery attempt then joins the same bounded FIFO queue as deploys, so it
   # observes an idle managed fleet.
   group: ${{ github.event_name == 'workflow_run' && format('production-monitor-deploy-{0}', github.event.workflow_run.id) || 'production-monitor' }}
@@ -538,12 +538,14 @@ jobs:
           fi
 
   alert-stream:
-    name: Verify operator alert stream
+    name: Reconcile and verify iLert webhook delivery
     needs: smoke
+    outputs:
+      alert-submitted: ${{ steps.canary.outputs.alert_submitted }}
     # Manual canaries run only after smoke succeeds; failed or cancelled
     # production checks must not emit a test page. Production failures use the
     # stable alert key owned by the notify and resolve jobs below.
-    if: ${{ always() && inputs.test_alert == true && needs.smoke.result == 'success' }}
+    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' }}
     permissions:
       contents: read
       id-token: write
@@ -591,27 +593,30 @@ jobs:
       - name: Preview iLert alert-stream reconciliation
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
         run: timeout 7m bun run scripts/reconcile-ilert-alert-stream.ts --dry-run
-      - name: Reconcile, deliver, and resolve the unique iLert canary
+      - name: Reconcile and verify the run-stable iLert webhook canary
+        id: canary
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
-          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
         run: timeout 13m bun run scripts/reconcile-ilert-alert-stream.ts --canary
 
   alert-stream-finalize:
-    name: Finalize operator alert-stream canary
+    name: Finalize iLert webhook canary cleanup
     needs: alert-stream
     # This separate job runs after success, failure, cancellation, or timeout.
-    # It confirms a resolved canary or fails closed when an open canary cannot
-    # complete a newer successful delivery and resolution stabilization.
-    if: ${{ always() && inputs.test_alert == true && needs.alert-stream.result != 'skipped' }}
+    # It accepts a no-op only when the preceding job durably proved that it did
+    # not send ALERT; otherwise it resolves the stable key and fails closed
+    # when discovery or persisted resolution cannot be proved.
+    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' }}
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    # The finalizer has three minutes for setup, seven for reconciliation, two
-    # for open-canary resolution stabilization, and two minutes of runner headroom.
+    # The finalizer has three minutes for setup, ten for bounded discovery and
+    # cleanup, and one minute of runner headroom. It never reconciles the action.
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -651,8 +656,9 @@ jobs:
       - name: Resolve and stabilize the reconstructible iLert canary
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ needs.alert-stream.outputs.alert-submitted }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
-          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
         run: timeout 10m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
 
   # Alert delivery is owned by the external alerting service (ilert). The
@@ -731,14 +737,14 @@ jobs:
           summary: Postil release recovery cleared
           alert-key: postil-release-recovery
 
-  # The alert-stream job resolves its unique canary before it succeeds. This
+  # The alert-stream job resolves its run-stable canary before it succeeds. This
   # resolver owns only the stable production-monitor alert key, so a manual
   # canary must not close a production incident. Every successful non-canary
   # monitor run resolves that key, including one after a manual canary.
   resolve:
     name: Resolve external alert
     needs: smoke
-    if: ${{ needs.smoke.result == 'success' && inputs.test_alert != true }}
+    if: ${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}
     permissions:
       contents: read
       id-token: write
@@ -747,7 +753,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load alerting secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -755,6 +761,7 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
       - name: Resolve ilert alert
         uses: ./.github/actions/ilert-event
         with:

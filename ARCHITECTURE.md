@@ -482,12 +482,21 @@ The production-monitor workflow reconciles the iLert Webhook action with the
 events with the `ILERT_INTEGRATION_KEY` Event API credential. Its
 `POSTIL_ILERT_ALERT_SOURCE_ID` GitHub Actions variable selects the alert source
 whose action is reconciled. `POSTIL_ILERT_WEBHOOK_SECRET` supplies the receiver
-password embedded as URL-encoded HTTP Basic credentials in that action. Manual
-canaries use a workflow-serialized stable key distinct from production monitor
-keys. Each canary pre-cleans that key, verifies webhook delivery, and resolves
-it during a bounded stabilization interval. A separate finalizer confirms an
-already resolved canary or, when it resolves an open canary, requires a newer
-successful delivery during stabilization.
+password embedded as URL-encoded HTTP Basic credentials in that action, and
+`POSTIL_ILERT_RECEIVER_ORIGIN` selects its strictly validated HTTPS origin. The
+deployment and reconciliation workflows load the receiver password from one
+secret record. Reconciliation verifies that the deployed receiver accepts the
+credential before it creates or updates the action. Manual canaries use a
+workflow-serialized key derived from the stable workflow run id, distinct from
+production monitor keys. Each canary pre-cleans that key and requires exact
+persisted `alert-created` and `alert-resolved` receiver events during a bounded
+interval. The receiver-event observations bind each event to the exact iLert
+alert and alert-source ids, proving Event API routing without using untyped
+alert-action history. The cleanup-only finalizer uses the durable non-secret
+ALERT-submitted handoff: it no-ops only when no event was sent, otherwise it
+polls the bounded cleanup interval and fails closed if discovery or persisted
+resolution cannot be proved. It never reconciles the action. The canary does
+not open the authenticated operator SSE stream.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
