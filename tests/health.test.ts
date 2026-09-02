@@ -227,6 +227,18 @@ describe("production monitor workflow", () => {
     expect(architecture).toContain(
       "HIGH-priority production test alert that can invoke the escalation path",
     );
+    expect(architecture).toContain(
+      "primary canary already proved exact\npersisted receiver create and resolve events",
+    );
+    expect(architecture).toContain(
+      "independent cleanup-only finalizer proves that iLert management\nstate has no open deterministic alert",
+    );
+    expect(source).toContain(
+      "primary canary already proved exact persisted\n    # receiver create and resolve events",
+    );
+    expect(source).toContain(
+      "Other handoffs prove iLert management\n    # state has no open deterministic alert, or fail closed.",
+    );
     expect(source).not.toContain("test_alert");
     expect(source).not.toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");
     const alertStream = workflow.jobs["alert-stream"];
@@ -282,20 +294,20 @@ describe("production monitor workflow", () => {
       POSTIL_ILERT_CANARY_ALERT_SUBMITTED:
         "${{ needs.alert-stream.outputs.alert-submitted }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
-      POSTIL_ILERT_RECEIVER_ORIGIN: "https://postil.dev",
     });
-    for (const job of [alertStream, finalizer]) {
+    const expectScopedSecretLoads = (
+      job: typeof alertStream,
+      expectedSecrets: string[],
+    ) => {
       const scopedSecretLoads = job?.steps?.filter((step) => step.with?.["secret-name"]);
-      expect(scopedSecretLoads?.map((step) => step.with?.["secret-name"])).toEqual([
-        "ILERT_API_KEY",
-        "ILERT_INTEGRATION_KEY",
-        "POSTIL_ILERT_WEBHOOK_SECRET",
-      ]);
+      expect(scopedSecretLoads?.map((step) => step.with?.["secret-name"])).toEqual(expectedSecrets);
       expect(scopedSecretLoads?.every((step) =>
         step.uses === "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db" &&
         typeof step.with?.["secret-path"] === "string",
       )).toBe(true);
-    }
+    };
+    expectScopedSecretLoads(alertStream, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY", "POSTIL_ILERT_WEBHOOK_SECRET"]);
+    expectScopedSecretLoads(finalizer, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY"]);
     expect(workflow.jobs.notify?.if).not.toContain("reconcile_alert_stream");
     expect(workflow.jobs.resolve?.if).toContain(
       "needs.smoke.result == 'success'",

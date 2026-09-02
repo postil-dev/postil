@@ -495,10 +495,14 @@ use a workflow-serialized key derived from the stable workflow run id, distinct
 from production monitor keys. Each canary pre-cleans every open alert with that
 key and requires exact persisted `alert-created` and `alert-resolved` receiver
 events during a bounded interval. Resolved alerts with the same key remain
-history. The cleanup-only finalizer treats missing or unknown handoff state as
-cleanup-required, resolves every discovered open alert, and fails closed if
-discovery or persisted resolution cannot be proved. It never reconciles the
-action. The canary does not open the authenticated operator SSE stream.
+history. A `cleaned` handoff means the primary canary already proved exact
+persisted receiver create and resolve events. For a `true` or `unknown`
+handoff, the independent cleanup-only finalizer proves that iLert management
+state has no open deterministic alert or fails closed. It never reads receiver
+configuration or reconciles the action. The command supports `--dry-run`,
+`--canary`, and `--finalize-canary`; unflagged live reconciliation is rejected
+because it has no recoverable run identity. The canary does not open the
+authenticated operator SSE stream.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
