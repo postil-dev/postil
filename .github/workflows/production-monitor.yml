@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows: ["deploy"]
     types: [completed]
+    branches: [main]
   schedule:
     # Requested every 15 minutes; GitHub throttles scheduled workflows, so
     # observed cadence is best-effort (often hourly or worse). This workflow
@@ -13,27 +14,139 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
-      test_alert:
-        description: Send a test alert after the production checks pass
+      reconcile_alert_stream:
+        description: Reconcile the iLert webhook action and send then resolve a HIGH-priority production test alert; it can invoke the escalation path
         required: false
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   # Deployment-completion monitors keep independent workflow owners, while
-  # scheduled checks serialize together. Every recovery attempt then joins the
-  # same bounded FIFO queue as deploys, so it observes an idle managed fleet.
+  # scheduled and manual checks serialize together. Each manual canary attempt
+  # owns distinct iLert keys until its independent finalizer has run. Every
+  # recovery attempt then joins the same bounded FIFO queue as deploys, so it
+  # observes an idle managed fleet.
   group: ${{ github.event_name == 'workflow_run' && format('production-monitor-deploy-{0}', github.event.workflow_run.id) || 'production-monitor' }}
   queue: max
   cancel-in-progress: false
 
 jobs:
+  deployment-trust:
+    name: Verify triggering deployment
+    permissions:
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    outputs:
+      trusted: ${{ steps.evidence.outputs.trusted }}
+      conclusion: ${{ steps.evidence.outputs.conclusion }}
+    steps:
+      - name: Verify deployment job evidence
+        id: evidence
+        timeout-minutes: 3
+        env:
+          DEPLOY_EVENT: ${{ github.event.workflow_run.event }}
+          DEPLOY_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          DEPLOY_RUN_ID: ${{ github.event.workflow_run.id }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "trusted=false" >> "${GITHUB_OUTPUT}"
+          echo "conclusion=" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            echo "trusted=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${EVENT_REF}" == "refs/heads/main" ]]; then
+              echo "trusted=true" >> "${GITHUB_OUTPUT}"
+            fi
+            exit 0
+          fi
+          if [[ "${EVENT_NAME}" != "workflow_run" ]]; then
+            exit 0
+          fi
+          if [[ "${DEPLOY_EVENT}" != "workflow_run" && "${DEPLOY_EVENT}" != "workflow_dispatch" ]]; then
+            exit 0
+          fi
+
+          if [[ ! "${DEPLOY_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Triggering deployment attempt is malformed." >&2
+            exit 1
+          fi
+
+          authorization_seen=false
+          authorization_trusted=false
+          deployment_conclusion=""
+          for ((attempt = 1; attempt <= DEPLOY_RUN_ATTEMPT; attempt += 1)); do
+            jobs=""
+            for api_attempt in 1 2 3; do
+              if jobs="$(timeout --signal=TERM --kill-after=5s 30s gh api --method GET \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${DEPLOY_RUN_ID}/attempts/${attempt}/jobs?per_page=100")"; then
+                break
+              fi
+              if (( api_attempt == 3 )); then
+                echo "Deployment job evidence remained unavailable after bounded retries." >&2
+                exit 1
+              fi
+              sleep 2
+            done
+            jq -e '
+              (.total_count | type == "number") and
+              (.jobs | type == "array") and
+              (.total_count == (.jobs | length)) and
+              (.total_count <= 100)
+            ' <<<"${jobs}" >/dev/null || {
+              echo "Deployment job evidence is incomplete." >&2
+              exit 1
+            }
+            jq -e '
+              ([.jobs[] | select(.name == "Authorize deployment source")] | length) <= 1 and
+              ([.jobs[] | select(.name == "Deploy production")] | length) <= 1
+            ' <<<"${jobs}" >/dev/null || {
+              echo "Deployment job evidence is not unique." >&2
+              exit 1
+            }
+            if jq -e 'any(.jobs[]; .name == "Authorize deployment source")' \
+              <<<"${jobs}" >/dev/null; then
+              authorization_seen=true
+            fi
+            if jq -e '
+              any(.jobs[]; .name == "Authorize deployment source" and .conclusion == "success")
+            ' <<<"${jobs}" >/dev/null; then
+              authorization_trusted=true
+            fi
+            if (( attempt == DEPLOY_RUN_ATTEMPT )); then
+              deployment_conclusion="$(jq -er '
+                [.jobs[] | select(.name == "Deploy production")]
+                | if length == 1 then .[0].conclusion else error("current deployment job evidence is missing") end
+              ' <<<"${jobs}")"
+            fi
+          done
+          if [[ "${authorization_seen}" != "true" ]]; then
+            echo "Deployment authorization evidence is missing." >&2
+            exit 1
+          fi
+          echo "conclusion=${deployment_conclusion}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${authorization_trusted}" != "true" ]]; then
+            exit 0
+          fi
+          case "${deployment_conclusion}" in
+            success|failure|cancelled|timed_out)
+              echo "trusted=true" >> "${GITHUB_OUTPUT}"
+              ;;
+          esac
+
   release-recovery:
     name: Recover abandoned release preparation
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'success' }}
+    needs: deployment-trust
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && (github.event_name != 'workflow_run' || needs.deployment-trust.outputs.conclusion != 'success') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     concurrency:
       group: fly-deploy
       queue: max
@@ -171,7 +284,8 @@ jobs:
 
   smoke:
     name: Smoke check production
-    if: ${{ github.event_name != 'workflow_run' }}
+    needs: deployment-trust
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && github.event_name != 'workflow_run' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -535,23 +649,213 @@ jobs:
             fi
           fi
 
+  canary-orphan-sweep:
+    name: Sweep orphaned iLert canaries
+    # Scheduled and routine manual monitors recover deterministic HIGH canary
+    # alerts whose producer and two finalizers were both interrupted. This job
+    # has no Event API credential and never emits a new canary or resolves a
+    # routine production-monitor alert.
+    needs: deployment-trust
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    # Three one-minute setup steps, fourteen minutes for bounded recovery,
+    # and four minutes of runner headroom.
+    timeout-minutes: 21
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        timeout-minutes: 1
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        timeout-minutes: 1
+        with:
+          bun-version: 1.3.14
+      - name: Load iLert management secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /
+          secret-name: ILERT_API_KEY
+      - name: Resolve and verify orphaned iLert canaries
+        env:
+          POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+        run: timeout 14m bun run scripts/reconcile-ilert-alert-stream.ts --sweep-canary-orphans
+
+  alert-stream:
+    name: Reconcile and verify iLert webhook delivery
+    needs: [deployment-trust, smoke, release-recovery]
+    outputs:
+      alert-submitted: ${{ steps.canary.outputs.alert_submitted }}
+      producer-attempt: ${{ steps.canary.outputs.producer_attempt }}
+    # Manual canaries run only after smoke succeeds; failed or cancelled
+    # production checks must not emit a test page. Production failures use the
+    # stable alert key owned by the notify and resolve jobs below.
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    # The 37-minute job budget reserves five minutes for setup, seven minutes
+    # for preview reconciliation, thirteen for reconcile plus canary, four
+    # for in-job cleanup, and eight minutes of runner headroom. After sending
+    # ALERT, the canary reserves its final two minutes for repeated resolution
+    # verification.
+    timeout-minutes: 37
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        timeout-minutes: 1
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        timeout-minutes: 1
+        with:
+          bun-version: 1.3.14
+      - name: Load iLert management secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /
+          secret-name: ILERT_API_KEY
+      - name: Load iLert integration secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
+      - name: Load Postil webhook secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /postil
+          secret-name: POSTIL_ILERT_WEBHOOK_SECRET
+      - name: Preview iLert alert-stream reconciliation
+        env:
+          POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
+        run: timeout 7m bun run scripts/reconcile-ilert-alert-stream.ts --dry-run
+      - name: Reconcile and verify the attempt-specific iLert webhook canary
+        id: canary
+        env:
+          POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
+          POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
+        run: timeout 13m bun run scripts/reconcile-ilert-alert-stream.ts --canary
+      # Cancellation does not reliably start a dependent job. This step keeps
+      # cleanup with the producer while the runner remains available. The
+      # downstream finalizer still covers job timeout and runner loss.
+      - name: Resolve and stabilize the current iLert canary before job exit
+        if: ${{ always() && steps.canary.outcome != 'skipped' }}
+        env:
+          POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ steps.canary.outputs.alert_submitted }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
+        run: timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
+
+  alert-stream-finalize:
+    name: Finalize iLert webhook canary cleanup
+    needs: [deployment-trust, alert-stream]
+    # This separate job runs after success, failure, cancellation, or timeout.
+    # The primary canary proves its receiver events before a cleaned handoff,
+    # but this job still sweeps iLert management inventory for a delayed Event
+    # API duplicate and fails closed if that inventory is incomplete.
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    # Four explicitly bounded setup steps take at most four minutes, followed
+    # by four minutes for cleanup and two minutes of runner headroom. The
+    # 11-minute cap is strictly larger than that complete budget. It never
+    # reconciles the action.
+    timeout-minutes: 11
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        timeout-minutes: 1
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        timeout-minutes: 1
+        with:
+          bun-version: 1.3.14
+      - name: Load iLert management secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /
+          secret-name: ILERT_API_KEY
+      - name: Load iLert integration secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
+      - name: Resolve and stabilize the reconstructible iLert canary
+        env:
+          POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ needs.alert-stream.outputs.alert-submitted }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}
+          POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
+        run: timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
+
   # Alert delivery is owned by the external alerting service (ilert). The
   # platform and this workflow only report events; paging, escalation, and
   # deduplication happen there. A stable alertKey groups consecutive failing
   # runs into one alert, and the resolve job auto-closes it on recovery.
   notify:
     name: Raise external alert
-    needs: [smoke, release-recovery]
-    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || inputs.test_alert == true) }}
+    needs: [deployment-trust, smoke, release-recovery]
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    # Checkout and OIDC secret loading each have one minute. Delivery has two
+    # minutes so curl's retry envelope retains shell headroom, and the parent
+    # reserves one additional minute of runner headroom.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Load alerting secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        timeout-minutes: 1
+      - name: Load required iLert integration secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -559,46 +863,53 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
       - name: Send ilert event
         uses: ./.github/actions/ilert-event
+        timeout-minutes: 2
         with:
           event-type: ALERT
-          summary: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'Postil release recovery failed' || needs.smoke.result == 'failure' && 'Postil production monitor failed' || 'Postil production monitor test alert' }}
-          alert-key: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'postil-release-recovery' || needs.smoke.result == 'failure' && 'postil-production-monitor' || 'postil-production-monitor-test' }}
+          summary: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'Postil release recovery failed' || 'Postil production monitor failed' }}
+          alert-key: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'postil-release-recovery' || 'postil-production-monitor' }}
           details: >-
             ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled')
                 && 'Release preparation remains unresolved. Run log:'
-                || needs.smoke.result == 'failure'
-                && 'Production checks failed. Run log:'
-                || 'Operator-requested test alert; production checks passed. Run log:' }}
+                || 'Production checks failed. Run log:' }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
-          # A routine monitor failure records an alerting gap without masking
-          # the original signal. Recovery failure and test events require
-          # delivery because they validate the fail-safe notification path.
-          require-delivery: ${{ inputs.test_alert == true || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' }}
+          # A production failure has no successful notification outcome until
+          # iLert accepts its alert. OIDC or Infisical failure therefore fails
+          # this job visibly instead of turning paging into a no-op.
+          require-delivery: true
 
   resolve-release-recovery:
     name: Resolve release recovery alert
-    needs: release-recovery
-    if: ${{ always() && (needs.release-recovery.outputs.clear == 'true' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')) }}
+    needs: [deployment-trust, release-recovery]
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.release-recovery.outputs.clear == 'true' || (github.event_name == 'workflow_run' && needs.deployment-trust.outputs.conclusion == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    # Every step is independently bounded. The parent reserves one additional
+    # minute beyond their combined budgets for runner and shell overhead.
+    timeout-minutes: 9
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        timeout-minutes: 1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        timeout-minutes: 1
         with:
           bun-version: 1.3.14
       - name: Install dependencies
+        timeout-minutes: 2
         run: bun install --frozen-lockfile
       - name: Verify release state is active and clear
+        timeout-minutes: 1
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: bun scripts/run-release-migrations.ts --verify-clear
-      - name: Load alerting secret from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+      - name: Load iLert integration secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -606,39 +917,38 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
       - name: Resolve ilert release recovery alert
         uses: ./.github/actions/ilert-event
+        timeout-minutes: 2
         with:
           event-type: RESOLVE
           summary: Postil release recovery cleared
           alert-key: postil-release-recovery
+          require-delivery: true
 
+  # The alert-stream job resolves its attempt-specific canary before it succeeds. This
+  # resolver owns only the stable production-monitor alert key, so a manual
+  # canary must not close a production incident. Every successful non-canary
+  # monitor run resolves that key, including one after a manual canary.
   resolve:
     name: Resolve external alert
-    needs: smoke
-    if: ${{ needs.smoke.result == 'success' && inputs.test_alert != true }}
+    needs: [deployment-trust, smoke]
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}
     permissions:
       contents: read
       id-token: write
-      actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    # Checkout and OIDC secret loading each have one minute. Delivery has two
+    # minutes so curl's retry envelope retains shell headroom, and the parent
+    # reserves one additional minute of runner headroom.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Check whether the previous run failed
-        id: previous
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          previous="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/production-monitor.yml/runs?status=completed&per_page=5" \
-            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})][0].conclusion // \"none\"")"
-          echo "conclusion=${previous}" >> "$GITHUB_OUTPUT"
-          echo "Previous completed run conclusion: ${previous}"
-      - name: Load alerting secret from Infisical
-        if: ${{ steps.previous.outputs.conclusion == 'failure' }}
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
+        timeout-minutes: 1
+      - name: Load iLert integration secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -646,10 +956,12 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
+          secret-name: ILERT_INTEGRATION_KEY
       - name: Resolve ilert alert
-        if: ${{ steps.previous.outputs.conclusion == 'failure' }}
         uses: ./.github/actions/ilert-event
+        timeout-minutes: 2
         with:
           event-type: RESOLVE
           summary: Postil production monitor recovered
           alert-key: postil-production-monitor
+          require-delivery: true

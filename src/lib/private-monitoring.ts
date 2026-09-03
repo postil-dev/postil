@@ -98,10 +98,24 @@ export interface PrivateMonitoringDashboard {
 }
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type Sleep = (milliseconds: number) => Promise<void>;
+
+interface PublicProbeOptions {
+  sleep?: Sleep;
+}
+
+interface MonitoredFetchResult {
+  response: Response;
+  body: string | null;
+  retriesExhausted: boolean;
+}
 
 const MONITOR_STATE_ID = 1;
 const DEFAULT_LEASE_MS = 2 * 60 * 1_000;
 const PUBLIC_PROBE_TIMEOUT_MS = 8_000;
+const PUBLIC_PROBE_RETRY_DELAYS_MS = [100, 250] as const;
+const PUBLIC_PROBE_RETRY_AFTER_MAX_MS = 5_000;
+const TRANSIENT_PUBLIC_PROBE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const INCIDENT_REMINDER_MS = 6 * 60 * 60 * 1_000;
 const NOTIFICATION_LEASE_MS = 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS = 5;
@@ -446,36 +460,40 @@ export async function failPrivateMonitoringPass(
 export async function runPublicMonitoringChecks(
   publicOrigin: string,
   fetchImpl: Fetch = fetch,
+  options: PublicProbeOptions = {},
 ): Promise<PrivateMonitoringCheck[]> {
   const origin = new URL(publicOrigin);
   if (origin.protocol !== "https:" || origin.username || origin.password) {
     throw new Error("private monitor public origin must be a credential-free HTTPS URL");
   }
   const checks = await Promise.all([
-    probeOk("public-site", "Public site responds", new URL("/", origin), fetchImpl),
+    probeOk("public-site", "Public site responds", new URL("/", origin), fetchImpl, options),
     probeOk(
       "public-liveness",
       "Web liveness endpoint responds",
       new URL("/api/health", origin),
       fetchImpl,
+      options,
     ),
-    probeOk("public-sitemap", "Sitemap responds", new URL("/sitemap.xml", origin), fetchImpl),
-    probeOk("public-favicon", "Favicon responds", new URL("/favicon.ico", origin), fetchImpl),
-    probeDependencies(origin, fetchImpl),
-    probeRobots(origin, fetchImpl),
+    probeOk("public-sitemap", "Sitemap responds", new URL("/sitemap.xml", origin), fetchImpl, options),
+    probeOk("public-favicon", "Favicon responds", new URL("/favicon.ico", origin), fetchImpl, options),
+    probeDependencies(origin, fetchImpl, options),
+    probeRobots(origin, fetchImpl, options),
     probeRedirect(
       "redirect-about",
       "Legacy about route redirects",
       new URL("/about", origin),
       new URL("/why-postil", origin),
       fetchImpl,
+      options,
     ),
-    probeNoIndex("noindex-login", "Login is excluded from indexing", new URL("/login", origin), fetchImpl),
+    probeNoIndex("noindex-login", "Login is excluded from indexing", new URL("/login", origin), fetchImpl, options),
     probeNoIndex(
       "noindex-api-health",
       "Health API is excluded from indexing",
       new URL("/api/health", origin),
       fetchImpl,
+      options,
     ),
   ]);
   if (origin.hostname === "postil.dev") {
@@ -486,6 +504,7 @@ export async function runPublicMonitoringChecks(
         new URL("https://www.postil.dev/docs?utm_source=monitor"),
         new URL("https://postil.dev/docs?utm_source=monitor"),
         fetchImpl,
+        options,
       ),
     );
   }
@@ -1397,20 +1416,31 @@ async function probeOk(
   summary: string,
   url: URL,
   fetchImpl: Fetch,
+  options: PublicProbeOptions,
 ): Promise<PrivateMonitoringCheck> {
   try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
-    return availabilityCheck(key, summary, response.ok, `${url.toString()} returned HTTP ${response.status}.`);
+    const result = await monitoredFetch(url, { redirect: "follow" }, fetchImpl, options);
+    return availabilityCheck(
+      key,
+      summary,
+      result.response.ok,
+      `${url.toString()} returned HTTP ${result.response.status}${retryExhaustionSuffix(result)}.`,
+    );
   } catch (error) {
     return availabilityCheck(key, summary, false, requestFailure(url, error));
   }
 }
 
-async function probeDependencies(origin: URL, fetchImpl: Fetch): Promise<PrivateMonitoringCheck> {
+async function probeDependencies(
+  origin: URL,
+  fetchImpl: Fetch,
+  options: PublicProbeOptions,
+): Promise<PrivateMonitoringCheck> {
   const url = new URL("/api/health/dependencies", origin);
   try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
-    const body = (await response.text()).slice(0, 4_096);
+    const result = await monitoredFetch(url, { redirect: "follow" }, fetchImpl, options, true);
+    const { response } = result;
+    const body = result.body!.slice(0, 4_096);
     let healthy = response.ok;
     try {
       const parsed = JSON.parse(body) as { ok?: unknown; database?: unknown };
@@ -1422,18 +1452,23 @@ async function probeDependencies(origin: URL, fetchImpl: Fetch): Promise<Private
       "public-dependencies",
       "Web dependencies are ready",
       healthy,
-      `${url.toString()} returned HTTP ${response.status} with ${healthy ? "healthy" : "invalid"} readiness data.`,
+      `${url.toString()} returned HTTP ${response.status} with ${healthy ? "healthy" : "invalid"} readiness data${retryExhaustionSuffix(result)}.`,
     );
   } catch (error) {
     return availabilityCheck("public-dependencies", "Web dependencies are ready", false, requestFailure(url, error));
   }
 }
 
-async function probeRobots(origin: URL, fetchImpl: Fetch): Promise<PrivateMonitoringCheck> {
+async function probeRobots(
+  origin: URL,
+  fetchImpl: Fetch,
+  options: PublicProbeOptions,
+): Promise<PrivateMonitoringCheck> {
   const url = new URL("/robots.txt", origin);
   try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
-    const body = (await response.text()).slice(0, 32_768);
+    const result = await monitoredFetch(url, { redirect: "follow" }, fetchImpl, options, true);
+    const { response } = result;
+    const body = result.body!.slice(0, 32_768);
     const healthy =
       response.ok &&
       !/^Disallow:/m.test(body) &&
@@ -1444,7 +1479,7 @@ async function probeRobots(origin: URL, fetchImpl: Fetch): Promise<PrivateMonito
       "public-robots",
       "Robots policy exposes public pages",
       healthy,
-      `${url.toString()} returned HTTP ${response.status} with ${healthy ? "expected" : "unexpected"} directives.`,
+      `${url.toString()} returned HTTP ${response.status} with ${healthy ? "expected" : "unexpected"} directives${retryExhaustionSuffix(result)}.`,
     );
   } catch (error) {
     return availabilityCheck("public-robots", "Robots policy exposes public pages", false, requestFailure(url, error));
@@ -1457,9 +1492,11 @@ async function probeRedirect(
   url: URL,
   expected: URL,
   fetchImpl: Fetch,
+  options: PublicProbeOptions,
 ): Promise<PrivateMonitoringCheck> {
   try {
-    const response = await monitoredFetch(url, { redirect: "manual" }, fetchImpl);
+    const result = await monitoredFetch(url, { redirect: "manual" }, fetchImpl, options);
+    const { response } = result;
     const location = response.headers.get("location");
     const actual = location ? new URL(location, url).toString() : "missing";
     const healthy = response.status === 308 && actual === expected.toString();
@@ -1467,7 +1504,7 @@ async function probeRedirect(
       key,
       summary,
       healthy,
-      `${url.toString()} returned HTTP ${response.status} to ${actual}; expected ${expected.toString()}.`,
+      `${url.toString()} returned HTTP ${response.status} to ${actual}; expected ${expected.toString()}${retryExhaustionSuffix(result)}.`,
     );
   } catch (error) {
     return availabilityCheck(key, summary, false, requestFailure(url, error));
@@ -1479,16 +1516,18 @@ async function probeNoIndex(
   summary: string,
   url: URL,
   fetchImpl: Fetch,
+  options: PublicProbeOptions,
 ): Promise<PrivateMonitoringCheck> {
   try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
+    const result = await monitoredFetch(url, { redirect: "follow" }, fetchImpl, options);
+    const { response } = result;
     const value = response.headers.get("x-robots-tag")?.toLowerCase() ?? "missing";
     const healthy = response.ok && value === "noindex, nofollow";
     return availabilityCheck(
       key,
       summary,
       healthy,
-      `${url.toString()} returned HTTP ${response.status} with X-Robots-Tag ${value}.`,
+      `${url.toString()} returned HTTP ${response.status} with X-Robots-Tag ${value}${retryExhaustionSuffix(result)}.`,
     );
   } catch (error) {
     return availabilityCheck(key, summary, false, requestFailure(url, error));
@@ -1504,17 +1543,70 @@ function availabilityCheck(
   return { key, group: "availability", severity: "critical", healthy, summary, detail };
 }
 
-function monitoredFetch(url: URL, init: RequestInit, fetchImpl: Fetch): Promise<Response> {
-  return fetchImpl(url, {
-    ...init,
-    cache: "no-store",
-    headers: { "cache-control": "no-cache", "user-agent": "postil-private-monitor/1" },
-    signal: AbortSignal.timeout(PUBLIC_PROBE_TIMEOUT_MS),
-  });
+async function monitoredFetch(
+  url: URL,
+  init: RequestInit,
+  fetchImpl: Fetch,
+  options: PublicProbeOptions,
+  readBody = false,
+): Promise<MonitoredFetchResult> {
+  const sleep = options.sleep ?? ((milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  for (let attempt = 0; attempt <= PUBLIC_PROBE_RETRY_DELAYS_MS.length; attempt += 1) {
+    let retryDelay: number | undefined = PUBLIC_PROBE_RETRY_DELAYS_MS[attempt];
+    try {
+      const response = await fetchImpl(url, {
+        ...init,
+        cache: "no-store",
+        headers: { "cache-control": "no-cache", "user-agent": "postil-private-monitor/1" },
+        signal: AbortSignal.timeout(PUBLIC_PROBE_TIMEOUT_MS),
+      });
+      const retryable = TRANSIENT_PUBLIC_PROBE_STATUSES.has(response.status);
+      if (!retryable || attempt === PUBLIC_PROBE_RETRY_DELAYS_MS.length) {
+        const body = readBody ? await response.text() : null;
+        if (!readBody) await response.body?.cancel().catch(() => undefined);
+        return { response, body, retriesExhausted: retryable };
+      }
+      if (response.status === 429) {
+        retryDelay = retryAfterDelayMs(response.headers.get("retry-after")) ?? retryDelay;
+      }
+      await response.body?.cancel().catch(() => undefined);
+    } catch (error) {
+      if (attempt === PUBLIC_PROBE_RETRY_DELAYS_MS.length) throw error;
+    }
+    await sleep(retryDelay!);
+  }
+  throw new Error("public probe retry policy exhausted unexpectedly");
+}
+
+function retryAfterDelayMs(value: string | null): number | null {
+  if (value === null) return null;
+  if (/^[0-9]+$/u.test(value)) {
+    const seconds = Number(value);
+    if (!Number.isSafeInteger(seconds)) return null;
+    return seconds >= PUBLIC_PROBE_RETRY_AFTER_MAX_MS / 1_000
+      ? PUBLIC_PROBE_RETRY_AFTER_MAX_MS
+      : seconds * 1_000;
+  }
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.min(
+    Math.max(0, retryAt - Date.now()),
+    PUBLIC_PROBE_RETRY_AFTER_MAX_MS,
+  );
+}
+
+function retryExhaustionSuffix(result: MonitoredFetchResult): string {
+  return result.retriesExhausted ? " after retries were exhausted" : "";
 }
 
 function requestFailure(url: URL, error: unknown): string {
-  return boundedDetail(`${url.toString()} request failed: ${redactSecrets(error)}`);
+  const transport = error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : String(error);
+  return boundedDetail(redactSecrets(
+    `${url.toString()} request failed after three attempts were exhausted: ${transport}`,
+  ));
 }
 
 function validateCheckSet(checks: readonly PrivateMonitoringCheck[]): void {

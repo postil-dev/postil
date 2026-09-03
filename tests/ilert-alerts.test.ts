@@ -1,14 +1,18 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core/dialect";
 
 import {
   configuredIlertWebhookSecret,
   formatIlertAlertSseEvent,
+  hasIlertCanaryAlertEvent,
   ILERT_WEBHOOK_MAX_BODY_BYTES,
   ILERT_WEBHOOK_USERNAME,
   ilertAlertStreamDatabaseUrl,
   isApplicationJson,
+  isIlertCanaryAlertKey,
   parseIlertLastEventId,
   parseIlertWebhookBody,
   verifyIlertWebhookAuthorization,
@@ -17,8 +21,30 @@ import {
 
 const ORIGINAL_WEBHOOK_SECRET = process.env.POSTIL_ILERT_WEBHOOK_SECRET;
 const TEST_WEBHOOK_SECRET = "test-ilert-webhook-password-32-bytes";
+const TEST_CANARY_KEY = "postil-ilert-webhook-canary-123456789-2";
+let observationResult: () => Promise<Array<{ sequence: bigint }>> = async () => [];
+let databaseAccessCount = 0;
+
+mock.module("@/lib/db", () => ({
+  getDb: () => {
+    databaseAccessCount += 1;
+    return {
+      select: () => ({
+        from: () => ({
+          where: () => ({ limit: observationResult }),
+        }),
+      }),
+    };
+  },
+}));
+
+mock.module("@/lib/server-observability", () => ({
+  reportOperationalFailure: () => undefined,
+}));
 
 afterEach(() => {
+  observationResult = async () => [];
+  databaseAccessCount = 0;
   if (ORIGINAL_WEBHOOK_SECRET === undefined) {
     delete process.env.POSTIL_ILERT_WEBHOOK_SECRET;
   } else {
@@ -69,6 +95,14 @@ describe("iLert webhook input", () => {
     expect(isApplicationJson("application/problem+json")).toBe(false);
     expect(isApplicationJson("text/plain")).toBe(false);
     expect(isApplicationJson(null)).toBe(false);
+  });
+
+  test("accepts only exact attempt-specific canary keys", () => {
+    expect(isIlertCanaryAlertKey(TEST_CANARY_KEY)).toBe(true);
+    expect(isIlertCanaryAlertKey("postil-ilert-webhook-canary-123456789-51")).toBe(true);
+    expect(isIlertCanaryAlertKey("routine-alert-key")).toBe(false);
+    expect(isIlertCanaryAlertKey("postil-ilert-webhook-canary-123456789-52")).toBe(false);
+    expect(isIlertCanaryAlertKey("postil-ilert-webhook-canary-9999999999999999-1")).toBe(false);
   });
 
   test("accepts bounded official alert extensions and rejects non-alert events", () => {
@@ -175,20 +209,137 @@ describe("iLert webhook input", () => {
       ),
     ).toHaveProperty("status", 413);
   });
+
+  test("the route preflights receiver credentials without reading alert state", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+
+    expect(await GET(new Request("https://postil.dev/api/webhooks/ilert"))).toHaveProperty(
+      "status",
+      401,
+    );
+    expect(await GET(new Request("https://postil.dev/api/webhooks/ilert", {
+      headers: { authorization: validAuthorization() },
+    }))).toHaveProperty("status", 204);
+    expect(await GET(new Request(
+      "https://postil.dev/api/webhooks/ilert?alertId=1&eventType=alert-comment-added&sourceId=2",
+      { headers: { authorization: validAuthorization() } },
+    ))).toHaveProperty("status", 400);
+    expect(await GET(new Request(
+      "https://postil.dev/api/webhooks/ilert?alertKey=routine-alert&eventType=alert-created&sourceId=2",
+      { headers: { authorization: validAuthorization() } },
+    ))).toHaveProperty("status", 400);
+  });
+
+  test("the route returns an authenticated exact receiver-event observation", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+    observationResult = async () => [{ sequence: 1n }];
+
+    const response = await GET(new Request(
+      `https://postil.dev/api/webhooks/ilert?alertKey=${TEST_CANARY_KEY}&eventType=alert-created&sourceId=2269078`,
+      { headers: { authorization: validAuthorization() } },
+    ));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ received: true });
+  });
+
+  test("rejects source ids above PostgreSQL bigint before database access", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+
+    const response = await GET(new Request(
+      `https://postil.dev/api/webhooks/ilert?alertKey=${TEST_CANARY_KEY}&eventType=alert-created&sourceId=9223372036854775808`,
+      { headers: { authorization: validAuthorization() } },
+    ));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid canary observation" });
+    expect(databaseAccessCount).toBe(0);
+  });
+
+  test("the route returns 503 when the receiver-event read fails", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+    observationResult = async () => {
+      throw new Error("database unavailable");
+    };
+
+    const response = await GET(new Request(
+      `https://postil.dev/api/webhooks/ilert?alertKey=${TEST_CANARY_KEY}&eventType=alert-resolved&sourceId=2269078`,
+      { headers: { authorization: validAuthorization() } },
+    ));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(await response.json()).toEqual({ error: "webhook observation unavailable" });
+  });
 });
 
 describe("iLert operator stream protocol", () => {
-  test("stages the receiver secret and operator allowlist in managed deployments", async () => {
+  test("checks exact canary key, event type, and source persistence", async () => {
+    const events = [
+      { alertKey: TEST_CANARY_KEY, eventType: "alert-resolved", alertSourceId: 2269078n, sequence: 1n },
+      { alertKey: "postil-ilert-webhook-canary-123456790-2", eventType: "alert-resolved", alertSourceId: 2269078n, sequence: 2n },
+      { alertKey: TEST_CANARY_KEY, eventType: "alert-created", alertSourceId: 2269079n, sequence: 3n },
+      { alertKey: TEST_CANARY_KEY, eventType: "alert-resolved", alertSourceId: 2269079n, sequence: 4n },
+    ];
+    const dialect = new PgDialect();
+    const expectedPredicates = [
+      [TEST_CANARY_KEY, "alert-resolved", 2269078n],
+      [TEST_CANARY_KEY, "alert-created", 2269078n],
+    ];
+    let predicateCalls = 0;
+    const db = {
+      select() {
+        return {
+          from: () => ({
+            where: (predicate: SQL) => ({
+              limit: async () => {
+                const query = dialect.sqlToQuery(predicate);
+                expect(query.sql).toContain('"ilert_alert_events"."alert_key" = $1');
+                expect(query.sql).not.toContain('"ilert_alert_events"."alert_id"');
+                expect(query.sql).toContain('"ilert_alert_events"."event_type" = $2');
+                expect(query.sql).toContain('"ilert_alert_events"."alert_source_id" = $3');
+                const [alertKey, eventType, alertSourceId] = query.params;
+                expect([alertKey, eventType, alertSourceId]).toEqual(
+                  expectedPredicates[predicateCalls++]!,
+                );
+                return events
+                  .filter((event) =>
+                    event.alertKey === alertKey &&
+                    event.eventType === eventType &&
+                    event.alertSourceId === alertSourceId
+                  )
+                  .map(({ sequence }) => ({ sequence }));
+              },
+            }),
+          }),
+        };
+      },
+    } as never;
+    expect(await hasIlertCanaryAlertEvent(db, TEST_CANARY_KEY, "alert-resolved", 2269078n)).toBe(true);
+    expect(await hasIlertCanaryAlertEvent(db, TEST_CANARY_KEY, "alert-created", 2269078n)).toBe(false);
+  });
+
+  test("stages the receiver secret directly and preserves the operator allowlist", async () => {
     const deploy = await readFile(
       join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
       "utf8",
     );
+    const directReceiverSecretStaging =
+      'staged+="POSTIL_ILERT_WEBHOOK_SECRET=${POSTIL_ILERT_WEBHOOK_SECRET}"$\'\\n\'';
     const operatorSecrets = deploy.match(
       /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
     )?.[1];
-    expect(operatorSecrets).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(deploy.split(directReceiverSecretStaging)).toHaveLength(2);
+    expect(operatorSecrets).not.toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(operatorSecrets).toContain("ILERT_INTEGRATION_KEY");
     expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
-    expect(deploy).toContain(
+    expect(deploy).not.toContain(
       "POSTIL_ILERT_WEBHOOK_SECRET: ${{ secrets.POSTIL_ILERT_WEBHOOK_SECRET }}",
     );
     expect(deploy).toContain(
@@ -313,6 +464,7 @@ function storedEvent(
     sequence: 1n,
     eventId: "7b21f505-bd0f-49a2-bf8f-f238919b23fc",
     alertId: "12797430",
+    alertKey: null,
     eventType: "alert-created",
     status: "PENDING",
     priority: "HIGH",

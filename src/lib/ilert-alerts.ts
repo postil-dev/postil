@@ -28,6 +28,8 @@ const ILERT_ALERT_PENDING_NOTIFICATION_LIMIT = 256;
 const POSTGRES_MAX_BIGINT = 9_223_372_036_854_775_807n;
 const ILERT_EVENT_WRITE_LOCK = 580_178_254_943_325_001n;
 const SUPABASE_POOLER_HOST = /(?:^|[.])pooler[.]supabase[.]com$/iu;
+const ILERT_CANARY_ALERT_KEY =
+  /^postil-ilert-webhook-canary-([1-9][0-9]{0,15})-([1-9]|[1-4][0-9]|5[01])$/u;
 
 const ilertEventType = z
   .string()
@@ -85,7 +87,7 @@ const ilertWebhookSchema = z.object({
     name: z.string().min(1).max(256),
   }),
   mergeState: z.enum(["NONE", "MAIN", "MERGED"]),
-  alertKey: z.string().max(512).optional(),
+  alertKey: z.string().min(1).max(512).optional(),
   resolvedOn: boundedTimestamp.optional(),
   mergedOn: boundedTimestamp.optional(),
   mergedIntoId: z.string().regex(/^[1-9][0-9]{0,63}$/u).optional(),
@@ -118,6 +120,7 @@ export interface StoredIlertAlertEvent {
   sequence: bigint;
   eventId: string;
   alertId: string;
+  alertKey: string | null;
   eventType: IlertAlertEventType;
   status: "PENDING" | "ACCEPTED" | "RESOLVED";
   priority: "HIGH" | "LOW";
@@ -209,6 +212,11 @@ export function parseIlertWebhookBody(
   return parsed.success ? parsed.data : null;
 }
 
+export function isIlertCanaryAlertKey(value: string): boolean {
+  const match = ILERT_CANARY_ALERT_KEY.exec(value);
+  return match !== null && Number.isSafeInteger(Number(match[1]));
+}
+
 /** Insert and notify atomically. Duplicate iLert event ids are silent. */
 export async function recordIlertAlertEvent(
   db: Database,
@@ -226,6 +234,7 @@ export async function recordIlertAlertEvent(
       .values({
         eventId: event.eventId,
         alertId: event.id,
+        alertKey: event.alertKey ?? null,
         eventType: event.eventType,
         status: event.status,
         priority: event.priority,
@@ -275,6 +284,26 @@ export async function getIlertAlertEvent(
     .where(eq(schema.ilertAlertEvents.sequence, sequence))
     .limit(1);
   return (rows[0] as StoredIlertAlertEvent | undefined) ?? null;
+}
+
+export async function hasIlertCanaryAlertEvent(
+  db: Database,
+  alertKey: string,
+  eventType: "alert-created" | "alert-resolved",
+  alertSourceId: bigint,
+): Promise<boolean> {
+  const rows = await db
+    .select({ sequence: schema.ilertAlertEvents.sequence })
+    .from(schema.ilertAlertEvents)
+    .where(
+      and(
+        eq(schema.ilertAlertEvents.alertKey, alertKey),
+        eq(schema.ilertAlertEvents.eventType, eventType),
+        eq(schema.ilertAlertEvents.alertSourceId, alertSourceId),
+      ),
+    )
+    .limit(1);
+  return rows.length === 1;
 }
 
 /** Require a renewable CLI login and the separate operator allowlist. */

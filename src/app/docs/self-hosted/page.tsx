@@ -130,8 +130,9 @@ docker compose exec web bun run jobs:activate-release`}</code>
           <code>docker compose --profile monitoring up -d</code> after setting{" "}
           <code>POSTIL_PUBLIC_URL</code>,{" "}
           <code>POSTIL_OPERATOR_ALERT_EMAIL</code>, <code>BREVO_API_KEY</code>,
-          and <code>WORKER_HEARTBEAT_INTERVAL_MS</code>. The monitor and worker
-          heartbeat produce periodic Postgres traffic. In Brevo, enable
+          <code>WORKER_HEARTBEAT_INTERVAL_MS</code>, and{" "}
+          <code>ILERT_INTEGRATION_KEY</code>. The monitor and worker heartbeat
+          produce periodic Postgres traffic. In Brevo, enable
           anonymous tracking for transactional email and set the shortest
           operationally useful transactional-log retention in the Brevo account.
           The monitor stores leases, pass history, process heartbeats,

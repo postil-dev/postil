@@ -12,6 +12,10 @@ interface OperationalIndex {
   name: string;
   createSql: string;
   definitionFragments: string[];
+  requiredColumns?: {
+    relation: string;
+    columns: string[];
+  };
 }
 
 const OPERATIONAL_INDEXES: OperationalIndex[] = [
@@ -124,6 +128,22 @@ const OPERATIONAL_INDEXES: OperationalIndex[] = [
       "github",
     ],
   },
+  {
+    name: "ilert_alert_events_canary_observation_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "ilert_alert_events_canary_observation_idx" ON "ilert_alert_events" USING btree ("alert_key", "event_type", "alert_source_id") WHERE "alert_key" IS NOT NULL',
+    definitionFragments: [
+      "public.ilert_alert_events",
+      "using btree",
+      "(alert_key, event_type, alert_source_id)",
+      "where",
+      "alert_key is not null",
+    ],
+    requiredColumns: {
+      relation: "public.ilert_alert_events",
+      columns: ["alert_key", "event_type", "alert_source_id"],
+    },
+  },
 ];
 
 interface IndexState {
@@ -138,11 +158,12 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
   try {
     await acquireReleaseLock(client);
     locked = true;
+    await assertOperationalIndexDependencies(client);
     await ensureReleaseStepsTable(client);
     const completed: string[] = [];
     for (const index of OPERATIONAL_INDEXES) {
       let state = await loadIndexState(client, index.name);
-      if (state && (!state.indisvalid || !state.indisready)) {
+      if (state && !isExpectedIndex(index, state)) {
         await client.query(
           `DROP INDEX CONCURRENTLY IF EXISTS "public"."${index.name}"`,
         );
@@ -175,6 +196,33 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
         .catch(() => undefined);
     }
     client.release();
+  }
+}
+
+async function assertOperationalIndexDependencies(
+  client: PoolClient,
+): Promise<void> {
+  for (const index of OPERATIONAL_INDEXES) {
+    const required = index.requiredColumns;
+    if (!required) continue;
+    const result = await client.query<{ attname: string }>(
+      `SELECT attribute.attname
+         FROM pg_attribute AS attribute
+        WHERE attribute.attrelid = to_regclass($1)
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
+          AND attribute.attname = ANY($2::text[])`,
+      [required.relation, required.columns],
+    );
+    const present = new Set(result.rows.map((row) => row.attname));
+    const missing = required.columns.filter((column) => !present.has(column));
+    if (missing.length > 0) {
+      throw new Error(
+        `operational index ${index.name} requires migrated columns ${required.relation}.${missing.join(
+          `, ${required.relation}.`,
+        )}`,
+      );
+    }
   }
 }
 
@@ -227,7 +275,27 @@ function assertExpectedIndex(
   if (!state || !state.indisvalid || !state.indisready) {
     throw new Error(`operational index ${index.name} is not valid and ready`);
   }
-  const normalized = state.definition
+  if (!hasExpectedDefinition(index, state.definition)) {
+    throw new Error(
+      `operational index ${index.name} has an unexpected definition`,
+    );
+  }
+}
+
+function isExpectedIndex(
+  index: OperationalIndex,
+  state: IndexState,
+): boolean {
+  return state.indisvalid &&
+    state.indisready &&
+    hasExpectedDefinition(index, state.definition);
+}
+
+function hasExpectedDefinition(
+  index: OperationalIndex,
+  definition: string,
+): boolean {
+  const normalized = definition
     .toLowerCase()
     .replace(/["()]/gu, "")
     .replace(/\s+/gu, " ");
@@ -236,12 +304,9 @@ function assertExpectedIndex(
       .toLowerCase()
       .replace(/["()]/gu, "")
       .replace(/\s+/gu, " ");
-    if (!normalized.includes(expected)) {
-      throw new Error(
-        `operational index ${index.name} has an unexpected definition`,
-      );
-    }
+    if (!normalized.includes(expected)) return false;
   }
+  return true;
 }
 
 async function main(): Promise<void> {

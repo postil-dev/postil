@@ -34,6 +34,25 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const NOW = new Date("2026-07-19T12:00:00.000Z");
 const BUCKET = new Date("2026-07-19T12:00:00.000Z");
 
+function healthyPublicProbeResponse(input: RequestInfo | URL): Response {
+  const url = new URL(String(input));
+  if (url.pathname === "/about") {
+    return new Response(null, { status: 308, headers: { location: "/why-postil" } });
+  }
+  if (url.pathname === "/robots.txt") {
+    return new Response(
+      `User-Agent: *\nAllow: /\nSitemap: ${new URL("/sitemap.xml", url).toString()}\n`,
+    );
+  }
+  if (url.pathname === "/api/health/dependencies") {
+    return Response.json({ ok: true, database: "up" });
+  }
+  const headers = ["/login", "/api/health"].includes(url.pathname)
+    ? { "x-robots-tag": "noindex, nofollow" }
+    : undefined;
+  return new Response("ok", { status: 200, headers });
+}
+
 describe("private monitoring public probes", () => {
   test("records external heartbeat delivery only after a successful response", async () => {
     const queries: Array<{ text: string; values: unknown[] }> = [];
@@ -214,11 +233,259 @@ describe("private monitoring public probes", () => {
     expect(calls).toContain("https://www.postil.dev/docs?utm_source=monitor");
   });
 
+  test("retries a first-attempt socket close and keeps the route healthy", async () => {
+    let siteAttempts = 0;
+    const delays: number[] = [];
+    const signals: AbortSignal[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input, init) => {
+        if (new URL(String(input)).pathname === "/") {
+          siteAttempts += 1;
+          signals.push(init?.signal as AbortSignal);
+          if (siteAttempts === 1) throw new TypeError("socket closed with internal detail");
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
+    );
+
+    expect(checks.find((check) => check.key === "public-site")?.healthy).toBe(true);
+    expect(siteAttempts).toBe(2);
+    expect(delays).toEqual([100]);
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).not.toBe(signals[1]);
+  });
+
+  test("retries a transient HTTP status and keeps the route healthy", async () => {
+    let sitemapAttempts = 0;
+    const lifecycle: string[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/sitemap.xml") {
+          sitemapAttempts += 1;
+          lifecycle.push(`attempt-${sitemapAttempts}`);
+          if (sitemapAttempts === 1) {
+            return new Response(new ReadableStream({
+              cancel() {
+                lifecycle.push("cancelled");
+              },
+            }), { status: 503 });
+          }
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
+    expect(sitemapAttempts).toBe(2);
+    expect(lifecycle).toEqual(["attempt-1", "cancelled", "attempt-2"]);
+  });
+
+  test("releases a successful terminal response body after inspection", async () => {
+    let cancellations = 0;
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/sitemap.xml") {
+          return new Response(new ReadableStream({
+            cancel() {
+              cancellations += 1;
+            },
+          }), { status: 200 });
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
+    expect(cancellations).toBe(1);
+  });
+
+  test("consumes parsed terminal response bodies without cancelling them", async () => {
+    let cancellations = 0;
+    let dependencyResponse: Response | undefined;
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/api/health/dependencies") {
+          dependencyResponse = new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"ok":true,"database":"up"}'));
+              controller.close();
+            },
+            cancel() {
+              cancellations += 1;
+            },
+          }), { status: 200 });
+          return dependencyResponse;
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "public-dependencies")?.healthy).toBe(true);
+    expect(dependencyResponse?.bodyUsed).toBe(true);
+    expect(cancellations).toBe(0);
+  });
+
+  test("releases every response body when transient HTTP retries are exhausted", async () => {
+    let faviconAttempts = 0;
+    const cancellations: number[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/favicon.ico") {
+          faviconAttempts += 1;
+          const attempt = faviconAttempts;
+          return new Response(new ReadableStream({
+            cancel() {
+              cancellations.push(attempt);
+            },
+          }), { status: 503 });
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "public-favicon")).toMatchObject({
+      healthy: false,
+      detail: "https://example.test/favicon.ico returned HTTP 503 after retries were exhausted.",
+    });
+    expect(faviconAttempts).toBe(3);
+    expect(cancellations).toEqual([1, 2, 3]);
+  });
+
+  test("honors bounded Retry-After delays for rate-limited probes", async () => {
+    let attempt = 0;
+    const delays: number[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/sitemap.xml") {
+          attempt += 1;
+          if (attempt === 1) {
+            return new Response("rate limited", {
+              status: 429,
+              headers: { "retry-after": "2" },
+            });
+          }
+          if (attempt === 2) {
+            return new Response("rate limited", {
+              status: 429,
+              headers: { "retry-after": "999999" },
+            });
+          }
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
+    );
+
+    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
+    expect(delays).toEqual([2_000, 5_000]);
+  });
+
+  test("uses the short fallback delay for malformed Retry-After", async () => {
+    let attempt = 0;
+    const delays: number[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/sitemap.xml" && attempt++ === 0) {
+          return new Response("rate limited", {
+            status: 429,
+            headers: { "retry-after": "not-a-delay" },
+          });
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
+    );
+
+    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
+    expect(delays).toEqual([100]);
+  });
+
+  test("does not retry a semantic noindex failure", async () => {
+    let loginAttempts = 0;
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/login") {
+          loginAttempts += 1;
+          return new Response("login", { status: 200 });
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "noindex-login")).toMatchObject({
+      healthy: false,
+      detail: "https://example.test/login returned HTTP 200 with X-Robots-Tag missing.",
+    });
+    expect(loginAttempts).toBe(1);
+  });
+
+  test("reports redacted final transport details after three exhausted attempts", async () => {
+    let faviconAttempts = 0;
+    const delays: number[] = [];
+    const rawCredential = `sk-or-v1-${"sensitivevalue".repeat(2)}`;
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/favicon.ico") {
+          faviconAttempts += 1;
+          throw new TypeError(`socket closed while using ${rawCredential}`);
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
+    );
+
+    expect(checks.find((check) => check.key === "public-favicon")).toMatchObject({
+      healthy: false,
+      detail: "https://example.test/favicon.ico request failed after three attempts were exhausted: TypeError: socket closed while using [redacted api key]",
+    });
+    expect(faviconAttempts).toBe(3);
+    expect(delays).toEqual([100, 250]);
+    expect(JSON.stringify(checks)).not.toContain(rawCredential);
+  });
+
+  test("does not surface correlated route incidents from one failed attempt each", async () => {
+    const transientRoutes = new Set(["/", "/sitemap.xml", "/api/health/dependencies"]);
+    const attempts = new Map<string, number>();
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        const path = new URL(String(input)).pathname;
+        const attempt = (attempts.get(path) ?? 0) + 1;
+        attempts.set(path, attempt);
+        if (transientRoutes.has(path) && attempt === 1) {
+          throw new TypeError("connection reset");
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.every((check) => check.healthy)).toBe(true);
+    for (const path of transientRoutes) expect(attempts.get(path)).toBe(2);
+  });
+
   test("turns a failed request into a bounded private incident input", async () => {
+    let dependencyAttempts = 0;
     const checks = await runPublicMonitoringChecks(
       "https://example.test",
       async (input) => {
         if (String(input).endsWith("/api/health/dependencies")) {
+          dependencyAttempts += 1;
           throw new Error("simulated dependency failure");
         }
         if (String(input).endsWith("/about")) {
@@ -236,9 +503,14 @@ describe("private monitoring public probes", () => {
           headers: { "x-robots-tag": "noindex, nofollow" },
         });
       },
+      { sleep: async () => undefined },
     );
     const failed = checks.find((check) => check.key === "public-dependencies");
     expect(failed).toMatchObject({ healthy: false, severity: "critical" });
+    expect(failed?.detail).toBe(
+      "https://example.test/api/health/dependencies request failed after three attempts were exhausted: Error: simulated dependency failure",
+    );
+    expect(dependencyAttempts).toBe(3);
     expect(failed?.detail.length).toBeLessThanOrEqual(1_000);
   });
 });

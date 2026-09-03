@@ -437,7 +437,6 @@ const ENV_SPECS: EnvVarSpec[] = [
       "ilert alert-source integration key that receives monitoring alerts; without it alert delivery fails closed and remains retryable",
     example: "il1agst...",
     scope: ["monitor"],
-    optional: true,
   },
   {
     name: "POSTIL_MONITOR_HEARTBEAT_URL",
