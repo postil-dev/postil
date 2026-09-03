@@ -1113,7 +1113,6 @@ async function finalizeManagedCanaryKeys(
           currentMain.key,
         );
         currentResolveSubmitted = true;
-        if (handoff === "unknown") currentAccountedFor = true;
       } catch (error) {
         retainErrors([error]);
       }

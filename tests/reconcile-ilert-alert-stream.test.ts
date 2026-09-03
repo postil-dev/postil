@@ -1130,6 +1130,7 @@ describe("iLert webhook canary", () => {
     });
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
+      alertSubmitted: "cleaned",
       fetchFn: service.fetchFn,
       runAttempt: "1",
       sweepAttempt: "51",
@@ -2058,15 +2059,15 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
   });
 
-  test("unknown finalizer accepts a same-key Event API RESOLVE only after full discovery", async () => {
+  test("unknown finalizer rejects an accepted same-key RESOLVE when no alert is observed", async () => {
     let currentTime = 0;
     const service = canaryService();
-    await finalizeIlertWebhookCanary({
+    await expect(finalizeIlertWebhookCanary({
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
       now: () => currentTime,
       sleep: async (milliseconds) => { currentTime += milliseconds; },
-    });
+    })).rejects.toThrow("could not account for the accepted current-attempt submission");
     expect(currentTime).toBeGreaterThanOrEqual(CANARY_FINALIZER_BUDGETS.discoveryMs);
     expect(service.events).toEqual([{
       alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
@@ -2320,7 +2321,12 @@ describe("iLert webhook canary", () => {
   });
 
   test("finalizer sweeps earlier attempts from a running-attempt fallback identity", async () => {
-    const service = canaryService({ existing: true, status: "PENDING" });
+    const service = canaryService({
+      initialAlerts: [
+        { alertKey: canaryAlertKey(RUN_ID, "1"), id: 98, status: "PENDING" },
+        { alertKey: canaryAlertKey(RUN_ID, "2"), id: 99, status: "PENDING" },
+      ],
+    });
     await runCli({
       args: ["--finalize-canary"],
       env: cliEnvironment({
@@ -2360,7 +2366,11 @@ describe("iLert webhook canary", () => {
       }
       throw new Error(`unexpected request: ${request.method} ${request.url}`);
     };
-    await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn });
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn,
+    });
     const alertQueries = requests.filter((request) => request.url.includes("/alerts?"));
     const terminalInventoryQueries = alertQueries.filter((request) => {
       const states = new URL(request.url).searchParams.getAll("states");
@@ -2666,7 +2676,7 @@ describe("iLert webhook canary", () => {
     const service = canaryService();
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
-      alertSubmitted: "unknown",
+      alertSubmitted: "cleaned",
       fetchFn: async (input, init) => {
         const request = new Request(input, init);
         if (
