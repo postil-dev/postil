@@ -515,19 +515,27 @@ exact 32-day run-wide report-time window with PENDING, ACCEPTED, and RESOLVED
 states. Every discovery pass freezes its upper report-time bound, brackets
 offset pagination with matching inventory counts, repeats the complete
 inventory for continuity validation, and advances the bound before the next
-delayed pass. The finalizer verifies every retained id as RESOLVED. Two
-complete delayed passes must find no matching open alert before success.
+delayed pass. Complete inventory fingerprints preserve opaque provider alert
+ids, while a matching cleanup target requires the provider's positive-integer
+alert identity before mutation. The finalizer reserves 90 seconds for delayed
+discovery, 60 seconds for terminal inventory validation, and 60 seconds for
+retained-id resolution. Its 210-second operation deadline runs within a
+four-minute shell bound, leaving one minute of GitHub's cancellation grace.
+The finalizer verifies every retained id as RESOLVED. Two complete delayed
+passes must find no matching open alert before success.
 A cleaned handoff still performs this
 management sweep to resolve a delayed Event API duplicate. If the producer
 output is unavailable, the finalizer uses its running attempt to reconstruct
 the deterministic identity. It never reads receiver configuration or
 reconciles the action. Scheduled and routine manual production monitors also
 run a management-only orphan sweep across every exact deterministic canary key
-for the configured source. It scans only PENDING and ACCEPTED alerts,
+and the exact `postil-production-monitor-test` compatibility canary key for the
+configured source. It scans only PENDING and ACCEPTED alerts,
 count-brackets and repeats the complete offset inventory, retains each exact
 id, resolves and verifies each target, and fails closed on incomplete or
 changing inventory. It has no Event API credential and cannot emit a canary
-or resolve a routine production alert. Management cleanup validates the source
+or resolve the stable `postil-production-monitor` alert or an arbitrary alert.
+Management cleanup validates the source
 numeric id and API type without requiring an older Event API key to remain
 bound; Event API mutations and action reconciliation retain the full
 integration-key binding. The command supports `--dry-run`, `--canary`,

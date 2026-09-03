@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   ALERT_TRIGGER_TYPES,
+  CANARY_FINALIZER_BUDGETS,
   CANARY_RERUN_LOOKBACK_MS,
   canaryAlertKey,
   desiredAlertAction,
@@ -1099,6 +1100,16 @@ describe("iLert webhook canary", () => {
           sourceId: SOURCE_ID + 1,
           status: "PENDING",
         },
+        {
+          alertKey: "postil-production-monitor-test",
+          id: 102,
+          status: "PENDING",
+        },
+        {
+          alertKey: "postil-production-monitor-test-extra",
+          id: 103,
+          status: "PENDING",
+        },
       ],
     });
     await sweepIlertWebhookCanaryOrphans({
@@ -1110,9 +1121,16 @@ describe("iLert webhook canary", () => {
     const resolvedIds = service.requests
       .filter((request) => request.method === "PUT")
       .map((request) => /\/alerts\/([1-9][0-9]*)\/resolve$/u.exec(new URL(request.url).pathname)?.[1]);
-    expect(resolvedIds).toEqual(["98"]);
+    expect(resolvedIds).toEqual(["98", "102"]);
     expect(service.events).toEqual([]);
-    expect(service.statuses).toEqual(["RESOLVED", "PENDING", "PENDING", "PENDING"]);
+    expect(service.statuses).toEqual([
+      "RESOLVED",
+      "PENDING",
+      "PENDING",
+      "PENDING",
+      "RESOLVED",
+      "PENDING",
+    ]);
   });
 
   test("resolves a retained exact ID then fails closed after a continuity mismatch", async () => {
@@ -1697,6 +1715,50 @@ describe("iLert webhook canary", () => {
     expect(service.alertListRequests).toBeGreaterThan(0);
   });
 
+  test("finalizer continuity accepts an unrelated opaque routine ID without mutation", async () => {
+    const requests: Request[] = [];
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname === "/api/alerts/count") return Response.json({ count: 1 });
+        if (url.pathname === "/api/alerts") {
+          return Response.json([{
+            alertKey: "routine-alert",
+            alertSource: { id: SOURCE_ID },
+            id: "provider.alert:0001",
+            priority: "HIGH",
+            status: "PENDING",
+          }]);
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    });
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+  });
+
+  test("finalizer resolves only the exact compatibility canary key", async () => {
+    const service = canaryService({
+      initialAlerts: [
+        { alertKey: "postil-production-monitor-test", id: 98, status: "PENDING" },
+        { alertKey: "postil-production-monitor", id: 99, status: "PENDING" },
+        { alertKey: "postil-production-monitor-test-extra", id: 100, status: "PENDING" },
+      ],
+    });
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn: service.fetchFn,
+    });
+    expect(service.requests.filter((request) => request.method === "PUT").map((request) =>
+      new URL(request.url).pathname
+    )).toEqual(["/api/alerts/98/resolve"]);
+    expect(service.statuses).toEqual(["RESOLVED", "PENDING", "PENDING"]);
+  });
+
   test("a cleaned handoff resolves a delayed duplicate after a retry-ambiguous ALERT", async () => {
     let currentTime = 0;
     const service = canaryService({
@@ -1804,12 +1866,15 @@ describe("iLert webhook canary", () => {
   });
 
   test("unknown finalizer accepts a same-key Event API RESOLVE only after full discovery", async () => {
+    let currentTime = 0;
     const service = canaryService();
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
     });
-    expect(service.alertListRequests).toBeGreaterThanOrEqual(36);
+    expect(currentTime).toBeGreaterThanOrEqual(CANARY_FINALIZER_BUDGETS.discoveryMs);
     expect(service.events).toEqual([{
       alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
       eventType: "RESOLVE",
@@ -1857,7 +1922,7 @@ describe("iLert webhook canary", () => {
   });
 
   test("finds a late discovery alert and resolves its retained ID in reserve", async () => {
-    const service = canaryService({ lateAlertAtListing: 36 });
+    const service = canaryService({ lateAlertAtListing: 18 });
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
@@ -1866,7 +1931,7 @@ describe("iLert webhook canary", () => {
     expect(service.requests.some((request) => request.url.endsWith("/alerts/199"))).toBe(true);
   });
 
-  test("uses the 32-day inventory window for an attempt older than GitHub's rerun allowance", async () => {
+  test("uses the 32-day inventory window throughout bounded delayed discovery", async () => {
     const runStartedAt = 30 * 24 * 60 * 60 * 1_000 + 10 * 60 * 1_000;
     let currentTime = runStartedAt;
     let resolved = false;
@@ -1879,7 +1944,7 @@ describe("iLert webhook canary", () => {
       if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
       if (url.pathname === "/api/events") return new Response(null, { status: 202 });
       if (url.pathname === "/api/alerts/count") {
-        return Response.json({ count: currentTime >= runStartedAt + 361_000 ? 1 : 0 });
+        return Response.json({ count: currentTime >= runStartedAt + 81_000 ? 1 : 0 });
       }
       if (url.pathname === "/api/alerts") {
         inventoryTimes.push(currentTime);
@@ -1887,7 +1952,7 @@ describe("iLert webhook canary", () => {
         if (url.searchParams.getAll("states").includes("RESOLVED")) {
           expect(Date.parse(from!)).toBeLessThanOrEqual(0);
         }
-        return Response.json(currentTime >= runStartedAt + 361_000 ? [{
+        return Response.json(currentTime >= runStartedAt + 81_000 ? [{
           alertKey: canaryAlertKey(RUN_ID, "1"),
           alertSource: { id: SOURCE_ID },
           id: 199,
@@ -1920,8 +1985,8 @@ describe("iLert webhook canary", () => {
       now: () => currentTime,
       sleep: async (milliseconds) => { currentTime += milliseconds; },
     });
-    expect(inventoryTimes).toContain(runStartedAt + 360_000);
-    expect(inventoryTimes).toContain(runStartedAt + 365_000);
+    expect(inventoryTimes).toContain(runStartedAt + 80_000);
+    expect(inventoryTimes).toContain(runStartedAt + 90_000);
     expect(requests.some((request) =>
       request.method === "PUT" && request.url.endsWith("/alerts/199/resolve")
     )).toBe(true);
@@ -2345,7 +2410,7 @@ describe("iLert webhook canary", () => {
         const request = new Request(input, init);
         if (
           request.url.includes("/alerts?") &&
-          currentTime >= 360_000 &&
+          currentTime >= CANARY_FINALIZER_BUDGETS.discoveryMs &&
           terminalFailures > 0
         ) {
           terminalFailures -= 1;
@@ -2357,7 +2422,7 @@ describe("iLert webhook canary", () => {
       sleep: async (milliseconds) => { currentTime += milliseconds; },
     });
     expect(terminalFailures).toBe(0);
-    expect(currentTime).toBeGreaterThanOrEqual(370_000);
+    expect(currentTime).toBeGreaterThanOrEqual(100_000);
   });
 
   test("requires matching all-state counts and repeated inventories before terminal success", async () => {
@@ -2370,7 +2435,10 @@ describe("iLert webhook canary", () => {
       fetchFn: async (input, init) => {
         const request = new Request(input, init);
         const url = new URL(request.url);
-        if (url.pathname === "/api/alerts/count" && currentTime >= 360_000) {
+        if (
+          url.pathname === "/api/alerts/count" &&
+          currentTime >= CANARY_FINALIZER_BUDGETS.discoveryMs
+        ) {
           terminalCountCalls += 1;
           if (terminalCountCalls === 2) return Response.json({ count: 1 });
         }

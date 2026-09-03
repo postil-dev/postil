@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 
+import { CANARY_FINALIZER_BUDGETS } from "../scripts/reconcile-ilert-alert-stream";
+
 let queryCount = 0;
 let queryImpl: (text: string) => Promise<unknown>;
 
@@ -292,7 +294,7 @@ describe("production monitor workflow", () => {
     const cleanupIndex = alertStream?.steps?.indexOf(inJobFinalizer!) ?? -1;
     const canaryIndex = alertStream?.steps?.indexOf(canary!) ?? -1;
     expect(cleanupIndex).toBeGreaterThan(canaryIndex);
-    expect(boundedStepMinutes(inJobFinalizer)).toBe(12);
+    expect(boundedStepMinutes(inJobFinalizer)).toBe(4);
     expect(inJobFinalizer?.if).toBe(
       "${{ always() && steps.canary.outcome != 'skipped' }}",
     );
@@ -320,7 +322,7 @@ describe("production monitor workflow", () => {
     });
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
-    expect(finalizer?.["timeout-minutes"]).toBe(22);
+    expect(finalizer?.["timeout-minutes"]).toBe(11);
     expect(finalizer?.if).toBe(
       "${{ always() && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
     );
@@ -328,19 +330,19 @@ describe("production monitor workflow", () => {
     const finalizerCleanup = finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
     );
-    expect(finalizerCleanup?.run).toContain("timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary");
+    expect(finalizerCleanup?.run).toContain("timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary");
     const finalizerCleanupIndex = finalizer?.steps?.indexOf(finalizerCleanup!) ?? -1;
     const finalizerSetupSteps = (finalizer?.steps ?? []).slice(0, finalizerCleanupIndex);
     const finalizerSetupBudgetMinutes = finalizerSetupSteps.reduce(
       (total, step) => total + (step["timeout-minutes"] ?? 0),
       0,
     );
-    const finalizerHeadroomMinutes = 5;
+    const finalizerHeadroomMinutes = 2;
     expect(finalizerCleanupIndex).toBe((finalizer?.steps?.length ?? 0) - 1);
     expect(finalizerSetupSteps).toHaveLength(4);
     expect(finalizerSetupSteps.map((step) => step["timeout-minutes"])).toEqual([1, 1, 1, 1]);
     expect(finalizerSetupBudgetMinutes).toBe(4);
-    expect(boundedStepMinutes(finalizerCleanup)).toBe(12);
+    expect(boundedStepMinutes(finalizerCleanup)).toBe(4);
     expect(
       finalizerSetupBudgetMinutes +
         boundedStepMinutes(finalizerCleanup) +
@@ -409,6 +411,34 @@ describe("production monitor workflow", () => {
     expect(workflow.jobs.resolve?.if).toBe(
       "${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
     );
+  });
+
+  test("fits finalizer cleanup inside GitHub's cancellation grace", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
+    };
+    const cleanupCommands = ["alert-stream", "alert-stream-finalize"].map((jobName) =>
+      workflow.jobs[jobName]?.steps.find((step) =>
+        step.run?.includes("--finalize-canary")
+      )?.run
+    );
+    expect(CANARY_FINALIZER_BUDGETS.discoveryMs +
+      CANARY_FINALIZER_BUDGETS.terminalValidationMs +
+      CANARY_FINALIZER_BUDGETS.cleanupMs).toBe(CANARY_FINALIZER_BUDGETS.operationMs);
+    expect(CANARY_FINALIZER_BUDGETS.shellMs - CANARY_FINALIZER_BUDGETS.operationMs)
+      .toBeGreaterThanOrEqual(30_000);
+    expect(CANARY_FINALIZER_BUDGETS.cancellationGraceMs - CANARY_FINALIZER_BUDGETS.shellMs)
+      .toBeGreaterThanOrEqual(60_000);
+    expect(cleanupCommands).toEqual([
+      "timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary",
+      "timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary",
+    ]);
+    expect(boundedStepMinutes({ run: cleanupCommands[0] }) * 60_000)
+      .toBe(CANARY_FINALIZER_BUDGETS.shellMs);
   });
 
   test("prevents non-main manual dispatches from loading production credentials or local actions", async () => {

@@ -591,12 +591,12 @@ jobs:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    # The 45-minute job budget reserves five minutes for setup, seven minutes
-    # for preview reconciliation, thirteen for reconcile plus canary, twelve
+    # The 37-minute job budget reserves five minutes for setup, seven minutes
+    # for preview reconciliation, thirteen for reconcile plus canary, four
     # for in-job cleanup, and eight minutes of runner headroom. The canary
     # reserves its final two minutes for repeated resolution verification before
     # it can send ALERT.
-    timeout-minutes: 45
+    timeout-minutes: 37
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         timeout-minutes: 1
@@ -663,7 +663,7 @@ jobs:
           POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
           POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: ${{ github.run_attempt }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
-        run: timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
+        run: timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
 
   alert-stream-finalize:
     name: Finalize iLert webhook canary cleanup
@@ -678,10 +678,10 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     # Four explicitly bounded setup steps take at most four minutes, followed
-    # by twelve minutes for cleanup and five minutes of runner headroom. The
-    # 22-minute cap is strictly larger than that complete budget. It never
+    # by four minutes for cleanup and two minutes of runner headroom. The
+    # 11-minute cap is strictly larger than that complete budget. It never
     # reconciles the action.
-    timeout-minutes: 22
+    timeout-minutes: 11
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         timeout-minutes: 1
@@ -720,7 +720,7 @@ jobs:
           POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}
           POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: ${{ github.run_attempt }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
-        run: timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
+        run: timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
 
   # Alert delivery is owned by the external alerting service (ilert). The
   # platform and this workflow only report events; paging, escalation, and

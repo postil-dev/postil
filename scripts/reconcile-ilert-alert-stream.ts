@@ -16,10 +16,19 @@ const CANARY_RETRY_MS = 2_000;
 const CANARY_CLEANUP_RETRY_MS = 5_000;
 const CANARY_DEADLINE_MS = 360_000;
 const CANARY_CLEANUP_RESERVE_MS = 120_000;
-const CANARY_FINALIZER_DEADLINE_MS = 600_000;
-const CANARY_FINALIZER_DISCOVERY_DEADLINE_MS = 360_000;
+export const CANARY_FINALIZER_BUDGETS = {
+  cancellationGraceMs: 300_000,
+  cleanupMs: 60_000,
+  discoveryMs: 90_000,
+  operationMs: 210_000,
+  shellMs: 240_000,
+  terminalValidationMs: 60_000,
+} as const;
+const CANARY_FINALIZER_DEADLINE_MS = CANARY_FINALIZER_BUDGETS.operationMs;
+const CANARY_FINALIZER_DISCOVERY_DEADLINE_MS = CANARY_FINALIZER_BUDGETS.discoveryMs;
 const CANARY_FINALIZER_DISCOVERY_RETRY_MS = 10_000;
-const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 60_000;
+const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 30_000;
+const CANARY_FINALIZER_CLEANUP_RESERVE_MS = CANARY_FINALIZER_BUDGETS.cleanupMs;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
 const CANARY_ORPHAN_SWEEP_DEADLINE_MS = 12 * 60 * 1_000;
 const CANARY_ORPHAN_SWEEP_MAX_PAGES = 20;
@@ -33,6 +42,7 @@ const ALERT_PAGE_SIZE = 100;
 export const MAX_CANARY_RUN_ATTEMPT = 51;
 const FINALIZER_STABLE_EMPTY_SCANS = 2;
 const CANARY_KEY_PREFIX = "postil-ilert-webhook-canary";
+const COMPATIBILITY_CANARY_KEY = "postil-production-monitor-test";
 
 export const ALERT_TRIGGER_TYPES = [
   "alert-created",
@@ -523,17 +533,21 @@ export async function finalizeIlertWebhookCanary(
     sleep,
     sourceId: options.sourceId,
   };
-  const keys = deterministicCanaryKeys(
+  const deterministicKeys = deterministicCanaryKeys(
     identity.runId,
     sweepAttempt,
     options.sourceId,
   );
+  const keys: CanaryCleanupKey[] = [
+    ...deterministicKeys,
+    { key: COMPATIBILITY_CANARY_KEY, sourceId: options.sourceId },
+  ];
   const handoff = options.alertSubmitted ?? "unknown";
-  const currentMain = keys.find((key) => key.runAttempt === identity.runAttempt);
+  const currentMain = deterministicKeys.find((key) => key.runAttempt === identity.runAttempt);
   if (!currentMain) {
     throw new Error("iLert canary cleanup could not reconstruct the producer attempt");
   }
-  await finalizeDeterministicCanaryKeys(
+  await finalizeManagedCanaryKeys(
     cleanup,
     keys,
     discoveryDeadline,
@@ -570,7 +584,7 @@ export async function sweepIlertWebhookCanaryOrphans(
   );
 
   for (let pass = 0; pass < CANARY_CLEANUP_ATTEMPTS; pass += 1) {
-    const discovered = await findOpenDeterministicCanaryAlerts({
+    const discovered = await findOpenManagedCanaryAlerts({
       ...cleanup,
       maxPages: CANARY_ORPHAN_SWEEP_MAX_PAGES,
     });
@@ -589,7 +603,7 @@ export async function sweepIlertWebhookCanaryOrphans(
       );
     }
 
-    const remainingOpen = await findOpenDeterministicCanaryAlerts({
+    const remainingOpen = await findOpenManagedCanaryAlerts({
       ...cleanup,
       maxPages: CANARY_ORPHAN_SWEEP_MAX_PAGES,
     });
@@ -669,10 +683,13 @@ class InvalidCanaryAlertPriorityError extends InvalidCanaryAlertValidationError 
 
 class InvalidCanaryAlertIdentityError extends InvalidCanaryAlertValidationError {}
 
-interface DeterministicCanaryKey {
+interface CanaryCleanupKey {
   key: string;
-  runAttempt: number;
   sourceId: number;
+}
+
+interface DeterministicCanaryKey extends CanaryCleanupKey {
+  runAttempt: number;
 }
 
 interface ReportTimeWindow {
@@ -963,7 +980,7 @@ async function precleanPriorAttemptKeys(
   let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
 
   for (let pass = 0; pass < CANARY_CLEANUP_ATTEMPTS; pass += 1) {
-    const discovered = await discoverOpenDeterministicAlerts(
+    const discovered = await discoverOpenManagedAlerts(
       options,
       keys,
       rollingCanaryInventoryWindow(options.deadline.now()),
@@ -994,9 +1011,9 @@ async function precleanPriorAttemptKeys(
   );
 }
 
-async function finalizeDeterministicCanaryKeys(
+async function finalizeManagedCanaryKeys(
   options: CleanupOptions,
-  keys: readonly DeterministicCanaryKey[],
+  keys: readonly CanaryCleanupKey[],
   discoveryDeadline: Deadline,
   handoff: CanaryHandoff,
   currentMain: DeterministicCanaryKey,
@@ -1026,7 +1043,7 @@ async function finalizeDeterministicCanaryKeys(
     maxPages?: number,
   ): Promise<{ complete: boolean; open: number }> => {
     const inventoryWindow = rollingCanaryInventoryWindow(deadline.now());
-    const result = await discoverOpenDeterministicAlerts(
+    const result = await discoverOpenManagedAlerts(
       { ...options, deadline },
       keys,
       inventoryWindow,
@@ -1116,10 +1133,10 @@ async function finalizeDeterministicCanaryKeys(
   let inventoryIncomplete = false;
   let stableEmptyScans = 0;
 
-  while (remaining(options.deadline) > CANARY_CLEANUP_RESERVE_MS) {
+  while (remaining(options.deadline) > CANARY_FINALIZER_CLEANUP_RESERVE_MS) {
     const terminalDeadline: Deadline = {
       expiresAt: Math.min(
-        options.deadline.expiresAt - CANARY_CLEANUP_RESERVE_MS,
+        options.deadline.expiresAt - CANARY_FINALIZER_CLEANUP_RESERVE_MS,
         options.deadline.now() + CANARY_FINALIZER_TERMINAL_INVENTORY_MS,
       ),
       now: options.deadline.now,
@@ -1155,7 +1172,7 @@ async function finalizeDeterministicCanaryKeys(
     }
     const delay = Math.min(
       CANARY_CLEANUP_RETRY_MS,
-      remaining(options.deadline) - CANARY_CLEANUP_RESERVE_MS,
+      remaining(options.deadline) - CANARY_FINALIZER_CLEANUP_RESERVE_MS,
     );
     if (delay > 0) await options.sleep(delay);
   }
@@ -1208,9 +1225,9 @@ async function finalizeDeterministicCanaryKeys(
   );
 }
 
-async function discoverOpenDeterministicAlerts(
+async function discoverOpenManagedAlerts(
   options: ManagementCleanupOptions,
-  keys: readonly DeterministicCanaryKey[],
+  keys: readonly CanaryCleanupKey[],
   window?: ReportTimeWindow,
   maxPages?: number,
   completeInventory = false,
@@ -1603,7 +1620,7 @@ async function findAlertsByKeys(
       }
     }
     const ids = alerts.map((item) => {
-      const alertId = positiveId(item.id);
+      const alertId = opaqueId(item.id);
       if (!alertId) {
         throw new Error("iLert returned an offset-page alert without an identity");
       }
@@ -1653,8 +1670,8 @@ async function findAlertsByKeys(
     }
     const first = await listCompleteInventory();
     const second = await listCompleteInventory();
-    const firstIds = first.map((alert) => positiveId(alert.id));
-    const secondIds = second.map((alert) => positiveId(alert.id));
+    const firstIds = first.map((alert) => opaqueId(alert.id));
+    const secondIds = second.map((alert) => opaqueId(alert.id));
     if (
       firstIds.length !== secondIds.length ||
       firstIds.some((id, index) => id !== secondIds[index])
@@ -1674,7 +1691,7 @@ async function findAlertsByKeys(
   }
 }
 
-async function findOpenDeterministicCanaryAlerts(
+async function findOpenManagedCanaryAlerts(
   options: ManagementCleanupOptions & { maxPages: number },
 ): Promise<{ errors: unknown[]; targets: CanaryTarget[] }> {
   const targets = new Map<string, CanaryTarget>();
@@ -1741,7 +1758,7 @@ async function findOpenDeterministicCanaryAlerts(
         inventory.push(alertId);
         if (
           typeof alert.alertKey !== "string" ||
-          !isDeterministicCanaryKey(alert.alertKey)
+          !isManagedCanaryKey(alert.alertKey)
         ) {
           continue;
         }
@@ -2281,6 +2298,10 @@ function isDeterministicCanaryKey(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isManagedCanaryKey(value: string): boolean {
+  return value === COMPATIBILITY_CANARY_KEY || isDeterministicCanaryKey(value);
 }
 
 function reportTime(milliseconds: number): string {
