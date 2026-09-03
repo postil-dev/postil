@@ -106,118 +106,229 @@ describe("deployment workflow trust boundaries", () => {
       jobs: {
         "deployment-trust": {
           permissions: Record<string, string>;
+          "timeout-minutes": number;
           steps: Array<{
             id?: string;
             env?: Record<string, string>;
             run?: string;
+            "timeout-minutes"?: number;
           }>;
         };
       };
     };
+    const deployWorkflow = parse(
+      readFileSync(join(root, ".github/workflows/deploy.yml"), "utf8"),
+    ) as { jobs: { authorize: { name: string }; deploy: { name: string } } };
     const trustJob = workflow.jobs["deployment-trust"];
-    const run = trustJob.steps.find((step) => step.id === "evidence")?.run;
+    const evidenceStep = trustJob.steps.find((step) => step.id === "evidence");
+    const run = evidenceStep?.run;
     expect(workflow.permissions).toEqual({});
     expect(trustJob.permissions).toEqual({ actions: "read" });
+    expect(trustJob["timeout-minutes"]).toBe(4);
+    expect(evidenceStep?.["timeout-minutes"]).toBe(3);
     expect(JSON.stringify(trustJob)).not.toContain("secrets.");
     expect(JSON.stringify(trustJob)).not.toContain("id-token");
     expect(run).toBeDefined();
+    expect(deployWorkflow.jobs.authorize.name).toBe("Authorize deployment source");
+    expect(deployWorkflow.jobs.deploy.name).toBe("Deploy production");
+    expect(run).toContain(`.name == "${deployWorkflow.jobs.authorize.name}"`);
+    expect(run).toContain(`.name == "${deployWorkflow.jobs.deploy.name}"`);
+    expect(run).toContain("timeout --signal=TERM --kill-after=5s 30s gh api");
 
     const temporaryDirectory = mkdtempSync(join(tmpdir(), "postil-workflow-trust-"));
     const ghPath = join(temporaryDirectory, "gh");
     const outputPath = join(temporaryDirectory, "output");
-    writeFileSync(ghPath, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"${MOCK_JOBS_JSON}\"\n");
+    const callsPath = join(temporaryDirectory, "calls");
+    writeFileSync(
+      ghPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${callsPath}"
+path="\${!#}"
+if [[ ! "\${path}" =~ /attempts/([0-9]+)/jobs\\?per_page=100$ ]]; then
+  exit 2
+fi
+jq -cer --arg attempt "\${BASH_REMATCH[1]}" '.[$attempt] // error("missing mock attempt")' <<<"\${MOCK_ATTEMPTS_JSON}"
+`,
+    );
     chmodSync(ghPath, 0o755);
 
     const evaluate = ({
-      authorizationConclusion = "success",
-      deployConclusion = "success",
+      attempts,
       deployEvent = "workflow_run",
       eventName = "workflow_run",
       eventRef = "refs/heads/main",
+      runAttempt = 1,
     }: {
-      authorizationConclusion?: string;
-      deployConclusion?: string;
+      attempts?: Record<string, { total_count: number; jobs: Array<{ name: string; conclusion: string }> }>;
       deployEvent?: string;
       eventName?: string;
       eventRef?: string;
+      runAttempt?: number;
     }) => {
       writeFileSync(outputPath, "");
-      const jobs = {
-        jobs: [
-          { name: "Authorize deployment source", conclusion: authorizationConclusion },
-          { name: "Deploy production", conclusion: deployConclusion },
-        ],
+      writeFileSync(callsPath, "");
+      const attemptEvidence = attempts ?? {
+        "1": {
+          total_count: 2,
+          jobs: [
+            { name: "Authorize deployment source", conclusion: "success" },
+            { name: "Deploy production", conclusion: "success" },
+          ],
+        },
       };
       const result = spawnSync("bash", ["-c", run!], {
         encoding: "utf8",
         env: {
           DEPLOY_EVENT: deployEvent,
-          DEPLOY_RUN_ATTEMPT: "1",
+          DEPLOY_RUN_ATTEMPT: String(runAttempt),
           DEPLOY_RUN_ID: "123",
           EVENT_NAME: eventName,
           EVENT_REF: eventRef,
           GH_TOKEN: "test-token",
           GITHUB_OUTPUT: outputPath,
           GITHUB_REPOSITORY: "postil-dev/postil",
-          MOCK_JOBS_JSON: JSON.stringify(jobs),
+          MOCK_ATTEMPTS_JSON: JSON.stringify(attemptEvidence),
           NODE_ENV: "test",
           PATH: `${temporaryDirectory}:${process.env.PATH}`,
         } as NodeJS.ProcessEnv,
       });
-      expect(result.status).toBe(0);
       const outputs = Object.fromEntries(
         readFileSync(outputPath, "utf8")
           .trim()
           .split("\n")
+          .filter(Boolean)
           .map((line) => line.split("=", 2) as [string, string]),
       );
-      return outputs;
+      const calls = readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean);
+      return { calls, outputs, status: result.status, stderr: result.stderr };
     };
+    const evidence = (
+      authorizationConclusion: string,
+      deployConclusion: string,
+    ) => ({
+      "1": {
+        total_count: 2,
+        jobs: [
+          { name: "Authorize deployment source", conclusion: authorizationConclusion },
+          { name: "Deploy production", conclusion: deployConclusion },
+        ],
+      },
+    });
 
     try {
-      expect(evaluate({ deployConclusion: "success" })).toEqual({
-        conclusion: "success",
-        trusted: "true",
+      for (const conclusion of ["success", "failure", "cancelled", "timed_out"]) {
+        expect(evaluate({ attempts: evidence("success", conclusion) })).toMatchObject({
+          status: 0,
+          outputs: { conclusion, trusted: "true" },
+        });
+      }
+      expect(evaluate({ attempts: evidence("skipped", "skipped") })).toMatchObject({
+        status: 0,
+        outputs: { conclusion: "skipped", trusted: "false" },
       });
-      expect(evaluate({ deployConclusion: "failure" })).toEqual({
-        conclusion: "failure",
-        trusted: "true",
+      expect(evaluate({ attempts: evidence("success", "skipped") })).toMatchObject({
+        status: 0,
+        outputs: { conclusion: "skipped", trusted: "false" },
       });
-      expect(evaluate({ deployConclusion: "cancelled" })).toEqual({
-        conclusion: "cancelled",
-        trusted: "true",
+      expect(evaluate({ attempts: evidence("skipped", "failure") })).toMatchObject({
+        status: 0,
+        outputs: { conclusion: "failure", trusted: "false" },
       });
-      expect(evaluate({ deployConclusion: "timed_out" })).toEqual({
-        conclusion: "timed_out",
-        trusted: "true",
+
+      const partialRerun = evaluate({
+        runAttempt: 2,
+        attempts: {
+          "1": {
+            total_count: 2,
+            jobs: [
+              { name: "Authorize deployment source", conclusion: "success" },
+              { name: "Deploy production", conclusion: "failure" },
+            ],
+          },
+          "2": {
+            total_count: 1,
+            jobs: [{ name: "Deploy production", conclusion: "cancelled" }],
+          },
+        },
       });
-      expect(evaluate({
-        authorizationConclusion: "skipped",
-        deployConclusion: "skipped",
-      })).toEqual({ conclusion: "skipped", trusted: "false" });
-      expect(evaluate({ deployConclusion: "skipped" })).toEqual({
-        conclusion: "skipped",
-        trusted: "false",
+      expect(partialRerun).toMatchObject({
+        status: 0,
+        outputs: { conclusion: "cancelled", trusted: "true" },
       });
-      expect(evaluate({
-        authorizationConclusion: "skipped",
-        deployConclusion: "failure",
-      })).toEqual({ conclusion: "failure", trusted: "false" });
-      expect(evaluate({ deployEvent: "pull_request" })).toEqual({
-        conclusion: "",
-        trusted: "false",
+      expect(partialRerun.calls).toEqual([
+        "api --method GET repos/postil-dev/postil/actions/runs/123/attempts/1/jobs?per_page=100",
+        "api --method GET repos/postil-dev/postil/actions/runs/123/attempts/2/jobs?per_page=100",
+      ]);
+
+      const duplicate = evaluate({
+        attempts: {
+          "1": {
+            total_count: 3,
+            jobs: [
+              { name: "Authorize deployment source", conclusion: "success" },
+              { name: "Deploy production", conclusion: "success" },
+              { name: "Deploy production", conclusion: "failure" },
+            ],
+          },
+        },
+      });
+      expect(duplicate.status).not.toBe(0);
+      expect(duplicate.outputs.trusted).toBe("false");
+
+      const missingAuthorization = evaluate({
+        attempts: {
+          "1": {
+            total_count: 1,
+            jobs: [{ name: "Deploy production", conclusion: "success" }],
+          },
+        },
+      });
+      expect(missingAuthorization.status).not.toBe(0);
+      expect(missingAuthorization.outputs.trusted).toBe("false");
+
+      const missingCurrentDeployment = evaluate({
+        attempts: {
+          "1": {
+            total_count: 1,
+            jobs: [{ name: "Authorize deployment source", conclusion: "success" }],
+          },
+        },
+      });
+      expect(missingCurrentDeployment.status).not.toBe(0);
+      expect(missingCurrentDeployment.outputs.trusted).toBe("false");
+
+      const truncated = evaluate({
+        attempts: {
+          "1": {
+            total_count: 3,
+            jobs: [
+              { name: "Authorize deployment source", conclusion: "success" },
+              { name: "Deploy production", conclusion: "success" },
+            ],
+          },
+        },
+      });
+      expect(truncated.status).not.toBe(0);
+      expect(truncated.outputs.trusted).toBe("false");
+
+      expect(evaluate({ deployEvent: "pull_request" })).toMatchObject({
+        calls: [],
+        status: 0,
+        outputs: { conclusion: "", trusted: "false" },
       });
       expect(evaluate({
         eventName: "workflow_dispatch",
         eventRef: "refs/heads/main",
-      })).toEqual({ conclusion: "", trusted: "true" });
+      })).toMatchObject({ calls: [], status: 0, outputs: { conclusion: "", trusted: "true" } });
       expect(evaluate({
         eventName: "workflow_dispatch",
         eventRef: "refs/heads/feature",
-      })).toEqual({ conclusion: "", trusted: "false" });
-      expect(evaluate({ eventName: "schedule" })).toEqual({
-        conclusion: "",
-        trusted: "true",
+      })).toMatchObject({ calls: [], status: 0, outputs: { conclusion: "", trusted: "false" } });
+      expect(evaluate({ eventName: "schedule" })).toMatchObject({
+        calls: [],
+        status: 0,
+        outputs: { conclusion: "", trusted: "true" },
       });
     } finally {
       rmSync(temporaryDirectory, { recursive: true, force: true });
