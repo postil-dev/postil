@@ -103,6 +103,7 @@ runs:
           --max-time 15 \
           --retry 3 \
           --retry-delay 5 \
+          --retry-max-time 45 \
           --retry-all-errors \
           --header 'Content-Type: application/json' \
           --data @"${RUNNER_TEMP}/ilert-event.json" \

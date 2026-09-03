@@ -1115,7 +1115,7 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED", "PENDING", "PENDING", "PENDING"]);
   });
 
-  test("fails closed when the orphan inventory cannot be count-bracketed", async () => {
+  test("resolves a retained exact ID then fails closed after a continuity mismatch", async () => {
     const service = canaryService({
       initialAlerts: [{
         alertKey: canaryAlertKey("67890", "2"),
@@ -1123,20 +1123,29 @@ describe("iLert webhook canary", () => {
         status: "PENDING",
       }],
     });
+    let alertCountRequests = 0;
+    let alertListRequests = 0;
     await expect(sweepIlertWebhookCanaryOrphans({
       apiKey: API_KEY,
       fetchFn: async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).pathname === "/api/alerts/count") {
-          return Response.json({ count: 2 });
+          alertCountRequests += 1;
+          return Response.json({ count: alertCountRequests < 3 ? 1 : 0 });
+        }
+        if (new URL(request.url).pathname === "/api/alerts") {
+          alertListRequests += 1;
+          if (alertListRequests === 2) return Response.json([]);
         }
         return service.fetchFn(input, init);
       },
       sleep: async () => undefined,
       sourceId: SOURCE_ID,
-    })).rejects.toThrow("orphan canary inventory changed during pagination");
-    expect(service.requests.some((request) => request.method === "PUT")).toBe(false);
-    expect(service.statuses).toEqual(["PENDING"]);
+    })).rejects.toThrow("inventory was incomplete after resolving retained alerts");
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
+    )).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
   test("rejects attempt 52 for deterministic keys and finalizer sweeps", async () => {

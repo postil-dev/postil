@@ -27,7 +27,7 @@ jobs:
     # 'true' (and the FLY_API_TOKEN secret is configured). Also skips a
     # workflow_run event whose ci run did not succeed; workflow_dispatch
     # (manual deploy) has no associated ci run and always proceeds.
-    if: vars.FLY_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    if: vars.FLY_DEPLOY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

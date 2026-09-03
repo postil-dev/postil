@@ -35,7 +35,7 @@ concurrency:
 jobs:
   release-recovery:
     name: Recover abandoned release preparation
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'success' }}
+    if: ${{ (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'success') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     concurrency:
       group: fly-deploy
       queue: max
@@ -543,7 +543,7 @@ jobs:
     # alerts whose producer and two finalizers were both interrupted. This job
     # has no Event API credential and never emits a new canary or resolves a
     # routine production-monitor alert.
-    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true && github.ref == 'refs/heads/main') }}
+    if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -728,16 +728,20 @@ jobs:
   notify:
     name: Raise external alert
     needs: [smoke, release-recovery]
-    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') }}
+    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    # Checkout, OIDC secret loading, and required delivery are each bounded.
+    # The parent reserves one additional minute of runner headroom.
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        timeout-minutes: 1
       - name: Load required iLert integration secret from Infisical
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -748,6 +752,7 @@ jobs:
           secret-name: ILERT_INTEGRATION_KEY
       - name: Send ilert event
         uses: ./.github/actions/ilert-event
+        timeout-minutes: 1
         with:
           event-type: ALERT
           summary: ${{ (needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && 'Postil release recovery failed' || 'Postil production monitor failed' }}
@@ -765,7 +770,7 @@ jobs:
   resolve-release-recovery:
     name: Resolve release recovery alert
     needs: release-recovery
-    if: ${{ always() && (needs.release-recovery.outputs.clear == 'true' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')) }}
+    if: ${{ always() && (needs.release-recovery.outputs.clear == 'true' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -807,16 +812,20 @@ jobs:
   resolve:
     name: Resolve external alert
     needs: smoke
-    if: ${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}
+    if: ${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    # Checkout, OIDC secret loading, and required delivery are each bounded.
+    # The parent reserves one additional minute of runner headroom.
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        timeout-minutes: 1
       - name: Load iLert integration secret from Infisical
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
         with:
           method: oidc
           identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
@@ -827,6 +836,7 @@ jobs:
           secret-name: ILERT_INTEGRATION_KEY
       - name: Resolve ilert alert
         uses: ./.github/actions/ilert-event
+        timeout-minutes: 1
         with:
           event-type: RESOLVE
           summary: Postil production monitor recovered

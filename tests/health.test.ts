@@ -388,7 +388,7 @@ describe("production monitor workflow", () => {
     expect(finalizer?.steps?.filter((step) => step.with?.["secret-name"])
       .every((step) => step.if === undefined)).toBe(true);
     expect(workflow.jobs.notify?.if).toBe(
-      "${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') }}",
+      "${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
     );
     const notifySecret = workflow.jobs.notify?.steps?.find(
       (step) => step.name === "Load required iLert integration secret from Infisical",
@@ -407,8 +407,99 @@ describe("production monitor workflow", () => {
         with: { "require-delivery": true },
       });
     expect(workflow.jobs.resolve?.if).toBe(
-      "${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
+      "${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
     );
+  });
+
+  test("prevents non-main manual dispatches from loading production credentials or local actions", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: Record<string, {
+        if?: string;
+        steps?: Array<{
+          env?: Record<string, string>;
+          uses?: string;
+          with?: Record<string, string>;
+        }>;
+      }>;
+    };
+    const protectedJobs = Object.entries(workflow.jobs).filter(([, job]) =>
+      job.steps?.some((step) => step.uses?.startsWith("actions/checkout@")) &&
+      job.steps?.some((step) =>
+        step.uses?.startsWith("Infisical/secrets-action@") ||
+        step.uses === "./.github/actions/ilert-event" ||
+        Object.values(step.env ?? {}).some((value) => value.includes("secrets."))
+      )
+    );
+    expect(protectedJobs.map(([name]) => name).sort()).toEqual([
+      "alert-stream",
+      "alert-stream-finalize",
+      "canary-orphan-sweep",
+      "notify",
+      "release-recovery",
+      "resolve",
+      "resolve-release-recovery",
+    ]);
+    for (const [name, job] of protectedJobs) {
+      expect(job.if).toContain(
+        "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'",
+      );
+    }
+
+    const deploySource = await readFile(
+      new URL("../.github/workflows/deploy.yml", import.meta.url),
+      "utf8",
+    );
+    const deploy = parse(deploySource) as { jobs: { deploy: { if: string } } };
+    expect(deploy.jobs.deploy.if).toContain(
+      "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'",
+    );
+  });
+
+  test("gives required routine iLert delivery a bounded end-to-end budget", async () => {
+    const [workflowSource, actionSource] = await Promise.all([
+      readFile(new URL("../.github/workflows/production-monitor.yml", import.meta.url), "utf8"),
+      readFile(new URL("../.github/actions/ilert-event/action.yml", import.meta.url), "utf8"),
+    ]);
+    const workflow = parse(workflowSource) as {
+      jobs: Record<string, {
+        "timeout-minutes": number;
+        steps: Array<{
+          name?: string;
+          uses?: string;
+          "timeout-minutes"?: number;
+          with?: Record<string, string | boolean>;
+        }>;
+      }>;
+    };
+    const retryMaxTime = /--retry-max-time\s+(\d+)/u.exec(actionSource);
+    const requestMaxTime = /--max-time\s+(\d+)/u.exec(actionSource);
+    expect(retryMaxTime?.[1]).toBeDefined();
+    expect(requestMaxTime?.[1]).toBeDefined();
+    expect(Number(retryMaxTime?.[1])).toBeLessThanOrEqual(45);
+
+    for (const name of ["notify", "resolve"]) {
+      const job = workflow.jobs[name]!;
+      const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+      const secretLoad = job.steps.find((step) => step.uses?.startsWith("Infisical/secrets-action@"));
+      const delivery = job.steps.find((step) => step.uses === "./.github/actions/ilert-event");
+      expect(delivery?.with?.["require-delivery"]).toBe(true);
+      expect(checkout?.["timeout-minutes"]).toBe(1);
+      expect(secretLoad?.["timeout-minutes"]).toBe(1);
+      expect(delivery?.["timeout-minutes"]).toBe(1);
+      expect(Number(requestMaxTime?.[1]) + Number(retryMaxTime?.[1])).toBeLessThanOrEqual(
+        delivery!["timeout-minutes"]! * 60,
+      );
+      expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(
+        checkout!["timeout-minutes"]! +
+          secretLoad!["timeout-minutes"]! +
+          delivery!["timeout-minutes"]! +
+          1,
+      );
+    }
   });
 
   test("schedules a bounded management-only sweep for interrupted canary cleanup", async () => {
@@ -434,7 +525,7 @@ describe("production monitor workflow", () => {
     };
     const sweep = workflow.jobs["canary-orphan-sweep"];
     expect(sweep.if).toBe(
-      "${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true && github.ref == 'refs/heads/main') }}",
+      "${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
     );
     expect(sweep["timeout-minutes"]).toBe(21);
     const managementLoad = sweep.steps.find(
@@ -571,7 +662,7 @@ describe("production monitor workflow", () => {
     };
     const resolve = workflow.jobs.resolve;
     expect(resolve.if).toBe(
-      "${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
+      "${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
     );
     expect(resolve.steps.some((step) => step.name === "Check whether the previous run failed")).toBe(false);
     expect(resolve.steps.find((step) => step.name === "Load iLert integration secret from Infisical")).toMatchObject({

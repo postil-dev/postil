@@ -574,20 +574,18 @@ export async function sweepIlertWebhookCanaryOrphans(
       ...cleanup,
       maxPages: CANARY_ORPHAN_SWEEP_MAX_PAGES,
     });
-    rememberTargets(targets, discovered);
+    rememberTargets(targets, discovered.targets);
 
     const resolved = await resolveKnownAlerts(cleanup, targets);
-    if (resolved.errors.length > 0) {
-      throw new AggregateError(
-        resolved.errors,
-        "iLert orphan canary sweep could not resolve every discovered alert",
-      );
-    }
     const observed = await observeKnownAlerts(cleanup, targets);
-    if (!observed.allResolved) {
+    if (discovered.errors.length > 0 || resolved.errors.length > 0 || !observed.allResolved) {
       throw new AggregateError(
-        observed.errors,
-        "iLert orphan canary sweep could not verify every discovered alert as RESOLVED",
+        [...discovered.errors, ...resolved.errors, ...observed.errors],
+        discovered.errors.length > 0
+          ? "iLert orphan canary sweep inventory was incomplete after resolving retained alerts"
+          : resolved.errors.length > 0
+          ? "iLert orphan canary sweep could not resolve every discovered alert"
+          : "iLert orphan canary sweep could not verify every discovered alert as RESOLVED",
       );
     }
 
@@ -595,7 +593,15 @@ export async function sweepIlertWebhookCanaryOrphans(
       ...cleanup,
       maxPages: CANARY_ORPHAN_SWEEP_MAX_PAGES,
     });
-    rememberTargets(targets, remainingOpen);
+    rememberTargets(targets, remainingOpen.targets);
+    if (remainingOpen.errors.length > 0) {
+      const resolved = await resolveKnownAlerts(cleanup, targets);
+      const observed = await observeKnownAlerts(cleanup, targets);
+      throw new AggregateError(
+        [...remainingOpen.errors, ...resolved.errors, ...observed.errors],
+        "iLert orphan canary sweep inventory was incomplete after resolving retained alerts",
+      );
+    }
     await loadManagementBoundAlertSource(
       fetchFn,
       options.apiKey,
@@ -603,7 +609,7 @@ export async function sweepIlertWebhookCanaryOrphans(
       deadline,
       sleep,
     );
-    if (remainingOpen.length === 0) return;
+    if (remainingOpen.targets.length === 0) return;
     if (pass + 1 < CANARY_CLEANUP_ATTEMPTS) {
       await sleep(Math.min(CANARY_CLEANUP_RETRY_MS, remaining(deadline)));
     }
@@ -1670,7 +1676,7 @@ async function findAlertsByKeys(
 
 async function findOpenDeterministicCanaryAlerts(
   options: ManagementCleanupOptions & { maxPages: number },
-): Promise<CanaryTarget[]> {
+): Promise<{ errors: unknown[]; targets: CanaryTarget[] }> {
   const targets = new Map<string, CanaryTarget>();
   const queryFor = (start?: number): URLSearchParams => {
     const query = new URLSearchParams();
@@ -1751,17 +1757,23 @@ async function findOpenDeterministicCanaryAlerts(
     return found;
   };
 
-  const first = await listCompleteInventory();
-  const second = await listCompleteInventory();
-  const firstIds = first.map((target) => target.alertId);
-  const secondIds = second.map((target) => target.alertId);
-  if (
-    firstIds.length !== secondIds.length ||
-    firstIds.some((id, index) => id !== secondIds[index])
-  ) {
-    throw new Error("iLert orphan canary inventory changed during continuity validation");
+  try {
+    const first = await listCompleteInventory();
+    const second = await listCompleteInventory();
+    const firstIds = first.map((target) => target.alertId);
+    const secondIds = second.map((target) => target.alertId);
+    if (
+      firstIds.length !== secondIds.length ||
+      firstIds.some((id, index) => id !== secondIds[index])
+    ) {
+      throw new Error("iLert orphan canary inventory changed during continuity validation");
+    }
+    return { errors: [], targets: [...targets.values()] };
+  } catch (error) {
+    const target = invalidCanaryAlertTarget(error);
+    if (target) targets.set(target.alertId, target);
+    return { errors: [error], targets: [...targets.values()] };
   }
-  return [...targets.values()];
 }
 
 function alertSourceId(alert: Json): number | null {
