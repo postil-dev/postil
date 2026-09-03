@@ -1148,6 +1148,62 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
+  test("fails closed when unrelated orphan inventory identities churn between scans", async () => {
+    const requests: Request[] = [];
+    let alertListRequests = 0;
+    await expect(sweepIlertWebhookCanaryOrphans({
+      apiKey: API_KEY,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.pathname === "/api/alerts/count") return Response.json({ count: 1 });
+        if (url.pathname === "/api/alerts") {
+          alertListRequests += 1;
+          return Response.json([{
+            alertKey: `routine-alert-${alertListRequests}`,
+            alertSource: { id: SOURCE_ID },
+            id: alertListRequests,
+            priority: "HIGH",
+            status: "PENDING",
+          }]);
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+      sleep: async () => undefined,
+      sourceId: SOURCE_ID,
+    })).rejects.toThrow("inventory was incomplete after resolving retained alerts");
+    expect(alertListRequests).toBe(2);
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
+  });
+
+  test("preserves an opaque routine-alert ID while validating orphan inventory continuity", async () => {
+    let alertListRequests = 0;
+    await sweepIlertWebhookCanaryOrphans({
+      apiKey: API_KEY,
+      fetchFn: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.pathname === "/api/alerts/count") return Response.json({ count: 1 });
+        if (url.pathname === "/api/alerts") {
+          alertListRequests += 1;
+          return Response.json([{
+            alertKey: "routine-alert",
+            alertSource: { id: SOURCE_ID },
+            id: "provider.alert:0001",
+            priority: "HIGH",
+            status: "PENDING",
+          }]);
+        }
+        throw new Error(`unexpected request: ${url}`);
+      },
+      sleep: async () => undefined,
+      sourceId: SOURCE_ID,
+    });
+    expect(alertListRequests).toBe(4);
+  });
+
   test("rejects attempt 52 for deterministic keys and finalizer sweeps", async () => {
     expect(() => canaryAlertKey(RUN_ID, "52")).toThrow(
       "GitHub run attempt must be between 1 and 51",

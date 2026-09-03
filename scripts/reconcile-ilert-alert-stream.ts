@@ -1708,10 +1708,10 @@ async function findOpenDeterministicCanaryAlerts(
     }
     return count;
   };
-  const listCompleteInventory = async (): Promise<CanaryTarget[]> => {
+  const listCompleteInventory = async (): Promise<string[]> => {
     const beforeCount = await fetchCount();
     const identities = new Set<string>();
-    const found: CanaryTarget[] = [];
+    const inventory: string[] = [];
     for (let page = 0, start = 0; ; page += 1, start += ALERT_PAGE_SIZE) {
       if (page >= options.maxPages) {
         throw new Error("iLert orphan canary inventory exceeded its pagination limit");
@@ -1730,7 +1730,7 @@ async function findOpenDeterministicCanaryAlerts(
       }
       for (const item of pageAlerts) {
         const alert = object(item)!;
-        const alertId = positiveId(alert.id);
+        const alertId = opaqueId(alert.id);
         if (!alertId) {
           throw new Error("iLert returned an orphan canary inventory alert without an identity");
         }
@@ -1738,6 +1738,7 @@ async function findOpenDeterministicCanaryAlerts(
           throw new Error("iLert orphan canary inventory repeated an alert identity");
         }
         identities.add(alertId);
+        inventory.push(alertId);
         if (
           typeof alert.alertKey !== "string" ||
           !isDeterministicCanaryKey(alert.alertKey)
@@ -1746,7 +1747,6 @@ async function findOpenDeterministicCanaryAlerts(
         }
         const target = canaryObservation(alert, alert.alertKey, options.sourceId);
         targets.set(target.alertId, target);
-        found.push(target);
       }
       if (pageAlerts.length < ALERT_PAGE_SIZE) break;
     }
@@ -1754,17 +1754,15 @@ async function findOpenDeterministicCanaryAlerts(
     if (beforeCount !== afterCount || afterCount !== identities.size) {
       throw new Error("iLert orphan canary inventory changed during pagination");
     }
-    return found;
+    return inventory;
   };
 
   try {
     const first = await listCompleteInventory();
     const second = await listCompleteInventory();
-    const firstIds = first.map((target) => target.alertId);
-    const secondIds = second.map((target) => target.alertId);
     if (
-      firstIds.length !== secondIds.length ||
-      firstIds.some((id, index) => id !== secondIds[index])
+      first.length !== second.length ||
+      first.some((id, index) => id !== second[index])
     ) {
       throw new Error("iLert orphan canary inventory changed during continuity validation");
     }
