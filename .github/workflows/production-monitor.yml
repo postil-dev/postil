@@ -84,8 +84,18 @@ jobs:
           authorization_trusted=false
           deployment_conclusion=""
           for ((attempt = 1; attempt <= DEPLOY_RUN_ATTEMPT; attempt += 1)); do
-            jobs="$(timeout --signal=TERM --kill-after=5s 30s gh api --method GET \
-              "repos/${GITHUB_REPOSITORY}/actions/runs/${DEPLOY_RUN_ID}/attempts/${attempt}/jobs?per_page=100")"
+            jobs=""
+            for api_attempt in 1 2 3; do
+              if jobs="$(timeout --signal=TERM --kill-after=5s 30s gh api --method GET \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${DEPLOY_RUN_ID}/attempts/${attempt}/jobs?per_page=100")"; then
+                break
+              fi
+              if (( api_attempt == 3 )); then
+                echo "Deployment job evidence remained unavailable after bounded retries." >&2
+                exit 1
+              fi
+              sleep 2
+            done
             jq -e '
               (.total_count | type == "number") and
               (.jobs | type == "array") and

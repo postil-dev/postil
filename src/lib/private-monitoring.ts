@@ -114,6 +114,7 @@ const MONITOR_STATE_ID = 1;
 const DEFAULT_LEASE_MS = 2 * 60 * 1_000;
 const PUBLIC_PROBE_TIMEOUT_MS = 8_000;
 const PUBLIC_PROBE_RETRY_DELAYS_MS = [100, 250] as const;
+const PUBLIC_PROBE_RETRY_AFTER_MAX_MS = 5_000;
 const TRANSIENT_PUBLIC_PROBE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const INCIDENT_REMINDER_MS = 6 * 60 * 60 * 1_000;
 const NOTIFICATION_LEASE_MS = 60 * 1_000;
@@ -1552,6 +1553,7 @@ async function monitoredFetch(
   const sleep = options.sleep ?? ((milliseconds) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 0; attempt <= PUBLIC_PROBE_RETRY_DELAYS_MS.length; attempt += 1) {
+    let retryDelay: number | undefined = PUBLIC_PROBE_RETRY_DELAYS_MS[attempt];
     try {
       const response = await fetchImpl(url, {
         ...init,
@@ -1564,12 +1566,32 @@ async function monitoredFetch(
         const body = readBody ? await response.text() : null;
         return { response, body, retriesExhausted: retryable };
       }
+      if (response.status === 429) {
+        retryDelay = retryAfterDelayMs(response.headers.get("retry-after")) ?? retryDelay;
+      }
     } catch (error) {
       if (attempt === PUBLIC_PROBE_RETRY_DELAYS_MS.length) throw error;
     }
-    await sleep(PUBLIC_PROBE_RETRY_DELAYS_MS[attempt]!);
+    await sleep(retryDelay!);
   }
   throw new Error("public probe retry policy exhausted unexpectedly");
+}
+
+function retryAfterDelayMs(value: string | null): number | null {
+  if (value === null) return null;
+  if (/^[0-9]+$/u.test(value)) {
+    const seconds = Number(value);
+    if (!Number.isSafeInteger(seconds)) return null;
+    return seconds >= PUBLIC_PROBE_RETRY_AFTER_MAX_MS / 1_000
+      ? PUBLIC_PROBE_RETRY_AFTER_MAX_MS
+      : seconds * 1_000;
+  }
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.min(
+    Math.max(0, retryAt - Date.now()),
+    PUBLIC_PROBE_RETRY_AFTER_MAX_MS,
+  );
 }
 
 function retryExhaustionSuffix(result: MonitoredFetchResult): string {

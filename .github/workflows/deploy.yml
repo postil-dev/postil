@@ -44,6 +44,17 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Record checked-out release SHA
+        env:
+          EXPECTED_RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ ! "${checked_out_sha}" =~ ^[0-9a-f]{40}$ || "${checked_out_sha}" != "${EXPECTED_RELEASE_SHA}" ]]; then
+            echo "::error::The checked-out release does not match the trusted deployment source."
+            exit 1
+          fi
+          echo "POSTIL_RELEASE_SHA=${checked_out_sha}" >> "${GITHUB_ENV}"
       # Bake the pinned CLI into the image so the worker can spawn it.
       # `src/data/public-cli-release.json` is the only place the pinned release
       # is named. This step always runs on deploy so
@@ -193,6 +204,10 @@ jobs:
             echo "::error::Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET."
             exit 1
           fi
+          if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
+            echo "::error::Infisical did not provide ILERT_INTEGRATION_KEY."
+            exit 1
+          fi
           staged=""
           token="${POSTHOG_PROJECT_TOKEN:-${NEXT_PUBLIC_POSTHOG_KEY:-}}"
           if [[ -n "${token}" ]]; then
@@ -206,6 +221,7 @@ jobs:
           # environment variables. This allowlist is the complete runtime
           # staging contract for operator-owned application secrets.
           operator_secret_names=(
+            ILERT_INTEGRATION_KEY
             POSTIL_ILERT_WEBHOOK_SECRET
             POSTIL_OPERATOR_GITHUB_IDS
           )
@@ -291,7 +307,7 @@ jobs:
           flyctl deploy \
             --remote-only \
             --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
-            --build-arg POSTIL_RELEASE_SHA="${GITHUB_SHA}" \
+            --build-arg POSTIL_RELEASE_SHA="${POSTIL_RELEASE_SHA}" \
             --build-arg POSTIL_DEPLOY_SOURCE_TYPECHECKED=1 \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}"
         env:

@@ -108,6 +108,30 @@ describeDb("iLert durable operator alert stream", () => {
     restoreEnvironment("POSTIL_ILERT_WEBHOOK_SECRET", originalWebhookSecret);
   }, 30_000);
 
+  test("installs the partial canary observation index without requiring legacy keys", async () => {
+    const index = await pool.query<{ definition: string; predicate: string | null }>(
+      `SELECT pg_get_indexdef(indexrelid) AS definition,
+              pg_get_expr(indpred, indrelid) AS predicate
+         FROM pg_index
+        WHERE indexrelid = 'ilert_alert_events_canary_observation_idx'::regclass`,
+    );
+
+    expect(index.rows).toEqual([{
+      definition: expect.stringContaining(
+        "USING btree (alert_key, event_type, alert_source_id)",
+      ),
+      predicate: "(alert_key IS NOT NULL)",
+    }]);
+    const column = await pool.query<{ is_nullable: string }>(
+      `SELECT is_nullable
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ilert_alert_events'
+          AND column_name = 'alert_key'`,
+    );
+    expect(column.rows).toEqual([{ is_nullable: "YES" }]);
+  });
+
   test("deduplicates event ids and notifies only after the row commits", async () => {
     const listener = new Client({ connectionString: ephemeral.url });
     await listener.connect();

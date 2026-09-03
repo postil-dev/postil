@@ -275,6 +275,57 @@ describe("private monitoring public probes", () => {
     expect(sitemapAttempts).toBe(2);
   });
 
+  test("honors bounded Retry-After delays for rate-limited probes", async () => {
+    let attempt = 0;
+    const delays: number[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/sitemap.xml") {
+          attempt += 1;
+          if (attempt === 1) {
+            return new Response("rate limited", {
+              status: 429,
+              headers: { "retry-after": "2" },
+            });
+          }
+          if (attempt === 2) {
+            return new Response("rate limited", {
+              status: 429,
+              headers: { "retry-after": "999999" },
+            });
+          }
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
+    );
+
+    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
+    expect(delays).toEqual([2_000, 5_000]);
+  });
+
+  test("uses the short fallback delay for malformed Retry-After", async () => {
+    let attempt = 0;
+    const delays: number[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/sitemap.xml" && attempt++ === 0) {
+          return new Response("rate limited", {
+            status: 429,
+            headers: { "retry-after": "not-a-delay" },
+          });
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
+    );
+
+    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
+    expect(delays).toEqual([100]);
+  });
+
   test("does not retry a semantic noindex failure", async () => {
     let loginAttempts = 0;
     const checks = await runPublicMonitoringChecks(

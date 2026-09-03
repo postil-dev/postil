@@ -29,6 +29,13 @@ describe("deployment workflow trust boundaries", () => {
           name: string;
           needs: string;
           permissions: Record<string, string>;
+          steps: Array<{
+            env?: Record<string, string>;
+            name?: string;
+            run?: string;
+            uses?: string;
+            with?: Record<string, string>;
+          }>;
         };
       };
     };
@@ -44,6 +51,33 @@ describe("deployment workflow trust boundaries", () => {
       if: "${{ needs.authorize.result == 'success' && vars.FLY_DEPLOY_ENABLED == 'true' }}",
       permissions: { contents: "read", "id-token": "write" },
     });
+    const checkout = workflow.jobs.deploy.steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@")
+    );
+    const releaseSha = workflow.jobs.deploy.steps.find(
+      (step) => step.name === "Record checked-out release SHA",
+    );
+    const deployment = workflow.jobs.deploy.steps.find(
+      (step) => step.name === "Deploy managed fleet",
+    );
+    expect(checkout?.with?.ref).toBe(
+      "${{ github.event.workflow_run.head_sha || github.sha }}",
+    );
+    expect(releaseSha?.env?.EXPECTED_RELEASE_SHA).toBe(checkout?.with?.ref);
+    expect(releaseSha?.run).toContain('checked_out_sha="$(git rev-parse HEAD)"');
+    expect(releaseSha?.run).toContain(
+      '"${checked_out_sha}" != "${EXPECTED_RELEASE_SHA}"',
+    );
+    expect(releaseSha?.run).toContain(
+      'echo "POSTIL_RELEASE_SHA=${checked_out_sha}" >> "${GITHUB_ENV}"',
+    );
+    expect(deployment?.run).toContain(
+      '--build-arg POSTIL_RELEASE_SHA="${POSTIL_RELEASE_SHA}"',
+    );
+    expect(deployment?.run).not.toContain("GITHUB_SHA");
+    expect(workflow.jobs.deploy.steps.indexOf(releaseSha!)).toBeLessThan(
+      workflow.jobs.deploy.steps.indexOf(deployment!),
+    );
 
     const authorized = ({
       eventName,
@@ -134,16 +168,27 @@ describe("deployment workflow trust boundaries", () => {
     expect(run).toContain(`.name == "${deployWorkflow.jobs.authorize.name}"`);
     expect(run).toContain(`.name == "${deployWorkflow.jobs.deploy.name}"`);
     expect(run).toContain("timeout --signal=TERM --kill-after=5s 30s gh api");
+    expect(run).toContain("for api_attempt in 1 2 3");
+    expect(run).toContain("sleep 2");
 
     const temporaryDirectory = mkdtempSync(join(tmpdir(), "postil-workflow-trust-"));
     const ghPath = join(temporaryDirectory, "gh");
     const outputPath = join(temporaryDirectory, "output");
     const callsPath = join(temporaryDirectory, "calls");
+    const callCountPath = join(temporaryDirectory, "call-count");
+    const delaysPath = join(temporaryDirectory, "delays");
+    const sleepPath = join(temporaryDirectory, "sleep");
     writeFileSync(
       ghPath,
       `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${callsPath}"
+call_count="$(<"${callCountPath}")"
+call_count="$((call_count + 1))"
+printf '%s\n' "\${call_count}" > "${callCountPath}"
+if (( call_count <= MOCK_GH_FAILURES )); then
+  exit 75
+fi
 path="\${!#}"
 if [[ ! "\${path}" =~ /attempts/([0-9]+)/jobs\\?per_page=100$ ]]; then
   exit 2
@@ -152,22 +197,34 @@ jq -cer --arg attempt "\${BASH_REMATCH[1]}" '.[$attempt] // error("missing mock 
 `,
     );
     chmodSync(ghPath, 0o755);
+    writeFileSync(
+      sleepPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${delaysPath}"
+`,
+    );
+    chmodSync(sleepPath, 0o755);
 
     const evaluate = ({
       attempts,
       deployEvent = "workflow_run",
       eventName = "workflow_run",
       eventRef = "refs/heads/main",
+      ghFailures = 0,
       runAttempt = 1,
     }: {
       attempts?: Record<string, { total_count: number; jobs: Array<{ name: string; conclusion: string }> }>;
       deployEvent?: string;
       eventName?: string;
       eventRef?: string;
+      ghFailures?: number;
       runAttempt?: number;
     }) => {
       writeFileSync(outputPath, "");
       writeFileSync(callsPath, "");
+      writeFileSync(callCountPath, "0\n");
+      writeFileSync(delaysPath, "");
       const attemptEvidence = attempts ?? {
         "1": {
           total_count: 2,
@@ -189,6 +246,7 @@ jq -cer --arg attempt "\${BASH_REMATCH[1]}" '.[$attempt] // error("missing mock 
           GITHUB_OUTPUT: outputPath,
           GITHUB_REPOSITORY: "postil-dev/postil",
           MOCK_ATTEMPTS_JSON: JSON.stringify(attemptEvidence),
+          MOCK_GH_FAILURES: String(ghFailures),
           NODE_ENV: "test",
           PATH: `${temporaryDirectory}:${process.env.PATH}`,
         } as NodeJS.ProcessEnv,
@@ -201,7 +259,8 @@ jq -cer --arg attempt "\${BASH_REMATCH[1]}" '.[$attempt] // error("missing mock 
           .map((line) => line.split("=", 2) as [string, string]),
       );
       const calls = readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean);
-      return { calls, outputs, status: result.status, stderr: result.stderr };
+      const delays = readFileSync(delaysPath, "utf8").trim().split("\n").filter(Boolean);
+      return { calls, delays, outputs, status: result.status, stderr: result.stderr };
     };
     const evidence = (
       authorizationConclusion: string,
@@ -260,6 +319,23 @@ jq -cer --arg attempt "\${BASH_REMATCH[1]}" '.[$attempt] // error("missing mock 
         "api --method GET repos/postil-dev/postil/actions/runs/123/attempts/1/jobs?per_page=100",
         "api --method GET repos/postil-dev/postil/actions/runs/123/attempts/2/jobs?per_page=100",
       ]);
+
+      const transientApiFailure = evaluate({ ghFailures: 2 });
+      expect(transientApiFailure).toMatchObject({
+        status: 0,
+        outputs: { conclusion: "success", trusted: "true" },
+        delays: ["2", "2"],
+      });
+      expect(transientApiFailure.calls).toHaveLength(3);
+
+      const exhaustedApiFailure = evaluate({ ghFailures: 3 });
+      expect(exhaustedApiFailure.status).not.toBe(0);
+      expect(exhaustedApiFailure.outputs.trusted).toBe("false");
+      expect(exhaustedApiFailure.calls).toHaveLength(3);
+      expect(exhaustedApiFailure.delays).toEqual(["2", "2"]);
+      expect(exhaustedApiFailure.stderr).toContain(
+        "Deployment job evidence remained unavailable after bounded retries.",
+      );
 
       const duplicate = evaluate({
         attempts: {

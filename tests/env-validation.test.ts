@@ -320,6 +320,7 @@ describe("web startup environment validation", () => {
     process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
     process.env.POSTIL_MONITOR_ALERT_STATE_PATH =
       "/var/lib/postil-monitor/alert-state.json";
+    process.env.ILERT_INTEGRATION_KEY = "test-ilert-integration-key";
     process.env.OPENROUTER_MANAGEMENT_API_KEY = "management-test-key";
     process.env.POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME = "development-test-key";
     process.env.POSTIL_OPENROUTER_PRODUCTION_KEY_NAME = "production-test-key";
@@ -338,6 +339,9 @@ describe("web startup environment validation", () => {
     delete process.env.WORKER_HEARTBEAT_INTERVAL_MS;
     expect(() => validateEnv("monitor")).toThrow(/WORKER_HEARTBEAT_INTERVAL_MS/);
     process.env.WORKER_HEARTBEAT_INTERVAL_MS = "30000";
+    delete process.env.ILERT_INTEGRATION_KEY;
+    expect(() => validateEnv("monitor")).toThrow(/ILERT_INTEGRATION_KEY/);
+    process.env.ILERT_INTEGRATION_KEY = "test-ilert-integration-key";
     delete process.env.OPENROUTER_MANAGEMENT_API_KEY;
     delete process.env.POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME;
     delete process.env.POSTIL_OPENROUTER_PRODUCTION_KEY_NAME;

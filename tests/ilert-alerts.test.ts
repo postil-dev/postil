@@ -23,15 +23,19 @@ const ORIGINAL_WEBHOOK_SECRET = process.env.POSTIL_ILERT_WEBHOOK_SECRET;
 const TEST_WEBHOOK_SECRET = "test-ilert-webhook-password-32-bytes";
 const TEST_CANARY_KEY = "postil-ilert-webhook-canary-123456789-2";
 let observationResult: () => Promise<Array<{ sequence: bigint }>> = async () => [];
+let databaseAccessCount = 0;
 
 mock.module("@/lib/db", () => ({
-  getDb: () => ({
-    select: () => ({
-      from: () => ({
-        where: () => ({ limit: observationResult }),
+  getDb: () => {
+    databaseAccessCount += 1;
+    return {
+      select: () => ({
+        from: () => ({
+          where: () => ({ limit: observationResult }),
+        }),
       }),
-    }),
-  }),
+    };
+  },
 }));
 
 mock.module("@/lib/server-observability", () => ({
@@ -40,6 +44,7 @@ mock.module("@/lib/server-observability", () => ({
 
 afterEach(() => {
   observationResult = async () => [];
+  databaseAccessCount = 0;
   if (ORIGINAL_WEBHOOK_SECRET === undefined) {
     delete process.env.POSTIL_ILERT_WEBHOOK_SECRET;
   } else {
@@ -241,6 +246,20 @@ describe("iLert webhook input", () => {
     expect(await response.json()).toEqual({ received: true });
   });
 
+  test("rejects source ids above PostgreSQL bigint before database access", async () => {
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
+
+    const response = await GET(new Request(
+      `https://postil.dev/api/webhooks/ilert?alertKey=${TEST_CANARY_KEY}&eventType=alert-created&sourceId=9223372036854775808`,
+      { headers: { authorization: validAuthorization() } },
+    ));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid canary observation" });
+    expect(databaseAccessCount).toBe(0);
+  });
+
   test("the route returns 503 when the receiver-event read fails", async () => {
     const { GET } = await import("@/app/api/webhooks/ilert/route");
     process.env.POSTIL_ILERT_WEBHOOK_SECRET = TEST_WEBHOOK_SECRET;
@@ -315,6 +334,7 @@ describe("iLert operator stream protocol", () => {
       /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
     )?.[1];
     expect(operatorSecrets).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(operatorSecrets).toContain("ILERT_INTEGRATION_KEY");
     expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
     expect(deploy).not.toContain(
       "POSTIL_ILERT_WEBHOOK_SECRET: ${{ secrets.POSTIL_ILERT_WEBHOOK_SECRET }}",

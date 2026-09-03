@@ -626,7 +626,7 @@ describe("production monitor workflow", () => {
     });
   });
 
-  test("deploy validates the receiver secret with the runtime contract before any Fly mutation", async () => {
+  test("deploy validates and stages required iLert runtime secrets before any Fly mutation", async () => {
     const source = await readFile(
       new URL("../.github/workflows/deploy.yml", import.meta.url),
       "utf8",
@@ -660,7 +660,11 @@ describe("production monitor workflow", () => {
     expect(validationIndex).toBeLessThan(firstFlyMutationIndex);
     expect(stageRun).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
     expect(stageRun).toContain("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.");
+    expect(stageRun).toContain("Infisical did not provide ILERT_INTEGRATION_KEY.");
     expect(stageRun.indexOf("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.")).toBeLessThan(
+      stageRun.indexOf("flyctl secrets import --stage"),
+    );
+    expect(stageRun.indexOf("Infisical did not provide ILERT_INTEGRATION_KEY.")).toBeLessThan(
       stageRun.indexOf("flyctl secrets import --stage"),
     );
     const staged = spawnSync("bash", ["-c", stageRun], {
@@ -673,10 +677,24 @@ describe("production monitor workflow", () => {
     );
     expect(stage?.env).not.toHaveProperty("POSTIL_ILERT_WEBHOOK_SECRET");
 
+    const missingIntegrationKey = spawnSync("bash", ["-c", stageRun], {
+      encoding: "utf8",
+      env: {
+        DATABASE_URL: "postgresql://test",
+        NODE_ENV: "test",
+        POSTIL_ILERT_WEBHOOK_SECRET: "test-runtime-webhook-secret-with-32-bytes",
+      } as NodeJS.ProcessEnv,
+    });
+    expect(missingIntegrationKey.status).toBe(1);
+    expect(missingIntegrationKey.stdout).toContain(
+      "Infisical did not provide ILERT_INTEGRATION_KEY.",
+    );
+
     const temporaryDirectory = mkdtempSync(join(tmpdir(), "postil-stage-runtime-secret-"));
     const binaryDirectory = join(temporaryDirectory, "bin");
     const capturePath = join(temporaryDirectory, "staged-secrets");
     const webhookSecret = "test-runtime-webhook-secret-with-32-bytes";
+    const integrationKey = "test-runtime-ilert-integration-key";
     mkdirSync(binaryDirectory);
     const flyctlPath = join(binaryDirectory, "flyctl");
     writeFileSync(flyctlPath, [
@@ -701,6 +719,7 @@ describe("production monitor workflow", () => {
           DATABASE_URL: "postgresql://test",
           NODE_ENV: "test",
           PATH: `${binaryDirectory}:${process.env.PATH}`,
+          ILERT_INTEGRATION_KEY: integrationKey,
           POSTIL_ILERT_WEBHOOK_SECRET: webhookSecret,
           POSTIL_STAGE_CAPTURE: capturePath,
         } as NodeJS.ProcessEnv,
@@ -708,6 +727,9 @@ describe("production monitor workflow", () => {
       expect(stagedWithInfisicalEnvironment.status).toBe(0);
       expect(readFileSync(capturePath, "utf8")).toContain(
         `POSTIL_ILERT_WEBHOOK_SECRET=${webhookSecret}\n`,
+      );
+      expect(readFileSync(capturePath, "utf8")).toContain(
+        `ILERT_INTEGRATION_KEY=${integrationKey}\n`,
       );
     } finally {
       rmSync(temporaryDirectory, { recursive: true, force: true });

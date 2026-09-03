@@ -1669,6 +1669,9 @@ export const ilertAlertEvents = pgTable(
   (t) => [
     uniqueIndex("ilert_alert_events_event_id_idx").on(t.eventId),
     index("ilert_alert_events_alert_sequence_idx").on(t.alertId, t.sequence),
+    index("ilert_alert_events_canary_observation_idx")
+      .on(t.alertKey, t.eventType, t.alertSourceId)
+      .where(sql`${t.alertKey} IS NOT NULL`),
     check(
       "ilert_alert_events_alert_id_check",
       sql`${t.alertId} ~ '^[1-9][0-9]{0,63}$'`,

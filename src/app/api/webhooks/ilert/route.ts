@@ -18,6 +18,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const canarySourceId = /^[1-9][0-9]{0,18}$/u;
+const POSTGRES_MAX_BIGINT = 9_223_372_036_854_775_807n;
 
 export async function GET(request: Request): Promise<NextResponse> {
   const unauthorized = authorizeIlertWebhook(request);
@@ -39,7 +40,8 @@ export async function GET(request: Request): Promise<NextResponse> {
     !isIlertCanaryAlertKey(alertKey) ||
     (eventType !== "alert-created" && eventType !== "alert-resolved") ||
     !sourceId ||
-    !canarySourceId.test(sourceId)
+    !canarySourceId.test(sourceId) ||
+    BigInt(sourceId) > POSTGRES_MAX_BIGINT
   ) {
     return NextResponse.json(
       { error: "invalid canary observation" },
