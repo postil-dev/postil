@@ -2012,6 +2012,7 @@ async function requestWithRetry(
         return response;
       }
       const delay = retryDelay(response, deadline);
+      await response.body?.cancel().catch(() => undefined);
       await sleep(delay);
     } catch (error) {
       lastError = error;

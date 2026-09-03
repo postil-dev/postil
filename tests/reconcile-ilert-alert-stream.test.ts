@@ -1008,20 +1008,38 @@ describe("iLert webhook-action reconciliation", () => {
   test("bounds 429 handling and honors a capped Retry-After delay", async () => {
     const requests: Request[] = [];
     const sleeps: number[] = [];
+    const lifecycle: string[] = [];
+    let sourceAttempts = 0;
     const result = await reconcileIlertAlertAction({
       ...reconcileOptions,
       dryRun: true,
-      fetchFn: queuedFetch(requests, [
-        new Response(null, { status: 429, headers: { "retry-after": "60" } }),
-        Response.json(SOURCE),
-        Response.json([]),
-      ]),
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) {
+          sourceAttempts += 1;
+          lifecycle.push(`attempt-${sourceAttempts}`);
+          if (sourceAttempts === 1) {
+            return new Response(new ReadableStream({
+              cancel() {
+                lifecycle.push("cancelled");
+              },
+            }), { status: 429, headers: { "retry-after": "60" } });
+          }
+          return Response.json(SOURCE);
+        }
+        if (url.pathname === "/api/alert-actions") return Response.json([]);
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
       sleep: async (milliseconds) => {
         sleeps.push(milliseconds);
+        lifecycle.push("slept");
       },
     });
     expect(result.operation).toBe("create");
     expect(sleeps).toEqual([10_000]);
+    expect(lifecycle).toEqual(["attempt-1", "cancelled", "slept", "attempt-2"]);
     expect(requests).toHaveLength(4);
   });
 
