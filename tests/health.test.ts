@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -383,9 +390,75 @@ describe("production monitor workflow", () => {
     expect(workflow.jobs.notify?.if).toBe(
       "${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') }}",
     );
+    const notifySecret = workflow.jobs.notify?.steps?.find(
+      (step) => step.name === "Load required iLert integration secret from Infisical",
+    );
+    expect(notifySecret).toMatchObject({
+      uses: "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db",
+      with: {
+        "secret-name": "ILERT_INTEGRATION_KEY",
+        "secret-path": "/postil",
+      },
+    });
+    expect(notifySecret).not.toHaveProperty("continue-on-error");
+    expect(workflow.jobs.notify?.steps?.find((step) => step.name === "Send ilert event"))
+      .toMatchObject({
+        uses: "./.github/actions/ilert-event",
+        with: { "require-delivery": true },
+      });
     expect(workflow.jobs.resolve?.if).toBe(
       "${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
     );
+  });
+
+  test("schedules a bounded management-only sweep for interrupted canary cleanup", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: {
+        "canary-orphan-sweep": {
+          if: string;
+          "timeout-minutes": number;
+          steps: Array<{
+            env?: Record<string, string>;
+            name?: string;
+            "timeout-minutes"?: number;
+            uses?: string;
+            with?: Record<string, string>;
+            run?: string;
+          }>;
+        };
+      };
+    };
+    const sweep = workflow.jobs["canary-orphan-sweep"];
+    expect(sweep.if).toBe(
+      "${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true && github.ref == 'refs/heads/main') }}",
+    );
+    expect(sweep["timeout-minutes"]).toBe(21);
+    const managementLoad = sweep.steps.find(
+      (step) => step.name === "Load iLert management secret from Infisical",
+    );
+    expect(managementLoad).toMatchObject({
+      uses: "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db",
+      with: {
+        "identity-id": "${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}",
+        "secret-name": "ILERT_API_KEY",
+        "secret-path": "/",
+      },
+    });
+    expect(sweep.steps.some((step) => step.with?.["secret-name"] === "ILERT_INTEGRATION_KEY"))
+      .toBe(false);
+    const recovery = sweep.steps.find(
+      (step) => step.name === "Resolve and verify orphaned iLert canaries",
+    );
+    expect(recovery?.run).toBe(
+      "timeout 14m bun run scripts/reconcile-ilert-alert-stream.ts --sweep-canary-orphans",
+    );
+    expect(recovery?.env).toEqual({
+      POSTIL_ILERT_ALERT_SOURCE_ID: "${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}",
+    });
   });
 
   test("deploy validates the receiver secret with the runtime contract before any Fly mutation", async () => {
@@ -434,6 +507,46 @@ describe("production monitor workflow", () => {
       "Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.",
     );
     expect(stage?.env).not.toHaveProperty("POSTIL_ILERT_WEBHOOK_SECRET");
+
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), "postil-stage-runtime-secret-"));
+    const binaryDirectory = join(temporaryDirectory, "bin");
+    const capturePath = join(temporaryDirectory, "staged-secrets");
+    const webhookSecret = "test-runtime-webhook-secret-with-32-bytes";
+    mkdirSync(binaryDirectory);
+    const flyctlPath = join(binaryDirectory, "flyctl");
+    writeFileSync(flyctlPath, [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'if [[ "$1" == "secrets" && "$2" == "import" && "$3" == "--stage" ]]; then',
+      '  cat > "${POSTIL_STAGE_CAPTURE:?}"',
+      "  exit 0",
+      "fi",
+      'if [[ "$1" == "secrets" && "$2" == "list" && "$3" == "--json" ]]; then',
+      "  printf '[]'",
+      "  exit 0",
+      "fi",
+      'echo "unexpected flyctl command" >&2',
+      "exit 1",
+    ].join("\n"));
+    chmodSync(flyctlPath, 0o755);
+    try {
+      const stagedWithInfisicalEnvironment = spawnSync("bash", ["-c", stageRun], {
+        encoding: "utf8",
+        env: {
+          DATABASE_URL: "postgresql://test",
+          NODE_ENV: "test",
+          PATH: `${binaryDirectory}:${process.env.PATH}`,
+          POSTIL_ILERT_WEBHOOK_SECRET: webhookSecret,
+          POSTIL_STAGE_CAPTURE: capturePath,
+        } as NodeJS.ProcessEnv,
+      });
+      expect(stagedWithInfisicalEnvironment.status).toBe(0);
+      expect(readFileSync(capturePath, "utf8")).toContain(
+        `POSTIL_ILERT_WEBHOOK_SECRET=${webhookSecret}\n`,
+      );
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   test("resolves a production failure after manual success and scheduled success", async () => {
@@ -476,6 +589,30 @@ describe("production monitor workflow", () => {
     });
   });
 
+  test("keeps release-recovery resolution delivery-required", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: {
+        "resolve-release-recovery": {
+          steps: Array<{
+            name?: string;
+            uses?: string;
+            with?: Record<string, string | boolean>;
+          }>;
+        };
+      };
+    };
+    expect(workflow.jobs["resolve-release-recovery"].steps.find(
+      (step) => step.name === "Resolve ilert release recovery alert",
+    )).toMatchObject({
+      uses: "./.github/actions/ilert-event",
+      with: { "require-delivery": true },
+    });
+  });
+
   test("keeps the iLert management credential outside application environment files", async () => {
     const [compose, environmentExample] = await Promise.all([
       readFile(new URL("../docker-compose.yml", import.meta.url), "utf8"),
@@ -512,7 +649,7 @@ describe("production monitor workflow", () => {
     expect(result.stdout).toContain("nothing to resolve");
   });
 
-  test("production recovery fails when the iLert integration key is unavailable", async () => {
+  test("production monitor ALERT delivery fails when the iLert integration key is unavailable", async () => {
     const source = await readFile(
       new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
       "utf8",
@@ -527,12 +664,12 @@ describe("production monitor workflow", () => {
       env: {
         ALERT_KEY: "test-alert",
         DETAILS: "",
-        EVENT_TYPE: "RESOLVE",
+        EVENT_TYPE: "ALERT",
         NODE_ENV: "test",
         PATH: process.env.PATH,
         PRIORITY: "HIGH",
         REQUIRE_DELIVERY: "true",
-        SUMMARY: "test resolve",
+        SUMMARY: "test alert",
       } as NodeJS.ProcessEnv,
     });
     expect(result.status).toBe(1);

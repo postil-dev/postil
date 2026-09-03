@@ -12,6 +12,7 @@ import {
   parseReceiverOrigin,
   reconcileIlertAlertAction,
   runCli,
+  sweepIlertWebhookCanaryOrphans,
   validWebhookSecret,
   verifyIlertWebhookCanary,
 } from "../scripts/reconcile-ilert-alert-stream";
@@ -1073,6 +1074,71 @@ describe("iLert webhook canary", () => {
     expect(service.requests.some((request) => request.url.endsWith("/alerts/98/resolve"))).toBe(true);
   });
 
+  test("recovers an old-run orphan without touching routine, lookalike, or other-source alerts", async () => {
+    const oldRunId = "67890";
+    const service = canaryService({
+      initialAlerts: [
+        {
+          alertKey: canaryAlertKey(oldRunId, "2"),
+          id: 98,
+          status: "PENDING",
+        },
+        {
+          alertKey: "postil-production-monitor",
+          id: 99,
+          status: "PENDING",
+        },
+        {
+          alertKey: "postil-ilert-webhook-canary-not-a-run-id",
+          id: 100,
+          status: "PENDING",
+        },
+        {
+          alertKey: canaryAlertKey(oldRunId, "3"),
+          id: 101,
+          sourceId: SOURCE_ID + 1,
+          status: "PENDING",
+        },
+      ],
+    });
+    await sweepIlertWebhookCanaryOrphans({
+      apiKey: API_KEY,
+      fetchFn: service.fetchFn,
+      sleep: async () => undefined,
+      sourceId: SOURCE_ID,
+    });
+    const resolvedIds = service.requests
+      .filter((request) => request.method === "PUT")
+      .map((request) => /\/alerts\/([1-9][0-9]*)\/resolve$/u.exec(new URL(request.url).pathname)?.[1]);
+    expect(resolvedIds).toEqual(["98"]);
+    expect(service.events).toEqual([]);
+    expect(service.statuses).toEqual(["RESOLVED", "PENDING", "PENDING", "PENDING"]);
+  });
+
+  test("fails closed when the orphan inventory cannot be count-bracketed", async () => {
+    const service = canaryService({
+      initialAlerts: [{
+        alertKey: canaryAlertKey("67890", "2"),
+        id: 98,
+        status: "PENDING",
+      }],
+    });
+    await expect(sweepIlertWebhookCanaryOrphans({
+      apiKey: API_KEY,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).pathname === "/api/alerts/count") {
+          return Response.json({ count: 2 });
+        }
+        return service.fetchFn(input, init);
+      },
+      sleep: async () => undefined,
+      sourceId: SOURCE_ID,
+    })).rejects.toThrow("orphan canary inventory changed during pagination");
+    expect(service.requests.some((request) => request.method === "PUT")).toBe(false);
+    expect(service.statuses).toEqual(["PENDING"]);
+  });
+
   test("rejects attempt 52 for deterministic keys and finalizer sweeps", async () => {
     expect(() => canaryAlertKey(RUN_ID, "52")).toThrow(
       "GitHub run attempt must be between 1 and 51",
@@ -1171,7 +1237,7 @@ describe("iLert webhook canary", () => {
     expect(service.events).toHaveLength(0);
   });
 
-  test("revalidates the source binding before cleanup resolution", async () => {
+  test("uses management exact-ID cleanup after the Event API key rotates", async () => {
     const service = canaryService();
     let sourceReads = 0;
     const fetchFn: Fetch = async (input, init) => {
@@ -1182,20 +1248,80 @@ describe("iLert webhook canary", () => {
       }
       return service.fetchFn(input, init);
     };
-    let error: unknown;
-    try {
-      await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn });
-    } catch (caught) {
-      error = caught;
-    }
-    expect(errorMessages(error)).toContain("iLert integration binding validation failed");
+    await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn });
     expect(service.events).toEqual([{
       alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
       eventType: "ALERT",
     }]);
     expect(service.requests.some((request) =>
       request.method === "PUT" && /\/alerts\/\d+\/resolve$/u.test(new URL(request.url).pathname)
-    )).toBe(false);
+    )).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
+  });
+
+  test("retains a discovered exact ID before receiver evidence and uses it after later discovery failure", async () => {
+    const service = canaryService();
+    let inventoryListings = 0;
+    await expect(verifyIlertWebhookCanary({
+      ...canaryOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/alerts" && request.method === "GET") {
+          inventoryListings += 1;
+          if (inventoryListings > 2) return new Response(null, { status: 503 });
+        }
+        if (
+          url.href.startsWith(`${RECEIVER_ORIGIN}/api/webhooks/ilert?`) &&
+          url.searchParams.get("eventType") === "alert-created"
+        ) {
+          return Response.json({ received: false });
+        }
+        return service.fetchFn(input, init);
+      },
+    })).rejects.toThrow("iLert management request failed with HTTP 503");
+    expect(service.events.filter((event) => event.eventType === "RESOLVE")).toEqual([]);
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/99/resolve")
+    )).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
+  });
+
+  test("reports an Event API binding failure while exact-ID cleanup survives rotation", async () => {
+    const service = canaryService();
+    let rotated = false;
+    let alertResponseLost = true;
+    let error: unknown;
+    try {
+      await verifyIlertWebhookCanary({
+        ...canaryOptions,
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          if (new URL(request.url).pathname.startsWith("/api/alert-sources/") && rotated) {
+            return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+          }
+          const response = await service.fetchFn(input, init);
+          if (
+            alertResponseLost &&
+            request.method === "POST" &&
+            request.url.endsWith("/events")
+          ) {
+            alertResponseLost = false;
+            rotated = true;
+            return new Response(null, { status: 503 });
+          }
+          return response;
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(errorMessages(error)).toContain("iLert integration binding validation failed");
+    expect(service.events.filter((event) => event.eventType === "ALERT")).toHaveLength(1);
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/99/resolve")
+    )).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
   test("uses a same-key Event RESOLVE only while the current alert is undiscovered", async () => {
@@ -1277,14 +1403,12 @@ describe("iLert webhook canary", () => {
     )).toHaveLength(0);
   });
 
-  test("does not retry management alert resolution after a transient response rotates the source binding", async () => {
+  test("retries management exact-ID resolution after a transient response and Event API key rotation", async () => {
     const service = canaryService({ resolveRequestFailures: 1 });
     let rotated = false;
-    let error: unknown;
-    try {
-      await verifyIlertWebhookCanary({
-        ...canaryOptions,
-        fetchFn: async (input, init) => {
+    await verifyIlertWebhookCanary({
+      ...canaryOptions,
+      fetchFn: async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).pathname.startsWith("/api/alert-sources/") && rotated) {
           return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
@@ -1294,15 +1418,12 @@ describe("iLert webhook canary", () => {
           rotated = true;
         }
         return response;
-        },
-      });
-    } catch (caught) {
-      error = caught;
-    }
-    expect(errorMessages(error)).toContain("iLert integration binding validation failed");
+      },
+    });
     expect(service.requests.filter((request) =>
       request.method === "PUT" && request.url.endsWith("/alerts/99/resolve")
-    )).toHaveLength(1);
+    )).toHaveLength(2);
+    expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
   test("does not retry Event API RESOLVE after a transient response rotates the source binding", async () => {
@@ -2294,6 +2415,31 @@ describe("iLert webhook canary", () => {
     });
     expect(service.alertListRequests).toBeGreaterThan(0);
     expect(service.events).toEqual([]);
+  });
+
+  test("orphan sweep CLI requires only scoped management cleanup inputs", async () => {
+    const service = canaryService({
+      initialAlerts: [{
+        alertKey: canaryAlertKey("67890", "2"),
+        id: 98,
+        status: "PENDING",
+      }],
+    });
+    await runCli({
+      args: ["--sweep-canary-orphans"],
+      env: {
+        ILERT_API_KEY: API_KEY,
+        POSTIL_ILERT_ALERT_SOURCE_ID: String(SOURCE_ID),
+      },
+      fetchFn: service.fetchFn,
+      now: () => 0,
+      sleep: async () => undefined,
+      log: () => undefined,
+    });
+    expect(service.events).toEqual([]);
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
+    )).toBe(true);
   });
 
   test("rejects live reconciliation without a recoverable run identity before network access", async () => {

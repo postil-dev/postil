@@ -499,8 +499,10 @@ use attempt-specific keys derived from the workflow run id and producer run
 attempt, distinct from production monitor keys. Earlier main keys are swept
 through the current attempt and every discovered trusted alert is resolved with
 `PUT /api/alerts/{id}/resolve` then polled by that exact id until management
-reports RESOLVED. A blind same-key Event API RESOLVE is limited to an
-undiscovered current key.
+reports RESOLVED. A discovered canary retains its exact id, key, and source
+before receiver evidence is checked, so cleanup can resolve it when later
+receiver or inventory requests fail. A blind same-key Event API RESOLVE is
+limited to an undiscovered current key.
 The main alert is discovered within the configured source using the same exact
 32-day report-time window as cleanup. It must remain PENDING or ACCEPTED at
 HIGH priority and have an
@@ -519,11 +521,19 @@ A cleaned handoff still performs this
 management sweep to resolve a delayed Event API duplicate. If the producer
 output is unavailable, the finalizer uses its running attempt to reconstruct
 the deterministic identity. It never reads receiver configuration or
-reconciles the action. The
-command supports `--dry-run`,
-`--canary`, and `--finalize-canary`; unflagged live reconciliation is rejected
-because it has no recoverable run identity. The canary does not open the
-authenticated operator SSE stream.
+reconciles the action. Scheduled and routine manual production monitors also
+run a management-only orphan sweep across every exact deterministic canary key
+for the configured source. It scans only PENDING and ACCEPTED alerts,
+count-brackets and repeats the complete offset inventory, retains each exact
+id, resolves and verifies each target, and fails closed on incomplete or
+changing inventory. It has no Event API credential and cannot emit a canary
+or resolve a routine production alert. Management cleanup validates the source
+numeric id and API type without requiring an older Event API key to remain
+bound; Event API mutations and action reconciliation retain the full
+integration-key binding. The command supports `--dry-run`, `--canary`,
+`--finalize-canary`, and `--sweep-canary-orphans`; unflagged live reconciliation
+is rejected because it has no recoverable command. The canary does not open
+the authenticated operator SSE stream.
 
 iLert supplies offset pagination rather than a snapshot, cursor, or exact-key
 filter. The bounded count and repeated-inventory checks provide evidence for a
@@ -531,6 +541,10 @@ complete scan and fail closed on observed churn; they do not claim atomic
 absence proof. The reconciler revalidates the numeric source ID, API integration
 type, and integration-key binding at every alert-action and Event API mutation,
 then reloads the complete reserved-action inventory after an action mutation.
+The alert-action API has no conditional-write precondition, so a concurrent
+out-of-band action update can still occur after the final guard read. The
+reconciler detects conflicting pre- and post-mutation state and fails closed;
+it does not claim compare-and-swap behavior.
 Deployment validates the iLert receiver secret with the same
 printable-ASCII length and diversity contract used by the receiver before any
 Fly mutation.

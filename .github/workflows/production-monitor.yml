@@ -537,6 +537,45 @@ jobs:
             fi
           fi
 
+  canary-orphan-sweep:
+    name: Sweep orphaned iLert canaries
+    # Scheduled and routine manual monitors recover deterministic HIGH canary
+    # alerts whose producer and two finalizers were both interrupted. This job
+    # has no Event API credential and never emits a new canary or resolves a
+    # routine production-monitor alert.
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true && github.ref == 'refs/heads/main') }}
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    # Three one-minute setup steps, fourteen minutes for bounded recovery,
+    # and four minutes of runner headroom.
+    timeout-minutes: 21
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        timeout-minutes: 1
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        timeout-minutes: 1
+        with:
+          bun-version: 1.3.14
+      - name: Load iLert management secret from Infisical
+        uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
+        timeout-minutes: 1
+        with:
+          method: oidc
+          identity-id: ${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}
+          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+          domain: https://eu.infisical.com
+          secret-path: /
+          secret-name: ILERT_API_KEY
+      - name: Resolve and verify orphaned iLert canaries
+        env:
+          POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+        run: timeout 14m bun run scripts/reconcile-ilert-alert-stream.ts --sweep-canary-orphans
+
   alert-stream:
     name: Reconcile and verify iLert webhook delivery
     needs: [smoke, release-recovery]
@@ -697,9 +736,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Load iLert integration secret from Infisical
-        id: load-alerting-secret
-        continue-on-error: true
+      - name: Load required iLert integration secret from Infisical
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
@@ -709,9 +746,6 @@ jobs:
           domain: https://eu.infisical.com
           secret-path: /postil
           secret-name: ILERT_INTEGRATION_KEY
-      - name: Warn when routine alert delivery is unavailable
-        if: ${{ steps.load-alerting-secret.outcome == 'failure' }}
-        run: echo "::warning::The optional iLert integration key could not be loaded; the event action applies its configured missing-key policy."
       - name: Send ilert event
         uses: ./.github/actions/ilert-event
         with:
@@ -723,10 +757,10 @@ jobs:
                 && 'Release preparation remains unresolved. Run log:'
                 || 'Production checks failed. Run log:' }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
-          # A routine monitor failure records an alerting gap without masking
-          # the original signal. Recovery failure requires delivery because it
-          # validates the fail-safe notification path.
-          require-delivery: ${{ needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' }}
+          # A production failure has no successful notification outcome until
+          # iLert accepts its alert. OIDC or Infisical failure therefore fails
+          # this job visibly instead of turning paging into a no-op.
+          require-delivery: true
 
   resolve-release-recovery:
     name: Resolve release recovery alert
@@ -764,6 +798,7 @@ jobs:
           event-type: RESOLVE
           summary: Postil release recovery cleared
           alert-key: postil-release-recovery
+          require-delivery: true
 
   # The alert-stream job resolves its attempt-specific canary before it succeeds. This
   # resolver owns only the stable production-monitor alert key, so a manual

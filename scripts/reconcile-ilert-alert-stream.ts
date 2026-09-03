@@ -21,6 +21,8 @@ const CANARY_FINALIZER_DISCOVERY_DEADLINE_MS = 360_000;
 const CANARY_FINALIZER_DISCOVERY_RETRY_MS = 10_000;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 60_000;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
+const CANARY_ORPHAN_SWEEP_DEADLINE_MS = 12 * 60 * 1_000;
+const CANARY_ORPHAN_SWEEP_MAX_PAGES = 20;
 const ALERT_ACTION_INVENTORY_MAX_PAGES = 50;
 const CANARY_CLEANUP_ATTEMPTS = 4;
 // GitHub permits reruns for 30 days. Keep two additional days for queueing,
@@ -93,6 +95,14 @@ interface FinalizerOptions {
   runId: string;
   runAttempt: string;
   sweepAttempt?: string;
+  sourceId: number;
+  fetchFn?: Fetch;
+  sleep?: Sleep;
+  now?: Clock;
+}
+
+interface OrphanSweepOptions {
+  apiKey: string;
   sourceId: number;
   fetchFn?: Fetch;
   sleep?: Sleep;
@@ -234,7 +244,6 @@ export async function reconcileIlertAlertAction(
     apiKey: options.apiKey,
     deadline,
     fetchFn,
-    integrationKey: options.integrationKey,
     runAttempt: identity.runAttempt,
     runId: identity.runId,
     sleep,
@@ -250,7 +259,7 @@ export async function reconcileIlertAlertAction(
   );
   // The cleanup and receiver preflight can take most of the reconciliation
   // budget. Re-read both identities at the mutation boundary so a concurrent
-  // action or source change is never overwritten from a stale plan.
+  // action or source change observed before dispatch rejects the stale plan.
   const boundarySource = await loadIntegrationBoundAlertSource(
     fetchFn,
     options.apiKey,
@@ -298,8 +307,8 @@ export async function reconcileIlertAlertAction(
   // a retry after a transient response. Receiver acceptance comes first; the
   // source binding and complete continuity-safe action inventory then form the
   // final reads before the request deadline is recomputed and the mutation is
-  // dispatched. A concurrent action change during receiver preflight therefore
-  // cannot be overwritten from a stale plan.
+  // dispatched. The provider offers no conditional write, so an out-of-band
+  // change after these reads remains a detected postcondition risk.
   const beforeMutationAttempt: BeforeMutationAttempt = async () => {
     await preflightReceiver(
       fetchFn,
@@ -418,7 +427,6 @@ export async function verifyIlertWebhookCanary(
     apiKey: options.apiKey,
     deadline: primaryDeadline,
     fetchFn,
-    integrationKey: options.integrationKey,
     runAttempt: identity.runAttempt,
     runId: identity.runId,
     sleep,
@@ -450,7 +458,12 @@ export async function verifyIlertWebhookCanary(
       key,
     );
     await options.onAlertSubmitted?.();
-    created = await waitForCreatedDelivery(submittedOptions);
+    created = await waitForCreatedDelivery(submittedOptions, (target) => {
+      // The management inventory has authenticated this exact id, key, and
+      // source. Keep it before receiver evidence so cleanup remains able to
+      // resolve it if the receiver or a subsequent discovery request fails.
+      created ??= target;
+    });
     await resolveAndStabilize(submittedOptions, created, canaryDeadline);
     resolutionConfirmed = true;
   } catch (error) {
@@ -510,14 +523,6 @@ export async function finalizeIlertWebhookCanary(
     sleep,
     sourceId: options.sourceId,
   };
-  await loadIntegrationBoundAlertSource(
-    fetchFn,
-    options.apiKey,
-    options.integrationKey,
-    options.sourceId,
-    deadline,
-    sleep,
-  );
   const keys = deterministicCanaryKeys(
     identity.runId,
     sweepAttempt,
@@ -537,13 +542,86 @@ export async function finalizeIlertWebhookCanary(
   );
 }
 
-interface CleanupOptions {
+export async function sweepIlertWebhookCanaryOrphans(
+  options: OrphanSweepOptions,
+): Promise<void> {
+  const fetchFn = options.fetchFn ?? fetch;
+  const sleep = options.sleep ?? Bun.sleep;
+  const now = options.now ?? Date.now;
+  const deadline: Deadline = {
+    expiresAt: now() + CANARY_ORPHAN_SWEEP_DEADLINE_MS,
+    now,
+  };
+  const cleanup: ManagementCleanupOptions = {
+    apiKey: options.apiKey,
+    deadline,
+    fetchFn,
+    sleep,
+    sourceId: options.sourceId,
+  };
+  const targets = new Map<string, CanaryTarget>();
+
+  await loadManagementBoundAlertSource(
+    fetchFn,
+    options.apiKey,
+    options.sourceId,
+    deadline,
+    sleep,
+  );
+
+  for (let pass = 0; pass < CANARY_CLEANUP_ATTEMPTS; pass += 1) {
+    const discovered = await findOpenDeterministicCanaryAlerts({
+      ...cleanup,
+      maxPages: CANARY_ORPHAN_SWEEP_MAX_PAGES,
+    });
+    rememberTargets(targets, discovered);
+
+    const resolved = await resolveKnownAlerts(cleanup, targets);
+    if (resolved.errors.length > 0) {
+      throw new AggregateError(
+        resolved.errors,
+        "iLert orphan canary sweep could not resolve every discovered alert",
+      );
+    }
+    const observed = await observeKnownAlerts(cleanup, targets);
+    if (!observed.allResolved) {
+      throw new AggregateError(
+        observed.errors,
+        "iLert orphan canary sweep could not verify every discovered alert as RESOLVED",
+      );
+    }
+
+    const remainingOpen = await findOpenDeterministicCanaryAlerts({
+      ...cleanup,
+      maxPages: CANARY_ORPHAN_SWEEP_MAX_PAGES,
+    });
+    rememberTargets(targets, remainingOpen);
+    await loadManagementBoundAlertSource(
+      fetchFn,
+      options.apiKey,
+      options.sourceId,
+      deadline,
+      sleep,
+    );
+    if (remainingOpen.length === 0) return;
+    if (pass + 1 < CANARY_CLEANUP_ATTEMPTS) {
+      await sleep(Math.min(CANARY_CLEANUP_RETRY_MS, remaining(deadline)));
+    }
+  }
+
+  throw new Error("iLert orphan canary sweep did not stabilize every deterministic alert");
+}
+
+interface ManagementCleanupOptions {
   apiKey: string;
   deadline: Deadline;
   fetchFn: Fetch;
-  integrationKey: string;
   sleep: Sleep;
   sourceId: number;
+}
+
+interface CleanupOptions extends ManagementCleanupOptions {
+  integrationKey: string;
 }
 
 interface WaitOptions extends CleanupOptions {
@@ -670,6 +748,7 @@ async function resolveAndStabilize(
 
 async function waitForCreatedDelivery(
   options: WaitOptions,
+  onValidatedTarget?: (target: CanaryTarget) => void,
 ): Promise<CanaryObservation> {
   for (let attempt = 0; attempt < CANARY_ATTEMPTS; attempt += 1) {
     assertBeforeDeadline(options.deadline);
@@ -677,6 +756,7 @@ async function waitForCreatedDelivery(
       options,
       ["PENDING", "ACCEPTED"],
     );
+    if (observed) onValidatedTarget?.(observed);
     if (
       (observed?.status === "PENDING" || observed?.status === "ACCEPTED") &&
       observed.priority === "HIGH" &&
@@ -730,7 +810,7 @@ async function findSubmittedAlert(
 }
 
 async function observeAlertById(
-  options: CleanupOptions,
+  options: ManagementCleanupOptions,
   target: CanaryTarget,
 ): Promise<CanaryObservation> {
   const alert = requireObject(
@@ -828,7 +908,7 @@ function canaryAlertId(alert: Json): string {
 }
 
 async function driveAlertToResolved(
-  options: CleanupOptions,
+  options: ManagementCleanupOptions,
   target: CanaryTarget,
   deadline: Deadline,
 ): Promise<void> {
@@ -859,7 +939,7 @@ async function driveAlertToResolved(
 }
 
 async function precleanPriorAttemptKeys(
-  options: CleanupOptions & {
+  options: ManagementCleanupOptions & {
     runAttempt: number;
     runId: string;
     sourceId: number;
@@ -1123,7 +1203,7 @@ async function finalizeDeterministicCanaryKeys(
 }
 
 async function discoverOpenDeterministicAlerts(
-  options: CleanupOptions,
+  options: ManagementCleanupOptions,
   keys: readonly DeterministicCanaryKey[],
   window?: ReportTimeWindow,
   maxPages?: number,
@@ -1173,7 +1253,7 @@ async function discoverOpenDeterministicAlerts(
 }
 
 async function observeKnownAlerts(
-  options: CleanupOptions,
+  options: ManagementCleanupOptions,
   targets: Map<string, CanaryTarget>,
 ): Promise<{ allResolved: boolean; errors: unknown[]; resolvedIds: Set<string> }> {
   const errors: unknown[] = [];
@@ -1194,7 +1274,7 @@ async function observeKnownAlerts(
 }
 
 async function resolveKnownAlerts(
-  options: CleanupOptions,
+  options: ManagementCleanupOptions,
   targets: ReadonlyMap<string, CanaryTarget>,
 ): Promise<{ errors: unknown[]; resolvedIds: Set<string> }> {
   const errors: unknown[] = [];
@@ -1390,7 +1470,7 @@ async function management(
 }
 
 async function resolveAlertById(
-  options: CleanupOptions,
+  options: ManagementCleanupOptions,
   alertId: string,
 ): Promise<void> {
   const response = await requestWithRetry(
@@ -1404,10 +1484,9 @@ async function resolveAlertById(
     options.sleep,
     false,
     async () => {
-      await loadIntegrationBoundAlertSource(
+      await loadManagementBoundAlertSource(
         options.fetchFn,
         options.apiKey,
-        options.integrationKey,
         options.sourceId,
         options.deadline,
         options.sleep,
@@ -1587,6 +1666,102 @@ async function findAlertsByKeys(
     }
     throw error;
   }
+}
+
+async function findOpenDeterministicCanaryAlerts(
+  options: ManagementCleanupOptions & { maxPages: number },
+): Promise<CanaryTarget[]> {
+  const targets = new Map<string, CanaryTarget>();
+  const queryFor = (start?: number): URLSearchParams => {
+    const query = new URLSearchParams();
+    if (start !== undefined) {
+      query.set("max-results", String(ALERT_PAGE_SIZE));
+      query.set("start-index", String(start));
+    }
+    query.append("sources", String(options.sourceId));
+    query.append("states", "PENDING");
+    query.append("states", "ACCEPTED");
+    return query;
+  };
+  const fetchCount = async (): Promise<number> => {
+    assertBeforeDeadline(options.deadline);
+    const value = requireObject(
+      await management(
+        options.fetchFn,
+        options.apiKey,
+        `/alerts/count?${queryFor().toString()}`,
+        {},
+        options.deadline,
+        options.sleep,
+      ),
+      "iLert returned an invalid orphan canary inventory count",
+    );
+    const count = value.count;
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+      throw new Error("iLert returned an invalid orphan canary inventory count");
+    }
+    return count;
+  };
+  const listCompleteInventory = async (): Promise<CanaryTarget[]> => {
+    const beforeCount = await fetchCount();
+    const identities = new Set<string>();
+    const found: CanaryTarget[] = [];
+    for (let page = 0, start = 0; ; page += 1, start += ALERT_PAGE_SIZE) {
+      if (page >= options.maxPages) {
+        throw new Error("iLert orphan canary inventory exceeded its pagination limit");
+      }
+      assertBeforeDeadline(options.deadline);
+      const pageAlerts = await management(
+        options.fetchFn,
+        options.apiKey,
+        `/alerts?${queryFor(start).toString()}`,
+        {},
+        options.deadline,
+        options.sleep,
+      );
+      if (!Array.isArray(pageAlerts) || pageAlerts.some((alert) => !object(alert))) {
+        throw new Error("iLert returned an invalid orphan canary inventory page");
+      }
+      for (const item of pageAlerts) {
+        const alert = object(item)!;
+        const alertId = positiveId(alert.id);
+        if (!alertId) {
+          throw new Error("iLert returned an orphan canary inventory alert without an identity");
+        }
+        if (identities.has(alertId)) {
+          throw new Error("iLert orphan canary inventory repeated an alert identity");
+        }
+        identities.add(alertId);
+        if (
+          typeof alert.alertKey !== "string" ||
+          !isDeterministicCanaryKey(alert.alertKey)
+        ) {
+          continue;
+        }
+        const target = canaryObservation(alert, alert.alertKey, options.sourceId);
+        targets.set(target.alertId, target);
+        found.push(target);
+      }
+      if (pageAlerts.length < ALERT_PAGE_SIZE) break;
+    }
+    const afterCount = await fetchCount();
+    if (beforeCount !== afterCount || afterCount !== identities.size) {
+      throw new Error("iLert orphan canary inventory changed during pagination");
+    }
+    return found;
+  };
+
+  const first = await listCompleteInventory();
+  const second = await listCompleteInventory();
+  const firstIds = first.map((target) => target.alertId);
+  const secondIds = second.map((target) => target.alertId);
+  if (
+    firstIds.length !== secondIds.length ||
+    firstIds.some((id, index) => id !== secondIds[index])
+  ) {
+    throw new Error("iLert orphan canary inventory changed during continuity validation");
+  }
+  return [...targets.values()];
 }
 
 function alertSourceId(alert: Json): number | null {
@@ -1962,6 +2137,37 @@ async function loadIntegrationBoundAlertSource(
   }
 }
 
+async function loadManagementBoundAlertSource(
+  fetchFn: Fetch,
+  apiKey: string,
+  sourceId: number,
+  deadline: Deadline,
+  sleep: Sleep,
+): Promise<Json> {
+  try {
+    const response = await requestWithRetry(
+      fetchFn,
+      `${API_BASE}/alert-sources/${encodeURIComponent(sourceId)}`,
+      { headers: { accept: "application/json", authorization: `Bearer ${apiKey}` } },
+      deadline,
+      sleep,
+      true,
+    );
+    if (response.status !== 200) throw new Error("source request failed");
+    return managementAlertSource(await parseJson(response), sourceId);
+  } catch {
+    throw new Error("iLert management alert-source validation failed");
+  }
+}
+
+function managementAlertSource(value: unknown, expectedId: number): Json {
+  const source = requireObject(value, "iLert returned an invalid alert source");
+  if (positiveNumber(source.id) !== expectedId || source.integrationType !== "API") {
+    throw new Error("iLert alert source does not match the configured management identity");
+  }
+  return { id: expectedId };
+}
+
 function alertSource(
   value: unknown,
   expectedId: number,
@@ -2053,6 +2259,18 @@ function canaryRunIdentity(
     );
   }
   return { runAttempt: normalizedRunAttempt, runId: normalizedRunId };
+}
+
+function isDeterministicCanaryKey(value: string): boolean {
+  const match = new RegExp(`^${CANARY_KEY_PREFIX}-([1-9][0-9]*)-([1-9][0-9]*)$`, "u")
+    .exec(value);
+  if (!match) return false;
+  try {
+    canaryRunIdentity(match[1]!, match[2]!);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function reportTime(milliseconds: number): string {
@@ -2179,29 +2397,32 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     args.some(
       (arg) =>
         arg !== "--dry-run" && arg !== "--canary" && arg !== "--finalize-canary" &&
-        arg !== "--validate-webhook-secret",
+        arg !== "--sweep-canary-orphans" && arg !== "--validate-webhook-secret",
     )
   ) {
     throw new Error(
-      "usage: reconcile-ilert-alert-stream.ts [--validate-webhook-secret|--dry-run|--canary|--finalize-canary]",
+      "usage: reconcile-ilert-alert-stream.ts [--validate-webhook-secret|--dry-run|--canary|--finalize-canary|--sweep-canary-orphans]",
     );
   }
   const dryRun = args.includes("--dry-run");
   const canary = args.includes("--canary");
   const finalizeCanary = args.includes("--finalize-canary");
+  const sweepCanaryOrphans = args.includes("--sweep-canary-orphans");
   const validateWebhookSecret = args.includes("--validate-webhook-secret");
-  if (validateWebhookSecret && (dryRun || canary || finalizeCanary)) {
+  if (validateWebhookSecret && (dryRun || canary || finalizeCanary || sweepCanaryOrphans)) {
     throw new Error("--validate-webhook-secret cannot be combined with reconciliation commands");
   }
-  if (dryRun && (canary || finalizeCanary)) {
+  if (dryRun && (canary || finalizeCanary || sweepCanaryOrphans)) {
     throw new Error("--dry-run cannot be combined with a canary command");
   }
-  if (canary && finalizeCanary) {
-    throw new Error("--canary cannot be combined with --finalize-canary");
+  if (
+    [canary, finalizeCanary, sweepCanaryOrphans].filter(Boolean).length > 1
+  ) {
+    throw new Error("canary recovery commands cannot be combined");
   }
-  if (!validateWebhookSecret && !dryRun && !canary && !finalizeCanary) {
+  if (!validateWebhookSecret && !dryRun && !canary && !finalizeCanary && !sweepCanaryOrphans) {
     throw new Error(
-      "usage: live reconciliation requires --canary because it needs a recoverable run identity; use --dry-run to preview",
+      "usage: live reconciliation requires --canary or --sweep-canary-orphans; use --dry-run to preview",
     );
   }
   const values = options.env ?? process.env;
@@ -2228,6 +2449,18 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
       sourceId: requiredSourceId(values),
     });
     log("iLert canary cleanup is stabilized");
+    return;
+  }
+
+  if (sweepCanaryOrphans) {
+    await sweepIlertWebhookCanaryOrphans({
+      apiKey: environment(values, "ILERT_API_KEY"),
+      fetchFn: options.fetchFn,
+      now: options.now,
+      sleep: options.sleep,
+      sourceId: requiredSourceId(values),
+    });
+    log("iLert orphan canary sweep is stabilized");
     return;
   }
 

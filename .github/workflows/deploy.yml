@@ -190,6 +190,9 @@ jobs:
           if [[ -n "${BREVO_API_KEY:-}" ]]; then
             staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
           fi
+          # The Infisical action exports this job's /postil records as
+          # environment variables. This allowlist is the complete runtime
+          # staging contract for operator-owned application secrets.
           operator_secret_names=(
             POSTIL_ILERT_WEBHOOK_SECRET
             POSTIL_OPERATOR_GITHUB_IDS
