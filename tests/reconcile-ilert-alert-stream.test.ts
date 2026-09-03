@@ -6,6 +6,7 @@ import {
   desiredAlertAction,
   equivalentAlertAction,
   finalizeIlertWebhookCanary,
+  MAX_CANARY_RUN_ATTEMPT,
   type Fetch,
   parseReceiverOrigin,
   reconcileIlertAlertAction,
@@ -550,6 +551,13 @@ describe("iLert webhook canary", () => {
       runAttempt: "1",
       sweepAttempt: "52",
     })).rejects.toThrow("GitHub run attempt must be between 1 and 51");
+  });
+
+  test("documents the runtime canary rerun ceiling", async () => {
+    const architecture = await Bun.file(new URL("../ARCHITECTURE.md", import.meta.url)).text();
+    expect(architecture).toContain(
+      `GitHub's 1 through ${MAX_CANARY_RUN_ATTEMPT} attempt range`,
+    );
   });
 
   test("attempt 2 pre-cleans attempt 1 main key before its HIGH alert", async () => {
@@ -1376,7 +1384,7 @@ describe("iLert webhook canary", () => {
             })),
           ]);
         }
-        if (start === 100) {
+        if (start === 99) {
           currentTime = Math.max(currentTime, 360_000);
           return Response.json(Array.from({ length: 100 }, (_, index) => ({
             alertKey: `unrelated-page-two-${index}`,
@@ -1399,10 +1407,80 @@ describe("iLert webhook canary", () => {
     const alertPages = requests.filter((request) => new URL(request.url).pathname === "/api/alerts");
     expect(alertPages.slice(0, 2).map((request) =>
       new URL(request.url).searchParams.get("start-index")
-    )).toEqual(["0", "100"]);
+    )).toEqual(["0", "99"]);
     expect(requests.some((request) =>
       request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
     )).toBe(true);
+  });
+
+  test("retains and resolves a boundary canary when an earlier open row shifts offset pagination", async () => {
+    const requests: Request[] = [];
+    let currentTime = 0;
+    let firstPage = true;
+    let resolved = false;
+    const canaryId = 101;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+      if (request.method === "PUT" && url.pathname === `/api/alerts/${canaryId}/resolve`) {
+        resolved = true;
+        return new Response(null, { status: 200 });
+      }
+      if (url.pathname === `/api/alerts/${canaryId}`) {
+        return Response.json({
+          alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+          alertSource: { id: SOURCE_ID },
+          id: canaryId,
+          priority: "HIGH",
+          status: resolved ? "RESOLVED" : "PENDING",
+        });
+      }
+      if (url.pathname === "/api/alerts") {
+        const start = Number(url.searchParams.get("start-index"));
+        expect(url.searchParams.getAll("states")).toEqual(["PENDING", "ACCEPTED"]);
+        if (firstPage && start === 0) {
+          firstPage = false;
+          return Response.json(Array.from({ length: 100 }, (_, index) => ({
+            alertKey: `unrelated-${index + 1}`,
+            alertSource: { id: SOURCE_ID },
+            id: index + 1,
+            priority: "HIGH",
+            status: "PENDING",
+          })));
+        }
+        // The first row resolved after page one. A naive start-index=100 request
+        // would skip this canary; the overlapping start-index=99 page contains it.
+        if (start === 99) {
+          return Response.json([{
+            alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+            alertSource: { id: SOURCE_ID },
+            id: canaryId,
+            priority: "HIGH",
+            status: "PENDING",
+          }]);
+        }
+        return Response.json([]);
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+
+    const inventoryOffsets = requests
+      .filter((request) => new URL(request.url).pathname === "/api/alerts")
+      .map((request) => new URL(request.url).searchParams.get("start-index"));
+    expect(inventoryOffsets).toContain("99");
+    expect(requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith(`/alerts/${canaryId}/resolve`)
+    )).toBe(true);
+    expect(resolved).toBe(true);
   });
 
   test("latches a malformed matching record across later retry-exhausted pagination", async () => {
@@ -1448,7 +1526,7 @@ describe("iLert webhook canary", () => {
             })),
           ]);
         }
-        if (start === 100 && pageTwoFailures > 0) {
+        if (start === 99 && pageTwoFailures > 0) {
           pageTwoFailures -= 1;
           return new Response(null, { status: 503 });
         }

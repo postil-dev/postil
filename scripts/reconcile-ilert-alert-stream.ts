@@ -22,8 +22,9 @@ const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 60_000;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
 const CANARY_CLEANUP_ATTEMPTS = 4;
 const ALERT_REPORT_TIME_SKEW_MS = 5_000;
+const ALERT_PAGINATION_OVERLAP = 1;
 // GitHub permits the initial workflow run plus 50 reruns.
-const MAX_CANARY_RUN_ATTEMPT = 51;
+export const MAX_CANARY_RUN_ATTEMPT = 51;
 const FINALIZER_STABLE_EMPTY_SCANS = 2;
 const CANARY_KEY_PREFIX = "postil-ilert-webhook-canary";
 
@@ -1333,8 +1334,13 @@ async function findAlertsByKeys(
   const matches: Json[] = [];
   const keys = new Set(options.keys);
   let validationError: InvalidCanaryAlertValidationError | undefined;
+  let expectedPagePrefix: readonly string[] | undefined;
   try {
-    for (let start = 0, page = 0; ; start += 100, page += 1) {
+    for (
+      let start = 0, page = 0;
+      ;
+      start += 100 - ALERT_PAGINATION_OVERLAP, page += 1
+    ) {
       if (options.maxPages !== undefined && page >= options.maxPages) {
         throw new Error("iLert terminal canary inventory exceeded its pagination limit");
       }
@@ -1377,10 +1383,37 @@ async function findAlertsByKeys(
           throw error;
         }
       }
+      // iLert documents offset pagination rather than a snapshot cursor. Re-read
+      // the prior boundary on every page so a row resolving or arriving during
+      // the scan makes this inventory incomplete instead of silently skipping
+      // the shifted row.
+      const priorPagePrefix = expectedPagePrefix;
+      if (priorPagePrefix) {
+        const observedPrefix = alerts.slice(0, priorPagePrefix.length).map((item) => {
+          const alertId = positiveId(item.id);
+          if (!alertId) {
+            throw new Error("iLert returned an offset-page alert without an identity");
+          }
+          return alertId;
+        });
+        if (
+          observedPrefix.length !== priorPagePrefix.length ||
+          observedPrefix.some((alertId, index) => alertId !== priorPagePrefix[index])
+        ) {
+          throw new Error("iLert alert inventory changed during offset pagination");
+        }
+      }
       if (alerts.length < 100) {
         if (validationError) throw validationError;
         return matches;
       }
+      expectedPagePrefix = alerts.slice(-ALERT_PAGINATION_OVERLAP).map((item) => {
+        const alertId = positiveId(item.id);
+        if (!alertId) {
+          throw new Error("iLert returned an offset-page alert without an identity");
+        }
+        return alertId;
+      });
     }
   } catch (error) {
     if (validationError && error !== validationError) {
