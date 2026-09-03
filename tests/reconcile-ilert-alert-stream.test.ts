@@ -491,6 +491,32 @@ describe("iLert webhook-action reconciliation", () => {
     expect(requests.some((request) => request.url.includes("/alert-actions") && request.method !== "GET")).toBe(false);
   });
 
+  test("propagates a receiver preflight failure instead of recovering a hypothetical created action", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const requests: Request[] = [];
+    let actionInventories = 0;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          return Response.json({ error: "unavailable" }, { status: 503 });
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "GET") {
+          actionInventories += 1;
+          return Response.json(actionInventories <= 2 ? [] : [{ id: "73", name: desired.name }]);
+        }
+        if (url.pathname === "/api/alert-actions/73") return Response.json({ ...desired, id: "73" });
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("credential preflight failed with HTTP 503");
+    expect(actionInventories).toBe(2);
+    expect(requests.some((request) => request.method === "POST")).toBe(false);
+  });
+
   test("creates a missing action only after receiver preflight", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
     const requests: Request[] = [];

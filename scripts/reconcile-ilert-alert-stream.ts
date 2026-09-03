@@ -1609,21 +1609,16 @@ async function createAlertActionSafely(
 ): Promise<Json> {
   let created: Json;
   try {
-    created = requireObject(
-      await managementOnce(
-        options.fetchFn,
-        options.apiKey,
-        "/alert-actions?include=conditions",
-        { method: "POST", body: JSON.stringify(options.desired) },
-        options.deadline,
-        options.beforeMutationAttempt,
-      ),
-      "iLert returned an invalid alert action",
+    created = await managementOnce(
+      options.fetchFn,
+      options.apiKey,
+      "/alert-actions?include=conditions",
+      { method: "POST", body: JSON.stringify(options.desired) },
+      options.deadline,
+      options.beforeMutationAttempt,
     );
   } catch (error) {
-    if (error instanceof Error && error.message === "iLert integration binding validation failed") {
-      throw error;
-    }
+    if (!(error instanceof AmbiguousAlertActionCreateError)) throw error;
     const candidate = await loadReservedAlertAction(options);
     if (candidate && equivalentAlertAction(candidate, options.desired)) return candidate;
     throw new Error(
@@ -1705,14 +1700,13 @@ async function managementOnce(
   init: RequestInit,
   deadline: Deadline,
   beforeAttempt?: BeforeMutationAttempt,
-): Promise<unknown> {
+): Promise<Json> {
   assertBeforeDeadline(deadline);
   await beforeAttempt?.();
   assertBeforeDeadline(deadline);
   const timeout = Math.min(REQUEST_TIMEOUT_MS, remaining(deadline));
-  let response: Response;
   try {
-    response = await fetchFn(`${API_BASE}${path}`, {
+    const response = await fetchFn(`${API_BASE}${path}`, {
       ...init,
       headers: {
         accept: "application/json",
@@ -1721,13 +1715,22 @@ async function managementOnce(
       },
       signal: AbortSignal.timeout(timeout),
     });
+    if (!response.ok) {
+      throw new Error(`iLert alert-action creation request is ambiguous after HTTP ${response.status}`);
+    }
+    return requireObject(
+      await parseJson(response),
+      "iLert returned an invalid alert action",
+    );
   } catch (error) {
-    throw new Error("iLert alert-action creation request is ambiguous", { cause: error });
+    throw new AmbiguousAlertActionCreateError(error);
   }
-  if (!response.ok) {
-    throw new Error(`iLert alert-action creation request is ambiguous after HTTP ${response.status}`);
+}
+
+class AmbiguousAlertActionCreateError extends Error {
+  constructor(cause: unknown) {
+    super("iLert alert-action creation request is ambiguous", { cause });
   }
-  return parseJson(response);
 }
 
 async function parseJson(response: Response): Promise<unknown> {
