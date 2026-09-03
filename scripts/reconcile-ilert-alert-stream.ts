@@ -1426,6 +1426,7 @@ async function receiverEventReceived(
     options.sleep,
   );
   if (!response.ok) {
+    await releaseResponseBody(response);
     throw new Error(`Postil webhook observation failed with HTTP ${response.status}`);
   }
   const value = object(await parseJson(response));
@@ -1452,6 +1453,7 @@ async function preflightReceiver(
     deadline,
     sleep,
   );
+  await releaseResponseBody(response);
   if (response.status !== 204) {
     throw new Error(`Postil webhook credential preflight failed with HTTP ${response.status}`);
   }
@@ -1498,6 +1500,7 @@ async function event(
       );
     },
   );
+  await releaseResponseBody(response);
   if (!response.ok) {
     throw new Error(`iLert event request failed with HTTP ${response.status}`);
   }
@@ -1530,6 +1533,7 @@ async function management(
     beforeAttempt,
   );
   if (!response.ok) {
+    await releaseResponseBody(response);
     throw new Error(`iLert management request failed with HTTP ${response.status}`);
   }
   return parseJson(response);
@@ -1559,6 +1563,7 @@ async function resolveAlertById(
       );
     },
   );
+  await releaseResponseBody(response);
   if (response.status !== 200) {
     throw new Error("iLert management alert resolution failed");
   }
@@ -1985,6 +1990,10 @@ async function parseJson(response: Response): Promise<unknown> {
   }
 }
 
+async function releaseResponseBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => undefined);
+}
+
 async function requestWithRetry(
   fetchFn: Fetch,
   url: string,
@@ -2012,7 +2021,7 @@ async function requestWithRetry(
         return response;
       }
       const delay = retryDelay(response, deadline);
-      await response.body?.cancel().catch(() => undefined);
+      await releaseResponseBody(response);
       await sleep(delay);
     } catch (error) {
       lastError = error;
@@ -2201,7 +2210,10 @@ async function loadIntegrationBoundAlertSource(
       sleep,
       true,
     );
-    if (response.status !== 200) throw new Error("binding request failed");
+    if (response.status !== 200) {
+      await releaseResponseBody(response);
+      throw new Error("binding request failed");
+    }
     return alertSource(await parseJson(response), sourceId, integrationKey);
   } catch {
     throw new Error("iLert integration binding validation failed");
@@ -2224,7 +2236,10 @@ async function loadManagementBoundAlertSource(
       sleep,
       true,
     );
-    if (response.status !== 200) throw new Error("source request failed");
+    if (response.status !== 200) {
+      await releaseResponseBody(response);
+      throw new Error("source request failed");
+    }
     return managementAlertSource(await parseJson(response), sourceId);
   } catch {
     throw new Error("iLert management alert-source validation failed");

@@ -1457,6 +1457,111 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
+  test("releases successful Event API and exact-ID resolution bodies before continuing", async () => {
+    const service = canaryService();
+    const lifecycle: string[] = [];
+    let pendingBody: string | undefined;
+    let parsedBodyCancellations = 0;
+    const fetchFn: Fetch = async (input, init) => {
+      if (pendingBody) throw new Error(`request started before ${pendingBody} body cancellation`);
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/alert-sources/")) {
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify(SOURCE)));
+            controller.close();
+          },
+          cancel() {
+            parsedBodyCancellations += 1;
+          },
+        }), { headers: { "content-type": "application/json" } });
+      }
+      const response = await service.fetchFn(input, init);
+      const label = request.method === "POST" && url.pathname === "/api/events"
+        ? "event"
+        : request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(url.pathname)
+        ? "resolution"
+        : undefined;
+      if (!label) return response;
+      pendingBody = label;
+      lifecycle.push(`${label}-response`);
+      return new Response(new ReadableStream({
+        cancel() {
+          lifecycle.push(`${label}-cancelled`);
+          pendingBody = undefined;
+        },
+      }), { status: response.status });
+    };
+
+    await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn });
+
+    expect(pendingBody).toBeUndefined();
+    expect(parsedBodyCancellations).toBe(0);
+    expect(lifecycle).toEqual([
+      "event-response",
+      "event-cancelled",
+      "resolution-response",
+      "resolution-cancelled",
+    ]);
+  });
+
+  test("preserves a failing Event API status when body cancellation rejects", async () => {
+    const service = canaryService();
+    let cancellations = 0;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const response = await service.fetchFn(input, init);
+      if (request.method !== "POST" || new URL(request.url).pathname !== "/api/events") {
+        return response;
+      }
+      const body = await request.clone().json() as { eventType: string };
+      if (body.eventType !== "ALERT") return response;
+      return new Response(new ReadableStream({
+        cancel() {
+          cancellations += 1;
+          throw new Error("body cancellation failed");
+        },
+      }), { status: 403 });
+    };
+
+    await expect(verifyIlertWebhookCanary({ ...canaryOptions, fetchFn }))
+      .rejects.toThrow("iLert event request failed with HTTP 403");
+    expect(cancellations).toBe(1);
+  });
+
+  test("releases every failing exact-ID resolution body exactly once", async () => {
+    const service = canaryService({ existing: true });
+    let pendingBody = false;
+    let resolutionRequests = 0;
+    let cancellations = 0;
+    const fetchFn: Fetch = async (input, init) => {
+      if (pendingBody) throw new Error("request started before resolution body cancellation");
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (request.method !== "PUT" || !/\/alerts\/[1-9][0-9]*\/resolve$/u.test(url.pathname)) {
+        return service.fetchFn(input, init);
+      }
+      resolutionRequests += 1;
+      pendingBody = true;
+      return new Response(new ReadableStream({
+        cancel() {
+          cancellations += 1;
+          pendingBody = false;
+        },
+      }), { status: 409 });
+    };
+
+    await expect(finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn,
+    })).rejects.toThrow("did not verify every discovered alert as RESOLVED");
+    expect(pendingBody).toBe(false);
+    expect(resolutionRequests).toBeGreaterThan(0);
+    expect(cancellations).toBe(resolutionRequests);
+  });
+
   test("does not retry ALERT after a transient response rotates the source binding", async () => {
     const service = canaryService({ alertRetryAfter: "0" });
     let rotated = false;
