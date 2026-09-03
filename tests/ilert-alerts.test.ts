@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core/dialect";
 
 import {
   configuredIlertWebhookSecret,
@@ -246,14 +248,40 @@ describe("iLert webhook input", () => {
 
 describe("iLert operator stream protocol", () => {
   test("checks exact alert, event type, and source persistence", async () => {
-    let selected = 0;
+    const events = [
+      { alertId: "12797430", eventType: "alert-resolved", alertSourceId: 2269078n, sequence: 1n },
+      { alertId: "12797431", eventType: "alert-resolved", alertSourceId: 2269078n, sequence: 2n },
+      { alertId: "12797430", eventType: "alert-created", alertSourceId: 2269079n, sequence: 3n },
+      { alertId: "12797430", eventType: "alert-resolved", alertSourceId: 2269079n, sequence: 4n },
+    ];
+    const dialect = new PgDialect();
+    const expectedPredicates = [
+      ["12797430", "alert-resolved", 2269078n],
+      ["12797430", "alert-created", 2269078n],
+    ];
+    let predicateCalls = 0;
     const db = {
       select() {
-        selected += 1;
         return {
           from: () => ({
-            where: () => ({
-              limit: async () => selected === 1 ? [{ sequence: 1n }] : [],
+            where: (predicate: SQL) => ({
+              limit: async () => {
+                const query = dialect.sqlToQuery(predicate);
+                expect(query.sql).toContain('"ilert_alert_events"."alert_id" = $1');
+                expect(query.sql).toContain('"ilert_alert_events"."event_type" = $2');
+                expect(query.sql).toContain('"ilert_alert_events"."alert_source_id" = $3');
+                const [alertId, eventType, alertSourceId] = query.params;
+                expect([alertId, eventType, alertSourceId]).toEqual(
+                  expectedPredicates[predicateCalls++]!,
+                );
+                return events
+                  .filter((event) =>
+                    event.alertId === alertId &&
+                    event.eventType === eventType &&
+                    event.alertSourceId === alertSourceId
+                  )
+                  .map(({ sequence }) => ({ sequence }));
+              },
             }),
           }),
         };
