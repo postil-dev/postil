@@ -78,6 +78,11 @@ describe("deployment workflow trust boundaries", () => {
     expect(workflow.jobs.deploy.steps.indexOf(releaseSha!)).toBeLessThan(
       workflow.jobs.deploy.steps.indexOf(deployment!),
     );
+    const postCheckoutReleaseSteps = workflow.jobs.deploy.steps.slice(
+      workflow.jobs.deploy.steps.indexOf(releaseSha!) + 1,
+    );
+    expect(JSON.stringify(postCheckoutReleaseSteps)).not.toContain("GITHUB_SHA");
+    expect(JSON.stringify(postCheckoutReleaseSteps)).not.toContain("github.sha");
 
     const authorized = ({
       eventName,
@@ -130,6 +135,113 @@ describe("deployment workflow trust boundaries", () => {
       eventName: "workflow_dispatch",
       ref: "refs/heads/feature",
     })).toBe(false);
+  });
+
+  test("binds failed-deploy compensation to the checked-out release", () => {
+    const workflow = parse(
+      readFileSync(join(root, ".github/workflows/deploy.yml"), "utf8"),
+    ) as {
+      jobs: {
+        deploy: {
+          steps: Array<{
+            env?: Record<string, string>;
+            name?: string;
+            run?: string;
+          }>;
+        };
+      };
+    };
+    const recovery = workflow.jobs.deploy.steps.find(
+      (step) =>
+        step.name ===
+          "Restore capabilities when release preparation failed before replacement",
+    );
+    expect(recovery?.run).toContain(
+      'if [[ "${release}" == "${POSTIL_RELEASE_SHA}" ]]; then',
+    );
+    expect(recovery?.env?.POSTIL_RELEASE_SHA).toBeUndefined();
+
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "postil-deploy-recovery-"),
+    );
+    const compensationPath = join(temporaryDirectory, "compensation");
+    const flyctlPath = join(temporaryDirectory, "flyctl");
+    const jqPath = join(temporaryDirectory, "jq");
+    const bunPath = join(temporaryDirectory, "bun");
+    writeFileSync(
+      flyctlPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1 $2" == "machine list" ]]; then
+  printf '%s\n' '[]'
+elif [[ "$1 $2" == "machine exec" ]]; then
+  printf '%s' "\${MOCK_MACHINE_RELEASE_SHA}"
+else
+  exit 2
+fi
+`,
+    );
+    writeFileSync(
+      jqPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+input="$(< /dev/stdin)"
+if [[ "$*" == *"verify-managed-fleet.jq"* ]]; then
+  printf '%s\n' '{"managed_count":4}'
+elif [[ "$*" == *".managed_count"* ]]; then
+  printf '%s\n' '4'
+elif [[ "$*" == *"| length"* ]]; then
+  printf '%s\n' '4'
+elif [[ "$*" == *"| .id"* ]]; then
+  printf '%s\n' web-1 web-2 worker-1 monitor-1
+else
+  exit 2
+fi
+`,
+    );
+    writeFileSync(
+      bunPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\${POSTIL_RELEASE_SHA}" > "\${MOCK_COMPENSATION_PATH}"
+`,
+    );
+    chmodSync(flyctlPath, 0o755);
+    chmodSync(jqPath, 0o755);
+    chmodSync(bunPath, 0o755);
+
+    const trustedRelease = "1111111111111111111111111111111111111111";
+    const advancedMainRelease = "2222222222222222222222222222222222222222";
+    const executeRecovery = (machineRelease: string) =>
+      spawnSync("bash", ["-c", recovery!.run!], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_SHA: advancedMainRelease,
+          MOCK_COMPENSATION_PATH: compensationPath,
+          MOCK_MACHINE_RELEASE_SHA: machineRelease,
+          PATH: `${temporaryDirectory}:${process.env.PATH}`,
+          POSTIL_RELEASE_SHA: trustedRelease,
+        },
+      });
+
+    try {
+      const advancedMainFleet = executeRecovery(advancedMainRelease);
+      expect(advancedMainFleet.status).toBe(0);
+      expect(readFileSync(compensationPath, "utf8").trim()).toBe(
+        trustedRelease,
+      );
+
+      rmSync(compensationPath, { force: true });
+      const checkedOutTargetFleet = executeRecovery(trustedRelease);
+      expect(checkedOutTargetFleet.status).not.toBe(0);
+      expect(checkedOutTargetFleet.stdout).toContain(
+        "The target release reached the managed fleet",
+      );
+      expect(() => readFileSync(compensationPath, "utf8")).toThrow();
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   test("derives downstream trust from the triggering deploy attempt's jobs", () => {
