@@ -507,14 +507,15 @@ source using a report-time window whose upper bound follows successful Event API
 acceptance. It must remain PENDING or ACCEPTED at HIGH priority and have an
 exact persisted `alert-created` receiver event. A `cleaned` handoff means the
 primary canary also proves the exact persisted `alert-resolved` receiver event.
-For a `true` or `unknown` handoff, the independent cleanup-only finalizer uses
-the producer attempt for accepted-current proof and the running attempt as a
-sweep ceiling. It accepts GitHub's 1 through 50 attempt range, bounds work per
-attempt, performs delayed consecutive terminal discoveries that each complete
-empty before success, and verifies every retained id as RESOLVED. If the
-producer output is unavailable, the finalizer uses its running attempt to
-reconstruct the deterministic identity. It never reads receiver configuration
-or reconciles the action. The
+The independent cleanup-only finalizer uses the producer attempt for
+accepted-current proof and the running attempt as a sweep ceiling. It accepts
+GitHub's 1 through 50 attempt range, bounds work per attempt, performs delayed
+consecutive terminal discoveries that each complete empty before success, and
+verifies every retained id as RESOLVED. A cleaned handoff still performs this
+management sweep to resolve a delayed Event API duplicate. If the producer
+output is unavailable, the finalizer uses its running attempt to reconstruct
+the deterministic identity. It never reads receiver configuration or
+reconciles the action. The
 command supports `--dry-run`,
 `--canary`, and `--finalize-canary`; unflagged live reconciliation is rejected
 because it has no recoverable run identity. The canary does not open the

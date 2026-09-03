@@ -385,7 +385,6 @@ export async function verifyIlertWebhookCanary(
 export async function finalizeIlertWebhookCanary(
   options: FinalizerOptions,
 ): Promise<void> {
-  if (options.alertSubmitted === "cleaned") return;
   const fetchFn = options.fetchFn ?? fetch;
   const sleep = options.sleep ?? Bun.sleep;
   const now = options.now ?? Date.now;
@@ -816,12 +815,15 @@ async function finalizeDeterministicCanaryKeys(
   options: CleanupOptions,
   keys: readonly DeterministicCanaryKey[],
   discoveryDeadline: Deadline,
-  handoff: Exclude<CanaryHandoff, "cleaned">,
+  handoff: CanaryHandoff,
   currentMain: DeterministicCanaryKey,
   currentWindow: ReportTimeWindow | undefined,
 ): Promise<void> {
   const targets = new Map<string, CanaryTarget>();
-  let currentAccountedFor = false;
+  // The producer's persisted create-and-resolve proof accounts for the first
+  // alert, but a retry-ambiguous Event API submission can materialize later.
+  // Continue the full inventory sweep for that delayed duplicate.
+  let currentAccountedFor = handoff === "cleaned";
   let currentResolveSubmitted = false;
   let fatalError: unknown;
   let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
@@ -888,6 +890,7 @@ async function finalizeDeterministicCanaryKeys(
       }
     }
     if (
+      handoff !== "cleaned" &&
       !currentResolveSubmitted &&
       ![...targets.values()].some((target) => target.alertKey === currentMain.key)
     ) {
@@ -1931,10 +1934,6 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
 
   if (finalizeCanary) {
     const alertSubmitted = canaryAlertSubmission(values);
-    if (alertSubmitted === "cleaned") {
-      log("iLert canary cleanup is already verified");
-      return;
-    }
     await finalizeIlertWebhookCanary({
       alertSubmitted,
       apiKey: environment(values, "ILERT_API_KEY"),

@@ -758,7 +758,7 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
-  test("a cleaned handoff makes the normal finalizer an idempotent success", async () => {
+  test("a cleaned handoff still performs an idempotent terminal inventory sweep", async () => {
     const service = canaryService();
     await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn });
     const eventCount = service.events.length;
@@ -766,8 +766,52 @@ describe("iLert webhook canary", () => {
       ...canaryOptions,
       alertSubmitted: "cleaned",
       fetchFn: service.fetchFn,
+      ...finalizerTiming(),
     });
     expect(service.events).toHaveLength(eventCount);
+    expect(service.alertListRequests).toBeGreaterThan(0);
+  });
+
+  test("a cleaned handoff resolves a delayed duplicate after a retry-ambiguous ALERT", async () => {
+    let currentTime = 0;
+    const service = canaryService({
+      deferFirstAlertCreation: true,
+      releaseDeferredAlertAfterResolved: true,
+    });
+    let firstAlertResponseLost = true;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const response = await service.fetchFn(input, init);
+      if (firstAlertResponseLost && request.method === "POST" && request.url.endsWith("/events")) {
+        firstAlertResponseLost = false;
+        throw new Error("connection reset after Event API acceptance");
+      }
+      return response;
+    };
+
+    await verifyIlertWebhookCanary({
+      ...canaryOptions,
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+    expect(service.events.filter((event) => event.eventType === "ALERT")).toHaveLength(2);
+    expect(service.statuses).toEqual(["RESOLVED"]);
+
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+
+    expect(service.alertListRequests).toBeGreaterThan(1);
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/100/resolve")
+    )).toBe(true);
+    expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
+    expect(service.events.filter((event) => event.eventType === "ALERT")).toHaveLength(2);
   });
 
   test("retries a stale open-state read after an accepted RESOLVE", async () => {
@@ -1425,18 +1469,17 @@ describe("iLert webhook canary", () => {
     expect(service.requests.some((request) => request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname))).toBe(true);
   });
 
-  test("cleaned finalizer CLI requires no credential or run configuration", async () => {
-    let accessedNetwork = false;
+  test("cleaned finalizer CLI loads credentials and performs management cleanup", async () => {
+    const service = canaryService();
     await runCli({
       args: ["--finalize-canary"],
-      env: { POSTIL_ILERT_CANARY_ALERT_SUBMITTED: "cleaned" },
-      fetchFn: async () => {
-        accessedNetwork = true;
-        throw new Error("network access is forbidden");
-      },
+      env: cliEnvironment({ POSTIL_ILERT_CANARY_ALERT_SUBMITTED: "cleaned" }),
+      fetchFn: service.fetchFn,
+      ...finalizerTiming(),
       log: () => undefined,
     });
-    expect(accessedNetwork).toBe(false);
+    expect(service.alertListRequests).toBeGreaterThan(0);
+    expect(service.events).toEqual([]);
   });
 
   test("rejects live reconciliation without a recoverable run identity before network access", async () => {
@@ -1483,6 +1526,7 @@ function canaryService(options: {
   alertReportTime?: string;
   alertRetryAfter?: string;
   deduplicateAlertKeys?: boolean;
+  deferFirstAlertCreation?: boolean;
   deferredListings?: number;
   detailPendingReads?: number;
   detailAlwaysPending?: boolean;
@@ -1504,6 +1548,7 @@ function canaryService(options: {
   mainPriority?: "HIGH" | "LOW";
   observedSourceId?: number;
   receiverObservationFailures?: number;
+  releaseDeferredAlertAfterResolved?: boolean;
   resolveRequestFailures?: number;
   sourceIntegrationType?: string;
   staleOpenReadsAfterResolve?: number;
@@ -1544,6 +1589,7 @@ function canaryService(options: {
       }]
     : [];
   let alertSent = false;
+  let deferredAlert: { alertKey: string; priority: "HIGH" | "LOW"; reportTime?: string } | undefined;
   let alertRetryPending = options.alertRetryAfter !== undefined;
   let alertListRequests = 0;
   let failAlertListings = options.failAlertListings ?? 0;
@@ -1578,6 +1624,16 @@ function canaryService(options: {
         });
       }
       if (
+        body.eventType === "ALERT" &&
+        options.deferFirstAlertCreation &&
+        !deferredAlert
+      ) {
+        deferredAlert = {
+          alertKey: body.alertKey,
+          priority: options.mainPriority ?? body.priority ?? "HIGH",
+          reportTime: options.alertReportTime,
+        };
+      } else if (
         body.eventType === "ALERT" &&
         !options.dropAlertCreation &&
         (!options.deduplicateAlertKeys || !alerts.some((alert) => alert.alertKey === body.alertKey))
@@ -1649,6 +1705,25 @@ function canaryService(options: {
       }
       if (options.managementFailsAfterAlert && alertSent) {
         return new Response(null, { status: 503 });
+      }
+      if (
+        deferredAlert &&
+        options.releaseDeferredAlertAfterResolved &&
+        alerts.length > 0 &&
+        alerts.every((alert) => alert.status === "RESOLVED")
+      ) {
+        const id = Math.max(...alerts.map((alert) => alert.id)) + 1;
+        alerts.push({
+          alertKey: deferredAlert.alertKey,
+          createdReceived: true,
+          id,
+          priority: deferredAlert.priority,
+          reportTime: deferredAlert.reportTime,
+          resolvedReceived: false,
+          sourceId: SOURCE_ID,
+          status: "PENDING",
+        });
+        deferredAlert = undefined;
       }
       if (alertListRequests <= (options.deferredListings ?? 0)) {
         return Response.json([]);
