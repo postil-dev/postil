@@ -467,7 +467,7 @@ interface CanaryObservation extends CanaryTarget {
 }
 
 class InvalidCanaryAlertValidationError extends Error {
-  constructor(message: string, readonly target: CanaryTarget) {
+  constructor(message: string, readonly target?: CanaryTarget) {
     super(message);
   }
 }
@@ -483,6 +483,8 @@ class InvalidCanaryAlertPriorityError extends InvalidCanaryAlertValidationError 
     super("iLert returned a canary alert with an invalid priority", target);
   }
 }
+
+class InvalidCanaryAlertIdentityError extends InvalidCanaryAlertValidationError {}
 
 interface DeterministicCanaryKey {
   key: string;
@@ -656,24 +658,47 @@ function canaryObservation(
   if (alert.alertKey !== expectedKey) {
     throw new Error("iLert returned a canary alert with a different key");
   }
-  const sourceId = alertSourceId(alert);
-  if (!sourceId || (expectedSourceId !== undefined && sourceId !== expectedSourceId)) {
-    throw new Error("iLert returned a canary alert from a different source");
+  const alertId = positiveId(alert.id);
+  const observedSourceId = alertSourceId(alert);
+  const target = alertId && (observedSourceId ?? expectedSourceId)
+    ? {
+      alertId,
+      alertKey: expectedKey,
+      sourceId: observedSourceId ?? expectedSourceId!,
+    }
+    : undefined;
+  if (!alertId) {
+    throw new InvalidCanaryAlertIdentityError(
+      "iLert returned a canary alert without an identity",
+      target,
+    );
   }
-  const target: CanaryTarget = {
-    alertId: canaryAlertId(alert),
+  if (!observedSourceId) {
+    throw new InvalidCanaryAlertIdentityError(
+      "iLert returned a canary alert without a valid source",
+      target,
+    );
+  }
+  if (expectedSourceId !== undefined && observedSourceId !== expectedSourceId) {
+    throw new InvalidCanaryAlertIdentityError(
+      "iLert returned a canary alert from a different source",
+      target,
+    );
+  }
+  const exactTarget: CanaryTarget = {
+    alertId,
     alertKey: expectedKey,
-    sourceId,
+    sourceId: observedSourceId,
   };
   const priority = alert.priority;
   if (priority !== "HIGH" && priority !== "LOW") {
-    throw new InvalidCanaryAlertPriorityError(target);
+    throw new InvalidCanaryAlertPriorityError(exactTarget);
   }
   const status = alert.status;
   if (status !== "PENDING" && status !== "ACCEPTED" && status !== "RESOLVED") {
-    throw new InvalidCanaryAlertStatusError(target);
+    throw new InvalidCanaryAlertStatusError(exactTarget);
   }
-  return { ...target, priority, status };
+  return { ...exactTarget, priority, status };
 }
 
 function invalidCanaryAlertTarget(error: unknown): CanaryTarget | undefined {
@@ -890,7 +915,9 @@ async function finalizeDeterministicCanaryKeys(
       terminalDeadline,
       CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
     );
-    if (!terminalDiscovery.complete) inventoryIncomplete = true;
+    // A later complete, empty scan proves recovery from a transient inventory
+    // failure. Any incomplete or non-empty scan resets that proof.
+    inventoryIncomplete = !terminalDiscovery.complete;
     stableEmptyScans = terminalDiscovery.complete && terminalDiscovery.open === 0
       ? stableEmptyScans + 1
       : 0;

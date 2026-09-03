@@ -607,6 +607,19 @@ jobs:
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
           POSTIL_ILERT_RECEIVER_ORIGIN: https://postil.dev
         run: timeout 13m bun run scripts/reconcile-ilert-alert-stream.ts --canary
+      # Cancellation does not reliably start a dependent job. This step keeps
+      # cleanup with the producer while the runner remains available. The
+      # downstream finalizer still covers job timeout and runner loss.
+      - name: Resolve and stabilize the current iLert canary before job exit
+        if: ${{ always() && steps.canary.outcome != 'skipped' }}
+        env:
+          POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
+          POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ steps.canary.outputs.alert_submitted }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: ${{ github.run_attempt }}
+          POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
+          POSTIL_ILERT_CANARY_STARTED_AT: ${{ steps.canary.outputs.started_at }}
+        run: timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary
 
   alert-stream-finalize:
     name: Finalize iLert webhook canary cleanup

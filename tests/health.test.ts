@@ -277,6 +277,28 @@ describe("production monitor workflow", () => {
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
       POSTIL_ILERT_RECEIVER_ORIGIN: "https://postil.dev",
     });
+    const inJobFinalizer = alertStream?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the current iLert canary before job exit",
+    );
+    expect(inJobFinalizer?.if).toContain("always()");
+    expect(inJobFinalizer?.if).toContain("steps.canary.outcome != 'skipped'");
+    expect(alertStream?.steps?.indexOf(inJobFinalizer!)).toBeGreaterThan(
+      alertStream?.steps?.findIndex(
+        (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
+      ) ?? -1,
+    );
+    expect(inJobFinalizer?.run).toContain(
+      "timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary",
+    );
+    expect(inJobFinalizer?.run).not.toContain(" --canary");
+    expect(inJobFinalizer?.env).toMatchObject({
+      POSTIL_ILERT_CANARY_ALERT_SUBMITTED: "${{ steps.canary.outputs.alert_submitted }}",
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
+      POSTIL_ILERT_CANARY_STARTED_AT: "${{ steps.canary.outputs.started_at }}",
+    });
+    expect(inJobFinalizerRunsDuringCancellation(inJobFinalizer?.if)).toBe(true);
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
     expect(finalizer?.["timeout-minutes"]).toBe(20);
@@ -706,4 +728,11 @@ function resolveFinalizerAttempt(
     throw new Error("finalizer attempt handoff is not recoverable");
   }
   return producerAttempt || workflowAttempt;
+}
+
+function inJobFinalizerRunsDuringCancellation(condition: string | undefined): boolean {
+  return Boolean(
+    condition?.includes("always()") &&
+      condition.includes("steps.canary.outcome != 'skipped'"),
+  );
 }

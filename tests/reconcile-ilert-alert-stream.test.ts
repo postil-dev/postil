@@ -1191,7 +1191,7 @@ describe("iLert webhook canary", () => {
     });
   }
 
-  for (const invalidField of ["status", "priority"] as const) {
+  for (const invalidField of ["status", "priority", "id", "source"] as const) {
     test(`continues past an invalid attempt-1 ${invalidField} to resolve a later attempt-2 alert`, async () => {
       let invalidListingReturned = false;
       const attemptOneKey = canaryAlertKey(RUN_ID, "1");
@@ -1213,8 +1213,8 @@ describe("iLert webhook canary", () => {
             return Response.json([
               {
                 alertKey: attemptOneKey,
-                alertSource: { id: SOURCE_ID },
-                id: 98,
+                ...(invalidField === "source" ? {} : { alertSource: { id: SOURCE_ID } }),
+                ...(invalidField === "id" ? {} : { id: 98 }),
                 priority: invalidField === "priority" ? "UNKNOWN" : "HIGH",
                 status: invalidField === "status" ? "UNKNOWN" : "PENDING",
               },
@@ -1229,14 +1229,46 @@ describe("iLert webhook canary", () => {
           }
           return service.fetchFn(input, init);
         },
-      })).rejects.toThrow(`invalid ${invalidField}`);
-      for (const id of ["98", "99"]) {
+      })).rejects.toThrow(
+        invalidField === "id"
+          ? "without an identity"
+          : invalidField === "source"
+          ? "without a valid source"
+          : `invalid ${invalidField}`,
+      );
+      for (const id of invalidField === "id" ? ["99"] : ["98", "99"]) {
         expect(service.requests.some((request) =>
           request.method === "PUT" && request.url.endsWith(`/alerts/${id}/resolve`)
         )).toBe(true);
       }
     });
   }
+
+  test("recovers from one incomplete terminal inventory after two complete empty scans", async () => {
+    let currentTime = 0;
+    let terminalFailures = 3;
+    const service = canaryService();
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "unknown",
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        if (
+          request.url.includes("/alerts?") &&
+          currentTime >= 360_000 &&
+          terminalFailures > 0
+        ) {
+          terminalFailures -= 1;
+          return new Response(null, { status: 503 });
+        }
+        return service.fetchFn(input, init);
+      },
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+    expect(terminalFailures).toBe(0);
+    expect(currentTime).toBeGreaterThanOrEqual(370_000);
+  });
 
   test("fails closed after an incomplete terminal inventory while resolving IDs from prior pages", async () => {
     const requests: Request[] = [];
@@ -1281,7 +1313,7 @@ describe("iLert webhook canary", () => {
           ]);
         }
         if (start === 100) {
-          currentTime = 360_000;
+          currentTime = Math.max(currentTime, 360_000);
           return Response.json(Array.from({ length: 100 }, (_, index) => ({
             alertKey: `unrelated-page-two-${index}`,
             alertSource: { id: SOURCE_ID },
