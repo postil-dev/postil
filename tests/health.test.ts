@@ -427,11 +427,10 @@ describe("production monitor workflow", () => {
       }>;
     };
     const protectedJobs = Object.entries(workflow.jobs).filter(([, job]) =>
-      job.steps?.some((step) => step.uses?.startsWith("actions/checkout@")) &&
+      JSON.stringify(job).includes("secrets.") ||
       job.steps?.some((step) =>
         step.uses?.startsWith("Infisical/secrets-action@") ||
-        step.uses === "./.github/actions/ilert-event" ||
-        Object.values(step.env ?? {}).some((value) => value.includes("secrets."))
+        step.uses === "./.github/actions/ilert-event"
       )
     );
     expect(protectedJobs.map(([name]) => name).sort()).toEqual([
@@ -442,6 +441,7 @@ describe("production monitor workflow", () => {
       "release-recovery",
       "resolve",
       "resolve-release-recovery",
+      "smoke",
     ]);
     for (const [name, job] of protectedJobs) {
       expect(job.if).toContain(
@@ -459,7 +459,28 @@ describe("production monitor workflow", () => {
     );
   });
 
-  test("gives required routine iLert delivery a bounded end-to-end budget", async () => {
+  test("accepts deploy workflow runs only from the main deployment branch", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      on: {
+        workflow_run: {
+          branches: string[];
+          types: string[];
+          workflows: string[];
+        };
+      };
+    };
+    expect(workflow.on.workflow_run).toEqual({
+      workflows: ["deploy"],
+      types: ["completed"],
+      branches: ["main"],
+    });
+  });
+
+  test("gives every required iLert delivery a bounded end-to-end budget", async () => {
     const [workflowSource, actionSource] = await Promise.all([
       readFile(new URL("../.github/workflows/production-monitor.yml", import.meta.url), "utf8"),
       readFile(new URL("../.github/actions/ilert-event/action.yml", import.meta.url), "utf8"),
@@ -477,28 +498,51 @@ describe("production monitor workflow", () => {
     };
     const retryMaxTime = /--retry-max-time\s+(\d+)/u.exec(actionSource);
     const requestMaxTime = /--max-time\s+(\d+)/u.exec(actionSource);
+    const connectTimeout = /--connect-timeout\s+(\d+)/u.exec(actionSource);
+    const retryDelay = /--retry-delay\s+(\d+)/u.exec(actionSource);
+    const retryCount = /--retry\s+(\d+)/u.exec(actionSource);
     expect(retryMaxTime?.[1]).toBeDefined();
     expect(requestMaxTime?.[1]).toBeDefined();
-    expect(Number(retryMaxTime?.[1])).toBeLessThanOrEqual(45);
+    expect(connectTimeout?.[1]).toBeDefined();
+    expect(retryDelay?.[1]).toBeDefined();
+    expect(retryCount?.[1]).toBeDefined();
+    const requestMaxSeconds = Number(requestMaxTime?.[1]);
+    const retryMaxSeconds = Number(retryMaxTime?.[1]);
+    const retryDelaySeconds = Number(retryDelay?.[1]);
+    const retryAttempts = Number(retryCount?.[1]);
+    expect(Number(connectTimeout?.[1])).toBeLessThanOrEqual(requestMaxSeconds);
+    expect(retryMaxSeconds).toBeLessThanOrEqual(45);
+    expect(retryMaxSeconds).toBeGreaterThan(retryDelaySeconds * retryAttempts);
 
-    for (const name of ["notify", "resolve"]) {
-      const job = workflow.jobs[name]!;
-      const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
-      const secretLoad = job.steps.find((step) => step.uses?.startsWith("Infisical/secrets-action@"));
-      const delivery = job.steps.find((step) => step.uses === "./.github/actions/ilert-event");
+    const requiredDeliveries = Object.entries(workflow.jobs).flatMap(([name, job]) =>
+      job.steps
+        .filter((step) =>
+          step.uses === "./.github/actions/ilert-event" &&
+          step.with?.["require-delivery"] === true
+        )
+        .map((delivery) => ({ delivery, job, name }))
+    );
+    expect(requiredDeliveries.map(({ name }) => name).sort()).toEqual([
+      "notify",
+      "resolve",
+      "resolve-release-recovery",
+    ]);
+
+    // retry-max-time includes failed requests and retry delays, but curl may
+    // start one final max-time request immediately before that timer expires.
+    const curlWorstCaseSeconds = retryMaxSeconds + requestMaxSeconds;
+    const shellOverheadSeconds = 15;
+    const minimumDeliveryHeadroomSeconds = 30;
+    for (const { delivery, job } of requiredDeliveries) {
       expect(delivery?.with?.["require-delivery"]).toBe(true);
-      expect(checkout?.["timeout-minutes"]).toBe(1);
-      expect(secretLoad?.["timeout-minutes"]).toBe(1);
-      expect(delivery?.["timeout-minutes"]).toBe(1);
-      expect(Number(requestMaxTime?.[1]) + Number(retryMaxTime?.[1])).toBeLessThanOrEqual(
-        delivery!["timeout-minutes"]! * 60,
+      expect(delivery["timeout-minutes"]! * 60 - curlWorstCaseSeconds - shellOverheadSeconds)
+        .toBeGreaterThanOrEqual(minimumDeliveryHeadroomSeconds);
+      expect(job.steps.every((step) => (step["timeout-minutes"] ?? 0) > 0)).toBe(true);
+      const totalStepBudgetMinutes = job.steps.reduce(
+        (total, step) => total + step["timeout-minutes"]!,
+        0,
       );
-      expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(
-        checkout!["timeout-minutes"]! +
-          secretLoad!["timeout-minutes"]! +
-          delivery!["timeout-minutes"]! +
-          1,
-      );
+      expect(job["timeout-minutes"] - totalStepBudgetMinutes).toBeGreaterThanOrEqual(1);
     }
   });
 
