@@ -509,7 +509,7 @@ primary canary also proves the exact persisted `alert-resolved` receiver event.
 The independent cleanup-only finalizer uses the producer attempt for
 accepted-current proof and the running attempt as a sweep ceiling. It accepts
 GitHub's 1 through 51 attempt range, bounds work per attempt, and sweeps a
-bounded source-scoped report-time window with PENDING, ACCEPTED, and RESOLVED
+32-day run-wide report-time lookback with PENDING, ACCEPTED, and RESOLVED
 states. Every terminal pass freezes its upper report-time bound, brackets
 offset pagination with matching inventory counts, repeats the complete
 inventory for continuity validation, and advances the bound before the next
@@ -528,7 +528,10 @@ authenticated operator SSE stream.
 iLert supplies offset pagination rather than a snapshot, cursor, or exact-key
 filter. The bounded count and repeated-inventory checks provide evidence for a
 complete scan and fail closed on observed churn; they do not claim atomic
-absence proof. Deployment validates the iLert receiver secret with the same
+absence proof. The reconciler revalidates the numeric source ID, API integration
+type, and integration-key binding at every alert-action and Event API mutation,
+then reloads the complete reserved-action inventory after an action mutation.
+Deployment validates the iLert receiver secret with the same
 printable-ASCII length and diversity contract used by the receiver before any
 Fly mutation.
 

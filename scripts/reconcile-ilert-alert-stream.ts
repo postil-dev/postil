@@ -24,7 +24,9 @@ const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
 const ALERT_ACTION_INVENTORY_MAX_PAGES = 50;
 const CANARY_CLEANUP_ATTEMPTS = 4;
 const ALERT_REPORT_TIME_SKEW_MS = 5_000;
-const CANARY_RERUN_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1_000;
+// GitHub permits reruns for 30 days. Keep two additional days for queueing,
+// setup, smoke checks, and clock skew before cleanup establishes its window.
+export const CANARY_RERUN_LOOKBACK_MS = 32 * 24 * 60 * 60 * 1_000;
 const ALERT_PAGE_SIZE = 100;
 // GitHub permits the initial workflow run plus 50 reruns.
 export const MAX_CANARY_RUN_ATTEMPT = 51;
@@ -294,6 +296,17 @@ export async function reconcileIlertAlertAction(
     return { actionId: actionId(existing), operation };
   }
   const id = boundaryExisting ? actionId(boundaryExisting) : null;
+  // The full action inventory above can take most of the reconciliation
+  // budget. Bind the numeric source and integration key again immediately
+  // before the mutating request.
+  await loadIntegrationBoundAlertSource(
+    fetchFn,
+    options.apiKey,
+    options.integrationKey,
+    options.sourceId,
+    deadline,
+    sleep,
+  );
   const result = id
     ? requireObject(
       await management(
@@ -318,23 +331,15 @@ export async function reconcileIlertAlertAction(
   if (id && resultId !== id) {
     throw new Error("iLert returned a different alert action after update");
   }
-  const confirmed = requireObject(
-    await management(
-      fetchFn,
-      options.apiKey,
-      `/alert-actions/${encodeURIComponent(resultId)}?include=conditions`,
-      {},
-      deadline,
-      sleep,
-    ),
-    "iLert returned an invalid alert action",
-  );
-  if (actionId(confirmed) !== resultId) {
-    throw new Error("iLert returned a confirmation for a different alert action");
-  }
-  if (!equivalentAlertAction(confirmed, boundaryDesired)) {
-    throw new Error("iLert did not retain the reconciled alert action");
-  }
+  await confirmUniqueMutatedAlertAction({
+    apiKey: options.apiKey,
+    deadline,
+    desired: boundaryDesired,
+    expectedId: resultId,
+    fetchFn,
+    sleep,
+    sourceId: options.sourceId,
+  });
   return { actionId: resultId, operation };
 }
 
@@ -398,12 +403,9 @@ export async function verifyIlertWebhookCanary(
     await options.onAlertAttempted?.();
     acceptedAt = now();
     await event(
-      fetchFn,
-      options.integrationKey,
+      submittedOptions,
       "ALERT",
       key,
-      primaryDeadline,
-      sleep,
     );
     submittedOptions.acceptedAt = acceptedAt;
     await options.onAlertSubmitted?.();
@@ -466,6 +468,7 @@ export async function finalizeIlertWebhookCanary(
     fetchFn,
     integrationKey: options.integrationKey,
     sleep,
+    sourceId: options.sourceId,
   };
   await loadIntegrationBoundAlertSource(
     fetchFn,
@@ -510,6 +513,7 @@ interface CleanupOptions {
   fetchFn: Fetch;
   integrationKey: string;
   sleep: Sleep;
+  sourceId: number;
 }
 
 interface WaitOptions extends CleanupOptions {
@@ -573,12 +577,9 @@ async function cleanupAfterAlertAttempt(
   try {
     if (!created) {
       await event(
-        options.fetchFn,
-        options.integrationKey,
+        options,
         "RESOLVE",
         options.key,
-        options.deadline,
-        options.sleep,
       );
     }
   } catch (error) {
@@ -969,12 +970,9 @@ async function finalizeDeterministicCanaryKeys(
     ) {
       try {
         await event(
-          options.fetchFn,
-          options.integrationKey,
+          options,
           "RESOLVE",
           currentMain.key,
-          options.deadline,
-          options.sleep,
         );
         currentResolveSubmitted = true;
         if (handoff === "unknown") currentAccountedFor = true;
@@ -1319,23 +1317,28 @@ async function preflightReceiver(
 }
 
 async function event(
-  fetchFn: Fetch,
-  integrationKey: string,
+  options: CleanupOptions,
   eventType: "ALERT" | "RESOLVE",
   alertKey: string,
-  deadline: Deadline,
-  sleep: Sleep,
   priority?: "HIGH" | "LOW",
   summary = "Postil iLert webhook canary",
 ): Promise<void> {
+  await loadIntegrationBoundAlertSource(
+    options.fetchFn,
+    options.apiKey,
+    options.integrationKey,
+    options.sourceId,
+    options.deadline,
+    options.sleep,
+  );
   const response = await requestWithRetry(
-    fetchFn,
+    options.fetchFn,
     `${API_BASE}/events`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        integrationKey,
+        integrationKey: options.integrationKey,
         eventType,
         summary: eventType === "ALERT" ? summary : `${summary} resolved`,
         ...(eventType === "ALERT"
@@ -1348,8 +1351,8 @@ async function event(
         alertKey,
       }),
     },
-    deadline,
-    sleep,
+    options.deadline,
+    options.sleep,
   );
   if (!response.ok) {
     throw new Error(`iLert event request failed with HTTP ${response.status}`);
@@ -1389,6 +1392,14 @@ async function resolveAlertById(
   options: CleanupOptions,
   alertId: string,
 ): Promise<void> {
+  await loadIntegrationBoundAlertSource(
+    options.fetchFn,
+    options.apiKey,
+    options.integrationKey,
+    options.sourceId,
+    options.deadline,
+    options.sleep,
+  );
   const response = await requestWithRetry(
     options.fetchFn,
     `${API_BASE}/alerts/${encodeURIComponent(alertId)}/resolve`,
@@ -1631,6 +1642,27 @@ async function loadReservedAlertAction(
     options.sleep,
   );
   return reservedCandidate(candidates, options.desired, options.sourceId);
+}
+
+async function confirmUniqueMutatedAlertAction(
+  options: CreateAlertActionOptions & { expectedId: string },
+): Promise<void> {
+  const candidates = await loadCandidateActions(
+    options.fetchFn,
+    options.apiKey,
+    options.desired,
+    options.deadline,
+    options.sleep,
+  );
+  const candidate = reservedCandidate(candidates, options.desired, options.sourceId);
+  if (!candidate || actionId(candidate) !== options.expectedId) {
+    throw new Error(
+      "iLert did not retain exactly one reconciled alert action after mutation",
+    );
+  }
+  if (!equivalentAlertAction(candidate, options.desired)) {
+    throw new Error("iLert did not retain the reconciled alert action");
+  }
 }
 
 function reservedCandidate(

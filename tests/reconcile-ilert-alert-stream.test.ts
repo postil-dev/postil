@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   ALERT_TRIGGER_TYPES,
+  CANARY_RERUN_LOOKBACK_MS,
   canaryAlertKey,
   desiredAlertAction,
   equivalentAlertAction,
@@ -267,7 +268,9 @@ describe("iLert webhook-action reconciliation", () => {
         new Response(null, { status: 204 }),
         Response.json(SOURCE),
         Response.json(drifted),
+        Response.json(SOURCE),
         Response.json({ ...desired, id: "72" }),
+        Response.json([{ id: "72", name: String(desired.name) }]),
         Response.json({ ...desired, id: "72" }),
       ]),
     });
@@ -298,7 +301,9 @@ describe("iLert webhook-action reconciliation", () => {
         new Response(null, { status: 204 }),
         Response.json(SOURCE),
         Response.json(legacy),
+        Response.json(SOURCE),
         Response.json({ ...desired, id: "72" }),
+        Response.json([{ id: "72", name: String(desired.name) }]),
         Response.json({ ...desired, id: "72" }),
       ]),
     });
@@ -482,6 +487,7 @@ describe("iLert webhook-action reconciliation", () => {
         Response.json([]),
         new Response(null, { status: 204 }),
         Response.json(SOURCE),
+        Response.json(SOURCE),
         Response.json({ id: "71" }),
         Response.json([{ id: "71", name: desired.name }]),
         Response.json({ ...desired, id: "71" }),
@@ -583,6 +589,91 @@ describe("iLert webhook-action reconciliation", () => {
       },
     })).rejects.toThrow("changed before mutation");
     expect(requests.some((request) => request.method === "PUT")).toBe(false);
+  });
+
+  test("fails closed when a second reserved action appears during PUT", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const drifted = { ...desired, conditions: "alert.priority == 'HIGH'", id: "72" };
+    const requests: Request[] = [];
+    let mutated = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+        if (request.method === "PUT" && url.pathname === "/api/alert-actions/72") {
+          mutated = true;
+          return Response.json({ ...desired, id: "72" });
+        }
+        if (url.pathname === "/api/alert-actions") {
+          return Response.json(mutated
+            ? [{ id: "72", name: desired.name }, { id: "73", name: desired.name }]
+            : [{ id: "72", name: desired.name }]);
+        }
+        if (url.pathname === "/api/alert-actions/72") {
+          return Response.json(mutated ? { ...desired, id: "72" } : drifted);
+        }
+        if (url.pathname === "/api/alert-actions/73") return Response.json({ ...desired, id: "73" });
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("Multiple Postil webhook alert actions exist");
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  });
+
+  test("fails closed when a second reserved action appears during POST", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const requests: Request[] = [];
+    let mutated = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+        if (request.method === "POST" && url.pathname === "/api/alert-actions") {
+          mutated = true;
+          return Response.json({ ...desired, id: "72" });
+        }
+        if (url.pathname === "/api/alert-actions") {
+          return Response.json(mutated
+            ? [{ id: "72", name: desired.name }, { id: "73", name: desired.name }]
+            : []);
+        }
+        if (url.pathname === "/api/alert-actions/72" || url.pathname === "/api/alert-actions/73") {
+          return Response.json({ ...desired, id: url.pathname.endsWith("72") ? "72" : "73" });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("Multiple Postil webhook alert actions exist");
+    expect(requests.filter((request) => request.method === "POST")).toHaveLength(1);
+  });
+
+  test("revalidates the source binding immediately before action mutation", async () => {
+    const requests: Request[] = [];
+    let sourceReads = 0;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) {
+          sourceReads += 1;
+          return Response.json(sourceReads >= 3
+            ? { ...SOURCE, integrationKey: "rotated-key" }
+            : SOURCE);
+        }
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+        if (url.pathname === "/api/alert-actions") return Response.json([]);
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("integration binding validation failed");
+    expect(requests.some((request) => request.method === "POST" || request.method === "PUT")).toBe(false);
   });
 
   test("fails closed after creation when the global inventory finds a concurrent reserved candidate", async () => {
@@ -717,6 +808,8 @@ describe("iLert webhook canary", () => {
     expect(architecture).toContain(
       `GitHub's 1 through ${MAX_CANARY_RUN_ATTEMPT} attempt range`,
     );
+    expect(CANARY_RERUN_LOOKBACK_MS).toBe(32 * 24 * 60 * 60 * 1_000);
+    expect(architecture).toContain("32-day run-wide report-time lookback");
   });
 
   test("attempt 2 pre-cleans attempt 1 main key before its HIGH alert", async () => {
@@ -769,6 +862,59 @@ describe("iLert webhook canary", () => {
       }),
     ).rejects.toThrow("integration binding validation failed");
     expect(service.events).toHaveLength(0);
+  });
+
+  test("revalidates the source binding after preclean before ALERT", async () => {
+    const service = canaryService();
+    let precleanListed = false;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/api/alerts") precleanListed = true;
+      if (url.pathname.startsWith("/api/alert-sources/") && precleanListed) {
+        return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+      }
+      return service.fetchFn(input, init);
+    };
+    let error: unknown;
+    try {
+      await verifyIlertWebhookCanary({
+        ...canaryOptions,
+        fetchFn,
+        runAttempt: "2",
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(errorMessages(error)).toContain("iLert integration binding validation failed");
+    expect(service.events).toHaveLength(0);
+  });
+
+  test("revalidates the source binding before cleanup resolution", async () => {
+    const service = canaryService();
+    let sourceReads = 0;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) {
+        sourceReads += 1;
+        if (sourceReads >= 3) return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+      }
+      return service.fetchFn(input, init);
+    };
+    let error: unknown;
+    try {
+      await verifyIlertWebhookCanary({ ...canaryOptions, fetchFn });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(errorMessages(error)).toContain("iLert integration binding validation failed");
+    expect(service.events).toEqual([{
+      alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+      eventType: "ALERT",
+    }]);
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && /\/alerts\/\d+\/resolve$/u.test(new URL(request.url).pathname)
+    )).toBe(false);
   });
 
   test("uses a same-key Event RESOLVE only while the current alert is undiscovered", async () => {
@@ -1128,8 +1274,8 @@ describe("iLert webhook canary", () => {
     expect(service.requests.some((request) => request.url.endsWith("/alerts/199"))).toBe(true);
   });
 
-  test("uses the run-wide inventory window for an earlier attempt that appears at 361 seconds", async () => {
-    const runStartedAt = 30 * 24 * 60 * 60 * 1_000;
+  test("uses the 32-day inventory window for an attempt older than GitHub's rerun allowance", async () => {
+    const runStartedAt = 30 * 24 * 60 * 60 * 1_000 + 10 * 60 * 1_000;
     let currentTime = runStartedAt;
     let resolved = false;
     const inventoryTimes: number[] = [];
