@@ -297,11 +297,19 @@ export async function reconcileIlertAlertAction(
   }
   const id = boundaryExisting ? actionId(boundaryExisting) : null;
   // The guard runs immediately before every action mutation attempt, including
-  // a retry after a transient response. It proves source binding, the complete
-  // continuity-safe reserved-action inventory, and receiver acceptance are
-  // still unchanged. Keep receiver preflight last so its result is fresh at
-  // the mutation boundary.
+  // a retry after a transient response. Receiver acceptance comes first; the
+  // source binding and complete continuity-safe action inventory then form the
+  // final reads before the request deadline is recomputed and the mutation is
+  // dispatched. A concurrent action change during receiver preflight therefore
+  // cannot be overwritten from a stale plan.
   const beforeMutationAttempt: BeforeMutationAttempt = async () => {
+    await preflightReceiver(
+      fetchFn,
+      receiverOrigin,
+      options.webhookSecret,
+      deadline,
+      sleep,
+    );
     const attemptSource = await loadIntegrationBoundAlertSource(
       fetchFn,
       options.apiKey,
@@ -341,13 +349,6 @@ export async function reconcileIlertAlertAction(
     ) {
       throw new Error("iLert reserved alert action changed before mutation");
     }
-    await preflightReceiver(
-      fetchFn,
-      receiverOrigin,
-      options.webhookSecret,
-      deadline,
-      sleep,
-    );
   };
   const result = id
     ? requireObject(

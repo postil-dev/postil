@@ -213,6 +213,7 @@ describe("production monitor workflow", () => {
             if?: string;
             name?: string;
             run?: string;
+            "timeout-minutes"?: number;
             uses?: string;
             with?: Record<string, string>;
           }>;
@@ -266,6 +267,12 @@ describe("production monitor workflow", () => {
     const canary = alertStream?.steps?.find(
       (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
     );
+    const alertStreamSetupSteps = (alertStream?.steps ?? []).slice(0, 5);
+    expect(alertStreamSetupSteps.map((step) => step["timeout-minutes"])).toEqual([1, 1, 1, 1, 1]);
+    expect(alertStreamSetupSteps.reduce(
+      (total, step) => total + (step["timeout-minutes"] ?? 0),
+      0,
+    )).toBe(setupAndSecretLoadBudgetMinutes);
     expect(boundedStepMinutes(preview)).toBe(7);
     expect(boundedStepMinutes(canary)).toBe(13);
     expect(canary?.env).toMatchObject({
@@ -308,14 +315,32 @@ describe("production monitor workflow", () => {
     });
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
-    expect(finalizer?.["timeout-minutes"]).toBe(20);
+    expect(finalizer?.["timeout-minutes"]).toBe(22);
     expect(finalizer?.if).toBe(
       "${{ always() && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
     );
     expect(finalizer?.name).toBe("Finalize iLert webhook canary cleanup");
-    expect(finalizer?.steps?.find(
+    const finalizerCleanup = finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
-    )?.run).toContain("timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary");
+    );
+    expect(finalizerCleanup?.run).toContain("timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary");
+    const finalizerCleanupIndex = finalizer?.steps?.indexOf(finalizerCleanup!) ?? -1;
+    const finalizerSetupSteps = (finalizer?.steps ?? []).slice(0, finalizerCleanupIndex);
+    const finalizerSetupBudgetMinutes = finalizerSetupSteps.reduce(
+      (total, step) => total + (step["timeout-minutes"] ?? 0),
+      0,
+    );
+    const finalizerHeadroomMinutes = 5;
+    expect(finalizerCleanupIndex).toBe((finalizer?.steps?.length ?? 0) - 1);
+    expect(finalizerSetupSteps).toHaveLength(4);
+    expect(finalizerSetupSteps.map((step) => step["timeout-minutes"])).toEqual([1, 1, 1, 1]);
+    expect(finalizerSetupBudgetMinutes).toBe(4);
+    expect(boundedStepMinutes(finalizerCleanup)).toBe(12);
+    expect(
+      finalizerSetupBudgetMinutes +
+        boundedStepMinutes(finalizerCleanup) +
+        finalizerHeadroomMinutes,
+    ).toBeLessThan(finalizer?.["timeout-minutes"] ?? 0);
     expect(finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
     )?.env).toMatchObject({

@@ -495,6 +495,7 @@ describe("iLert webhook-action reconciliation", () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
     const requests: Request[] = [];
     let actionInventories = 0;
+    let receiverPreflights = 0;
     await expect(reconcileIlertAlertAction({
       ...reconcileOptions,
       fetchFn: async (input, init) => {
@@ -503,17 +504,23 @@ describe("iLert webhook-action reconciliation", () => {
         const url = new URL(request.url);
         if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
         if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
-          return Response.json({ error: "unavailable" }, { status: 503 });
+          receiverPreflights += 1;
+          return receiverPreflights === 1
+            ? new Response(null, { status: 204 })
+            : Response.json({ error: "unavailable" }, { status: 503 });
         }
         if (url.pathname === "/api/alert-actions" && request.method === "GET") {
           actionInventories += 1;
-          return Response.json(actionInventories <= 2 ? [] : [{ id: "73", name: desired.name }]);
+          // This equivalent action is visible only if failed pre-POST
+          // validation incorrectly enters ambiguous-create recovery.
+          return Response.json(actionInventories <= 4 ? [] : [{ id: "73", name: desired.name }]);
         }
         if (url.pathname === "/api/alert-actions/73") return Response.json({ ...desired, id: "73" });
         throw new Error(`unexpected request: ${request.method} ${request.url}`);
       },
     })).rejects.toThrow("credential preflight failed with HTTP 503");
-    expect(actionInventories).toBe(2);
+    expect(receiverPreflights).toBeGreaterThanOrEqual(2);
+    expect(actionInventories).toBe(4);
     expect(requests.some((request) => request.method === "POST")).toBe(false);
   });
 
@@ -546,8 +553,14 @@ describe("iLert webhook-action reconciliation", () => {
     );
     expect(create).toBeDefined();
     const createIndex = requests.indexOf(create!);
-    expect(requests[createIndex - 1]!.url).toBe(`${RECEIVER_ORIGIN}/api/webhooks/ilert`);
-    expect(requests[createIndex - 1]!.method).toBe("GET");
+    const preflightIndexes = requests.flatMap((request, index) =>
+      request.url === `${RECEIVER_ORIGIN}/api/webhooks/ilert` ? [index] : [],
+    );
+    expect(preflightIndexes).toHaveLength(2);
+    expect(preflightIndexes[1]).toBeLessThan(createIndex);
+    expect(requests.slice(preflightIndexes[1]! + 1, createIndex).some((request) =>
+      request.method === "GET" && new URL(request.url).pathname === "/api/alert-actions"
+    )).toBe(true);
     const body = await create!.json() as {
       alertSources: Array<Record<string, unknown>>;
     };
@@ -581,6 +594,38 @@ describe("iLert webhook-action reconciliation", () => {
     expect(requests.some((request) =>
       request.method === "POST" || request.method === "PUT"
     )).toBe(false);
+  });
+
+  test("refuses POST when the action inventory changes during its immediate attempt preflight", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const requests: Request[] = [];
+    let receiverPreflights = 0;
+    let appearedDuringAttemptPreflight = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          receiverPreflights += 1;
+          if (receiverPreflights === 2) appearedDuringAttemptPreflight = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "GET") {
+          return Response.json(appearedDuringAttemptPreflight
+            ? [{ id: "73", name: desired.name }]
+            : []);
+        }
+        if (url.pathname === "/api/alert-actions/73" && request.method === "GET") {
+          return Response.json({ ...desired, id: "73" });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("appeared before creation");
+    expect(receiverPreflights).toBe(2);
+    expect(requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
   test("revalidates the source binding after receiver preflight before POST", async () => {
@@ -808,13 +853,13 @@ describe("iLert webhook-action reconciliation", () => {
         if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
         if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
           receiverPreflights += 1;
-          if (receiverPreflights === 2) currentTime = 180_001;
           return new Response(null, { status: 204 });
         }
         if (url.pathname === "/api/alert-actions" && request.method === "GET") {
           return Response.json([{ id: "72", name: desired.name }]);
         }
         if (url.pathname === "/api/alert-actions/72" && request.method === "GET") {
+          if (receiverPreflights === 2) currentTime = 180_001;
           return Response.json(drifted);
         }
         throw new Error(`unexpected request: ${request.method} ${request.url}`);
@@ -850,6 +895,41 @@ describe("iLert webhook-action reconciliation", () => {
         throw new Error(`unexpected request: ${request.method} ${request.url}`);
       },
     })).rejects.toThrow("changed before mutation");
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  });
+
+  test("does not retry PUT when the reserved action changes during retry preflight", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const drifted = { ...desired, conditions: "alert.priority == 'HIGH'", id: "72" };
+    const concurrent = { ...drifted, conditions: "alert.status == 'PENDING'" };
+    const requests: Request[] = [];
+    let receiverPreflights = 0;
+    let changedDuringRetryPreflight = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          receiverPreflights += 1;
+          if (receiverPreflights === 3) changedDuringRetryPreflight = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "GET") {
+          return Response.json([{ id: "72", name: desired.name }]);
+        }
+        if (url.pathname === "/api/alert-actions/72" && request.method === "GET") {
+          return Response.json(changedDuringRetryPreflight ? concurrent : drifted);
+        }
+        if (url.pathname === "/api/alert-actions/72" && request.method === "PUT") {
+          return new Response(null, { status: 503 });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("changed before mutation");
+    expect(receiverPreflights).toBe(3);
     expect(requests.filter((request) => request.method === "PUT")).toHaveLength(1);
   });
 
