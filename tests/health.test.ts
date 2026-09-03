@@ -656,9 +656,16 @@ describe("production monitor workflow", () => {
     const firstFlyMutationIndex = workflow.jobs.deploy.steps.findIndex((step) =>
       /flyctl (?:secrets import|secrets unset|volumes create|deploy|machine start|machine exec|ssh console)/u.test(step.run ?? "")
     );
+    const directReceiverSecretStaging =
+      'staged+="POSTIL_ILERT_WEBHOOK_SECRET=${POSTIL_ILERT_WEBHOOK_SECRET}"$\'\\n\'';
+    const operatorSecrets = stageRun.match(
+      /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
+    )?.[1];
     expect(validationIndex).toBeGreaterThanOrEqual(0);
     expect(validationIndex).toBeLessThan(firstFlyMutationIndex);
-    expect(stageRun).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(stageRun.split(directReceiverSecretStaging)).toHaveLength(2);
+    expect(operatorSecrets).not.toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(operatorSecrets).toContain("ILERT_INTEGRATION_KEY");
     expect(stageRun).toContain("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.");
     expect(stageRun).toContain("Infisical did not provide ILERT_INTEGRATION_KEY.");
     expect(stageRun.indexOf("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.")).toBeLessThan(
@@ -725,10 +732,11 @@ describe("production monitor workflow", () => {
         } as NodeJS.ProcessEnv,
       });
       expect(stagedWithInfisicalEnvironment.status).toBe(0);
-      expect(readFileSync(capturePath, "utf8")).toContain(
-        `POSTIL_ILERT_WEBHOOK_SECRET=${webhookSecret}\n`,
-      );
-      expect(readFileSync(capturePath, "utf8")).toContain(
+      expect(stagedWithInfisicalEnvironment.stdout).not.toContain(webhookSecret);
+      expect(stagedWithInfisicalEnvironment.stderr).not.toContain(webhookSecret);
+      expect(readFileSync(capturePath, "utf8")).toBe(
+        `DATABASE_URL=postgresql://test\n` +
+        `POSTIL_ILERT_WEBHOOK_SECRET=${webhookSecret}\n` +
         `ILERT_INTEGRATION_KEY=${integrationKey}\n`,
       );
     } finally {

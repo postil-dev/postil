@@ -325,15 +325,18 @@ describe("iLert operator stream protocol", () => {
     expect(await hasIlertCanaryAlertEvent(db, TEST_CANARY_KEY, "alert-created", 2269078n)).toBe(false);
   });
 
-  test("stages the receiver secret and operator allowlist in managed deployments", async () => {
+  test("stages the receiver secret directly and preserves the operator allowlist", async () => {
     const deploy = await readFile(
       join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
       "utf8",
     );
+    const directReceiverSecretStaging =
+      'staged+="POSTIL_ILERT_WEBHOOK_SECRET=${POSTIL_ILERT_WEBHOOK_SECRET}"$\'\\n\'';
     const operatorSecrets = deploy.match(
       /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
     )?.[1];
-    expect(operatorSecrets).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
+    expect(deploy.split(directReceiverSecretStaging)).toHaveLength(2);
+    expect(operatorSecrets).not.toContain("POSTIL_ILERT_WEBHOOK_SECRET");
     expect(operatorSecrets).toContain("ILERT_INTEGRATION_KEY");
     expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
     expect(deploy).not.toContain(

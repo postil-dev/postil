@@ -214,15 +214,15 @@ jobs:
             staged+="POSTHOG_PROJECT_TOKEN=${token}"$'\n'
           fi
           staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
+          staged+="POSTIL_ILERT_WEBHOOK_SECRET=${POSTIL_ILERT_WEBHOOK_SECRET}"$'\n'
           if [[ -n "${BREVO_API_KEY:-}" ]]; then
             staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
           fi
           # The Infisical action exports this job's /postil records as
-          # environment variables. This allowlist is the complete runtime
-          # staging contract for operator-owned application secrets.
+          # environment variables. This allowlist stages the remaining
+          # operator-owned application secrets.
           operator_secret_names=(
             ILERT_INTEGRATION_KEY
-            POSTIL_ILERT_WEBHOOK_SECRET
             POSTIL_OPERATOR_GITHUB_IDS
           )
           for name in "${operator_secret_names[@]}"; do
