@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, type Notification, type Pool } from "pg";
 
+import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
 import { closeDb, schema, type Database } from "@/lib/db";
 import {
   authorizeIlertAlertStream,
@@ -109,11 +110,23 @@ describeDb("iLert durable operator alert stream", () => {
   }, 30_000);
 
   test("installs the partial canary observation index without requiring legacy keys", async () => {
+    const absent = await pool.query<{ index_name: string | null }>(
+      `SELECT to_regclass(
+         'public.ilert_alert_events_canary_observation_idx'
+       )::text AS index_name`,
+    );
+    expect(absent.rows).toEqual([{ index_name: null }]);
+
+    const installed = await ensureOperationalIndexes(pool);
+    expect(installed).toContain("ilert_alert_events_canary_observation_idx");
+
     const index = await pool.query<{ definition: string; predicate: string | null }>(
       `SELECT pg_get_indexdef(indexrelid) AS definition,
               pg_get_expr(indpred, indrelid) AS predicate
          FROM pg_index
-        WHERE indexrelid = 'ilert_alert_events_canary_observation_idx'::regclass`,
+        WHERE indexrelid = to_regclass(
+          'public.ilert_alert_events_canary_observation_idx'
+        )`,
     );
 
     expect(index.rows).toEqual([{
