@@ -2241,8 +2241,10 @@ async function loadManagementBoundAlertSource(
       throw new Error("source request failed");
     }
     return managementAlertSource(await parseJson(response), sourceId);
-  } catch {
-    throw new Error("iLert management alert-source validation failed");
+  } catch (error) {
+    throw new Error("iLert management alert-source validation failed", {
+      cause: error,
+    });
   }
 }
 

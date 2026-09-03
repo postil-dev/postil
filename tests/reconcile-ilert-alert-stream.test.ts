@@ -1887,20 +1887,31 @@ describe("iLert webhook canary", () => {
   test("revalidates the management source before accepting empty finalizer scans", async () => {
     const service = canaryService();
     let sourceReads = 0;
-    await expect(finalizeIlertWebhookCanary({
-      ...finalizerOptions(),
-      alertSubmitted: "cleaned",
-      fetchFn: async (input, init) => {
-        const request = new Request(input, init);
-        if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) {
-          sourceReads += 1;
-          if (sourceReads > 1) {
-            return Response.json({ ...SOURCE, integrationType: "EMAIL" });
+    let error: unknown;
+    try {
+      await finalizeIlertWebhookCanary({
+        ...finalizerOptions(),
+        alertSubmitted: "cleaned",
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) {
+            sourceReads += 1;
+            if (sourceReads > 1) {
+              return Response.json({ ...SOURCE, integrationType: "EMAIL" });
+            }
           }
-        }
-        return service.fetchFn(input, init);
-      },
-    })).rejects.toThrow("management alert-source validation failed");
+          return service.fetchFn(input, init);
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(errorMessages(error)).toContain(
+      "iLert management alert-source validation failed",
+    );
+    expect(errorMessages(error)).toContain(
+      "iLert alert source does not match the configured management identity",
+    );
     expect(sourceReads).toBe(2);
     expect(service.alertListRequests).toBeGreaterThan(0);
     expect(service.events).toEqual([]);
