@@ -297,8 +297,10 @@ export async function reconcileIlertAlertAction(
   }
   const id = boundaryExisting ? actionId(boundaryExisting) : null;
   // The guard runs immediately before every action mutation attempt, including
-  // a retry after a transient response. It proves both source binding and the
-  // complete continuity-safe reserved-action inventory are still unchanged.
+  // a retry after a transient response. It proves source binding, the complete
+  // continuity-safe reserved-action inventory, and receiver acceptance are
+  // still unchanged. Keep receiver preflight last so its result is fresh at
+  // the mutation boundary.
   const beforeMutationAttempt: BeforeMutationAttempt = async () => {
     const attemptSource = await loadIntegrationBoundAlertSource(
       fetchFn,
@@ -339,6 +341,13 @@ export async function reconcileIlertAlertAction(
     ) {
       throw new Error("iLert reserved alert action changed before mutation");
     }
+    await preflightReceiver(
+      fetchFn,
+      receiverOrigin,
+      options.webhookSecret,
+      deadline,
+      sleep,
+    );
   };
   const result = id
     ? requireObject(
@@ -1699,6 +1708,8 @@ async function managementOnce(
 ): Promise<unknown> {
   assertBeforeDeadline(deadline);
   await beforeAttempt?.();
+  assertBeforeDeadline(deadline);
+  const timeout = Math.min(REQUEST_TIMEOUT_MS, remaining(deadline));
   let response: Response;
   try {
     response = await fetchFn(`${API_BASE}${path}`, {
@@ -1708,7 +1719,7 @@ async function managementOnce(
         authorization: `Bearer ${apiKey}`,
         ...(init.body ? { "content-type": "application/json" } : {}),
       },
-      signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining(deadline))),
+      signal: AbortSignal.timeout(timeout),
     });
   } catch (error) {
     throw new Error("iLert alert-action creation request is ambiguous", { cause: error });
@@ -1739,8 +1750,12 @@ async function requestWithRetry(
   let lastError: unknown;
   for (let attempt = 0; attempt < REQUEST_ATTEMPTS; attempt += 1) {
     assertBeforeDeadline(deadline);
-    const timeout = Math.min(REQUEST_TIMEOUT_MS, remaining(deadline));
     await beforeAttempt?.();
+    // Guards may perform bounded remote validation. Re-read the deadline only
+    // after that work completes so validation cannot borrow time reserved for
+    // cleanup or dispatch a mutation after its budget has expired.
+    assertBeforeDeadline(deadline);
+    const timeout = Math.min(REQUEST_TIMEOUT_MS, remaining(deadline));
     try {
       const response = await fetchFn(url, {
         ...init,

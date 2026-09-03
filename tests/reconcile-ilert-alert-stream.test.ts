@@ -494,25 +494,34 @@ describe("iLert webhook-action reconciliation", () => {
   test("creates a missing action only after receiver preflight", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
     const requests: Request[] = [];
+    let created = false;
     const result = await reconcileIlertAlertAction({
       ...reconcileOptions,
-      fetchFn: queuedFetch(requests, [
-        Response.json(SOURCE),
-        Response.json([]),
-        new Response(null, { status: 204 }),
-        Response.json(SOURCE),
-        Response.json(SOURCE),
-        Response.json({ id: "71" }),
-        Response.json([{ id: "71", name: desired.name }]),
-        Response.json({ ...desired, id: "71" }),
-        Response.json({ ...desired, id: "71" }),
-      ]),
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+        if (url.pathname === "/api/alert-actions" && request.method === "GET") {
+          return Response.json(created ? [{ id: "71", name: desired.name }] : []);
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "POST") {
+          created = true;
+          return Response.json({ ...desired, id: "71" });
+        }
+        if (url.pathname === "/api/alert-actions/71") return Response.json({ ...desired, id: "71" });
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
     });
     expect(result).toEqual({ actionId: "71", operation: "create" });
     const create = requests.find((request) =>
       request.method === "POST" && request.url.includes("/alert-actions"),
     );
     expect(create).toBeDefined();
+    const createIndex = requests.indexOf(create!);
+    expect(requests[createIndex - 1]!.url).toBe(`${RECEIVER_ORIGIN}/api/webhooks/ilert`);
+    expect(requests[createIndex - 1]!.method).toBe("GET");
     const body = await create!.json() as {
       alertSources: Array<Record<string, unknown>>;
     };
@@ -720,6 +729,72 @@ describe("iLert webhook-action reconciliation", () => {
     })).rejects.toThrow("integration binding validation failed");
     expect(updateAttempts).toBe(1);
     expect(requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  });
+
+  test("does not retry PUT after receiver preflight fails during backoff", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const drifted = { ...desired, conditions: "alert.priority == 'HIGH'", id: "72" };
+    const requests: Request[] = [];
+    let receiverPreflights = 0;
+    let updateAttempts = 0;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          receiverPreflights += 1;
+          return new Response(null, { status: receiverPreflights >= 3 ? 401 : 204 });
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "GET") {
+          return Response.json([{ id: "72", name: desired.name }]);
+        }
+        if (url.pathname === "/api/alert-actions/72" && request.method === "GET") {
+          return Response.json(drifted);
+        }
+        if (url.pathname === "/api/alert-actions/72" && request.method === "PUT") {
+          updateAttempts += 1;
+          return new Response(null, { status: 503 });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("credential preflight failed with HTTP 401");
+    expect(receiverPreflights).toBe(3);
+    expect(updateAttempts).toBe(1);
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(1);
+  });
+
+  test("does not dispatch PUT when its validation crosses the reconciliation deadline", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const drifted = { ...desired, conditions: "alert.priority == 'HIGH'", id: "72" };
+    const requests: Request[] = [];
+    let currentTime = 0;
+    let receiverPreflights = 0;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      now: () => currentTime,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          receiverPreflights += 1;
+          if (receiverPreflights === 2) currentTime = 180_001;
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "GET") {
+          return Response.json([{ id: "72", name: desired.name }]);
+        }
+        if (url.pathname === "/api/alert-actions/72" && request.method === "GET") {
+          return Response.json(drifted);
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("deadline expired");
+    expect(requests.filter((request) => request.method === "PUT")).toHaveLength(0);
   });
 
   test("does not retry PUT after a transient response changes the reserved action", async () => {
@@ -1071,6 +1146,29 @@ describe("iLert webhook canary", () => {
     }
     expect(errorMessages(error)).toContain("iLert integration binding validation failed");
     expect(service.events.filter((event) => event.eventType === "ALERT")).toHaveLength(1);
+  });
+
+  test("does not dispatch an Event API mutation when validation exhausts the primary deadline", async () => {
+    const service = canaryService();
+    let currentTime = 0;
+    let sourceReads = 0;
+    await expect(verifyIlertWebhookCanary({
+      ...canaryOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) {
+          sourceReads += 1;
+          if (sourceReads === 2) currentTime = 360_001;
+          return Response.json(SOURCE);
+        }
+        return service.fetchFn(input, init);
+      },
+      now: () => currentTime,
+      sleep: async () => undefined,
+    })).rejects.toThrow("cleanup could not be verified");
+    expect(service.requests.filter((request) =>
+      request.method === "POST" && new URL(request.url).pathname === "/api/events"
+    )).toHaveLength(0);
   });
 
   test("does not retry management alert resolution after a transient response rotates the source binding", async () => {
