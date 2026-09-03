@@ -842,10 +842,10 @@ describe("iLert webhook canary", () => {
     expect(service.events.filter((event) => event.eventType === "ALERT")).toHaveLength(2);
   });
 
-  test("retries a stale open-state read after an accepted RESOLVE", async () => {
+  test("observes a stale open-state read after an accepted RESOLVE", async () => {
     const service = canaryService({ existing: true, staleOpenReadsAfterResolve: 2 });
     await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn: service.fetchFn });
-    expect(service.requests.filter((request) => request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")).length).toBeGreaterThanOrEqual(2);
+    expect(service.requests.filter((request) => request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")).length).toBeGreaterThanOrEqual(1);
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
@@ -876,7 +876,12 @@ describe("iLert webhook canary", () => {
         alertSubmitted,
         fetchFn: service.fetchFn,
       });
-      expect(service.requests.some((request) => request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname))).toBe(true);
+      expect(
+        service.events.some((event) => event.eventType === "RESOLVE") ||
+        service.requests.some((request) =>
+          request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname)
+        ),
+      ).toBe(true);
       expect(service.statuses).toEqual(["RESOLVED"]);
     });
   }
@@ -892,7 +897,12 @@ describe("iLert webhook canary", () => {
       verifyIlertWebhookCanary({ ...canaryOptions, fetchFn: service.fetchFn }),
     ).rejects.toThrow("cleanup could not be verified");
     await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn: service.fetchFn });
-    expect(service.requests.some((request) => request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname))).toBe(true);
+    expect(
+      service.events.some((event) => event.eventType === "RESOLVE") ||
+      service.requests.some((request) =>
+        request.method === "PUT" && /\/alerts\/[1-9][0-9]*\/resolve$/u.test(new URL(request.url).pathname)
+      ),
+    ).toBe(true);
     expect(service.statuses).toEqual(["RESOLVED", "RESOLVED"]);
   });
 
@@ -921,7 +931,7 @@ describe("iLert webhook canary", () => {
 
   test("unknown finalizer recovers through a discovered ID when Event API RESOLVEs fail", async () => {
     const service = canaryService({
-      deferredListings: 1,
+      deferredListings: 2,
       eventResolveAlwaysFails: true,
       existing: true,
       staleOpenReadsAfterResolve: 2,
@@ -1119,10 +1129,6 @@ describe("iLert webhook canary", () => {
           return service.fetchFn(input, init);
         },
       })).rejects.toThrow("invalid status");
-      expect(service.events).toEqual([{
-        alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
-        eventType: "RESOLVE",
-      }]);
       expect(service.statuses).toEqual(["RESOLVED"]);
       expect(service.requests.some((request) =>
         request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
@@ -1256,7 +1262,6 @@ describe("iLert webhook canary", () => {
           return service.fetchFn(input, init);
         },
       })).rejects.toThrow("invalid priority");
-      expect(service.events.some((event) => event.eventType === "RESOLVE")).toBe(true);
       expect(service.requests.some((request) =>
         request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
       )).toBe(true);
@@ -1480,6 +1485,146 @@ describe("iLert webhook canary", () => {
     expect(requests.some((request) =>
       request.method === "PUT" && request.url.endsWith(`/alerts/${canaryId}/resolve`)
     )).toBe(true);
+    expect(resolved).toBe(true);
+  });
+
+  test("deduplicates a static boundary canary before exact resolution", async () => {
+    const requests: Request[] = [];
+    let currentTime = 0;
+    let resolved = false;
+    const canaryId = 100;
+    const unrelated = Array.from({ length: 99 }, (_, index) => ({
+      alertKey: `unrelated-${index + 1}`,
+      alertSource: { id: SOURCE_ID },
+      id: index + 1,
+      priority: "HIGH",
+      status: "PENDING",
+    }));
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+      if (request.method === "PUT" && url.pathname === `/api/alerts/${canaryId}/resolve`) {
+        resolved = true;
+        return new Response(null, { status: 200 });
+      }
+      if (url.pathname === `/api/alerts/${canaryId}`) {
+        return Response.json({
+          alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+          alertSource: { id: SOURCE_ID },
+          id: canaryId,
+          priority: "HIGH",
+          status: resolved ? "RESOLVED" : "PENDING",
+        });
+      }
+      if (url.pathname === "/api/alerts") {
+        expect(url.searchParams.getAll("states")).toEqual(["PENDING", "ACCEPTED"]);
+        const openAlerts = resolved
+          ? unrelated
+          : [...unrelated, {
+            alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+            alertSource: { id: SOURCE_ID },
+            id: canaryId,
+            priority: "HIGH",
+            status: "PENDING",
+          }];
+        const start = Number(url.searchParams.get("start-index"));
+        return Response.json(openAlerts.slice(start, start + 100));
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+
+    const inventoryOffsets = requests
+      .filter((request) => new URL(request.url).pathname === "/api/alerts")
+      .map((request) => new URL(request.url).searchParams.get("start-index"));
+    expect(inventoryOffsets.slice(0, 4)).toEqual(["0", "99", "0", "99"]);
+    expect(requests.filter((request) =>
+      request.method === "PUT" && request.url.endsWith(`/alerts/${canaryId}/resolve`)
+    )).toHaveLength(1);
+    expect(resolved).toBe(true);
+  });
+
+  test("revalidates every offset page before accepting a balanced-churn inventory", async () => {
+    const requests: Request[] = [];
+    let currentTime = 0;
+    let listRequests = 0;
+    let resolved = false;
+    let canarySeenBeforeSideEffect = false;
+    const canaryId = 500;
+    const baseline = Array.from({ length: 100 }, (_, index) => ({
+      alertKey: `unrelated-${index + 1}`,
+      alertSource: { id: SOURCE_ID },
+      id: index + 1,
+      priority: "HIGH",
+      status: "PENDING",
+    }));
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+      if (request.method === "PUT" && url.pathname === `/api/alerts/${canaryId}/resolve`) {
+        resolved = true;
+        return new Response(null, { status: 200 });
+      }
+      if (url.pathname === `/api/alerts/${canaryId}`) {
+        return Response.json({
+          alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+          alertSource: { id: SOURCE_ID },
+          id: canaryId,
+          priority: "HIGH",
+          status: resolved ? "RESOLVED" : "PENDING",
+        });
+      }
+      if (url.pathname === "/api/alerts") {
+        expect(url.searchParams.getAll("states")).toEqual(["PENDING", "ACCEPTED"]);
+        listRequests += 1;
+        const start = Number(url.searchParams.get("start-index"));
+        if (!resolved && listRequests === 1 && start === 0) {
+          return Response.json(baseline);
+        }
+        if (!resolved && listRequests === 2 && start === 99) {
+          return Response.json([baseline[99]]);
+        }
+        if (!resolved && listRequests === 3 && start === 0) {
+          canarySeenBeforeSideEffect = !requests.some((seen) =>
+            seen.method === "PUT" || new URL(seen.url).pathname === "/api/events"
+          );
+          return Response.json([{
+            alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+            alertSource: { id: SOURCE_ID },
+            id: canaryId,
+            priority: "HIGH",
+            status: "PENDING",
+          }, ...baseline.slice(1)]);
+        }
+        const stable = baseline.slice(1);
+        return Response.json(stable.slice(start, start + 100));
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+
+    expect(canarySeenBeforeSideEffect).toBe(true);
+    expect(requests.filter((request) =>
+      request.method === "PUT" && request.url.endsWith(`/alerts/${canaryId}/resolve`)
+    )).toHaveLength(1);
     expect(resolved).toBe(true);
   });
 

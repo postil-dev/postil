@@ -460,6 +460,7 @@ interface CanaryTarget {
   alertId: string;
   alertKey: string;
   sourceId: number;
+  status?: "PENDING" | "ACCEPTED" | "RESOLVED";
 }
 
 interface CanaryObservation extends CanaryTarget {
@@ -1099,6 +1100,10 @@ async function resolveKnownAlerts(
   const errors: unknown[] = [];
   const resolvedIds = new Set<string>();
   for (const target of targets.values()) {
+    if (target.status === "RESOLVED") {
+      resolvedIds.add(target.alertId);
+      continue;
+    }
     try {
       await resolveAlertById(options, target.alertId);
       resolvedIds.add(target.alertId);
@@ -1331,11 +1336,68 @@ async function findAlertsByKey(options: AlertKeyLookupOptions): Promise<Json[]> 
 async function findAlertsByKeys(
   options: Omit<AlertKeyLookupOptions, "key"> & { keys: readonly string[] },
 ): Promise<Json[]> {
-  const matches: Json[] = [];
+  const matches = new Map<string, Json>();
   const keys = new Set(options.keys);
+  const retainedTargetIds = new Set<string>();
   let validationError: InvalidCanaryAlertValidationError | undefined;
-  let expectedPagePrefix: readonly string[] | undefined;
+
+  const retainTarget = (target: CanaryTarget) => {
+    if (retainedTargetIds.has(target.alertId)) return;
+    retainedTargetIds.add(target.alertId);
+    options.onTarget?.(target);
+  };
+  const fetchPage = async (start: number): Promise<{ alerts: Json[]; ids: string[] }> => {
+    assertBeforeDeadline(options.deadline);
+    const query = new URLSearchParams({
+      "max-results": "100",
+      "start-index": String(start),
+    });
+    if (options.sourceId) query.append("sources", String(options.sourceId));
+    if (options.from) query.append("from", options.from);
+    if (options.until) query.append("until", options.until);
+    for (const state of options.states ?? []) query.append("states", state);
+    const alerts = await management(
+      options.fetchFn,
+      options.apiKey,
+      `/alerts?${query.toString()}`,
+      {},
+      options.deadline,
+      options.sleep,
+    );
+    if (!Array.isArray(alerts) || alerts.some((item) => !object(item))) {
+      throw new Error("iLert returned an invalid alert list during the canary");
+    }
+    for (const item of alerts) {
+      const alert = object(item);
+      if (typeof alert?.alertKey !== "string" || !keys.has(alert.alertKey)) continue;
+      try {
+        const observed = canaryObservation(alert, alert.alertKey, options.sourceId);
+        retainTarget(observed);
+        if (options.states === undefined || options.states.includes(observed.status)) {
+          matches.set(observed.alertId, alert);
+        }
+      } catch (error) {
+        const target = invalidCanaryAlertTarget(error);
+        if (target) retainTarget(target);
+        if (error instanceof InvalidCanaryAlertValidationError) {
+          validationError ??= error;
+          continue;
+        }
+        throw error;
+      }
+    }
+    const ids = alerts.map((item) => {
+      const alertId = positiveId(item.id);
+      if (!alertId) {
+        throw new Error("iLert returned an offset-page alert without an identity");
+      }
+      return alertId;
+    });
+    return { alerts, ids };
+  };
+
   try {
+    const pages: Array<{ start: number; ids: string[]; length: number }> = [];
     for (
       let start = 0, page = 0;
       ;
@@ -1344,76 +1406,25 @@ async function findAlertsByKeys(
       if (options.maxPages !== undefined && page >= options.maxPages) {
         throw new Error("iLert terminal canary inventory exceeded its pagination limit");
       }
-      assertBeforeDeadline(options.deadline);
-      const query = new URLSearchParams({
-        "max-results": "100",
-        "start-index": String(start),
-      });
-      if (options.sourceId) query.append("sources", String(options.sourceId));
-      if (options.from) query.append("from", options.from);
-      if (options.until) query.append("until", options.until);
-      for (const state of options.states ?? []) query.append("states", state);
-      const alerts = await management(
-        options.fetchFn,
-        options.apiKey,
-        `/alerts?${query.toString()}`,
-        {},
-        options.deadline,
-        options.sleep,
-      );
-      if (!Array.isArray(alerts) || alerts.some((item) => !object(item))) {
-        throw new Error("iLert returned an invalid alert list during the canary");
-      }
-      for (const item of alerts) {
-        const alert = object(item);
-        if (typeof alert?.alertKey !== "string" || !keys.has(alert.alertKey)) continue;
-        try {
-          const observed = canaryObservation(alert, alert.alertKey, options.sourceId);
-          options.onTarget?.(observed);
-          if (options.states === undefined || options.states.includes(observed.status)) {
-            matches.push(alert);
+      const found = await fetchPage(start);
+      pages.push({ start, ids: found.ids, length: found.alerts.length });
+      if (found.alerts.length < 100) {
+        // Offset pagination is not a snapshot. Re-read the complete sequence
+        // before treating the scan as complete so balanced insertions and
+        // removals cannot preserve one boundary row while hiding a canary.
+        for (const pageToVerify of pages) {
+          const verified = await fetchPage(pageToVerify.start);
+          if (
+            verified.alerts.length !== pageToVerify.length ||
+            verified.ids.length !== pageToVerify.ids.length ||
+            verified.ids.some((alertId, index) => alertId !== pageToVerify.ids[index])
+          ) {
+            throw new Error("iLert alert inventory changed during offset pagination");
           }
-        } catch (error) {
-          const target = invalidCanaryAlertTarget(error);
-          if (target) options.onTarget?.(target);
-          if (error instanceof InvalidCanaryAlertValidationError) {
-            validationError ??= error;
-            continue;
-          }
-          throw error;
         }
-      }
-      // iLert documents offset pagination rather than a snapshot cursor. Re-read
-      // the prior boundary on every page so a row resolving or arriving during
-      // the scan makes this inventory incomplete instead of silently skipping
-      // the shifted row.
-      const priorPagePrefix = expectedPagePrefix;
-      if (priorPagePrefix) {
-        const observedPrefix = alerts.slice(0, priorPagePrefix.length).map((item) => {
-          const alertId = positiveId(item.id);
-          if (!alertId) {
-            throw new Error("iLert returned an offset-page alert without an identity");
-          }
-          return alertId;
-        });
-        if (
-          observedPrefix.length !== priorPagePrefix.length ||
-          observedPrefix.some((alertId, index) => alertId !== priorPagePrefix[index])
-        ) {
-          throw new Error("iLert alert inventory changed during offset pagination");
-        }
-      }
-      if (alerts.length < 100) {
         if (validationError) throw validationError;
-        return matches;
+        return [...matches.values()];
       }
-      expectedPagePrefix = alerts.slice(-ALERT_PAGINATION_OVERLAP).map((item) => {
-        const alertId = positiveId(item.id);
-        if (!alertId) {
-          throw new Error("iLert returned an offset-page alert without an identity");
-        }
-        return alertId;
-      });
     }
   } catch (error) {
     if (validationError && error !== validationError) {
