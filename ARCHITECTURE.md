@@ -508,14 +508,14 @@ exact persisted `alert-created` receiver event. A `cleaned` handoff means the
 primary canary also proves the exact persisted `alert-resolved` receiver event.
 The independent cleanup-only finalizer uses the producer attempt for
 accepted-current proof and the running attempt as a sweep ceiling. It accepts
-GitHub's 1 through 51 attempt range, bounds work per attempt, and sweeps a
+GitHub's 1 through 51 attempt range, bounds work per attempt, and sweeps an
 exact 32-day run-wide report-time window with PENDING, ACCEPTED, and RESOLVED
 states. Every discovery pass freezes its upper report-time bound, brackets
 offset pagination with matching inventory counts, repeats the complete
 inventory for continuity validation, and advances the bound before the next
-delayed pass. Two complete delayed passes must find no matching open alert
-before success, and
-verifies every retained id as RESOLVED. A cleaned handoff still performs this
+delayed pass. The finalizer verifies every retained id as RESOLVED. Two
+complete delayed passes must find no matching open alert before success.
+A cleaned handoff still performs this
 management sweep to resolve a delayed Event API duplicate. If the producer
 output is unavailable, the finalizer uses its running attempt to reconstruct
 the deterministic identity. It never reads receiver configuration or

@@ -1731,7 +1731,6 @@ describe("iLert webhook canary", () => {
       fetchFn,
       runAttempt: "2",
       sweepAttempt: "2",
-      startedAt: new Date(runStartedAt).toISOString(),
       now: () => currentTime,
       sleep: async (milliseconds) => { currentTime += milliseconds; },
     });
@@ -2314,7 +2313,6 @@ function cliEnvironment(overrides: Record<string, string | undefined> = {}): Rec
     POSTIL_ILERT_ALERT_SOURCE_ID: String(SOURCE_ID),
     POSTIL_ILERT_CANARY_RUN_ATTEMPT: RUN_ATTEMPT,
     POSTIL_ILERT_CANARY_RUN_ID: RUN_ID,
-    POSTIL_ILERT_CANARY_STARTED_AT: new Date(0).toISOString(),
     POSTIL_ILERT_RECEIVER_ORIGIN: RECEIVER_ORIGIN,
     POSTIL_ILERT_WEBHOOK_SECRET: WEBHOOK_SECRET,
     ...overrides,
@@ -2333,7 +2331,6 @@ function finalizerOptions() {
   return {
     ...canaryOptions,
     ...finalizerTiming(),
-    startedAt: new Date(0).toISOString(),
   };
 }
 

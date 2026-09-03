@@ -253,7 +253,6 @@ describe("production monitor workflow", () => {
     expect(alertStream?.outputs).toMatchObject({
       "alert-submitted": "${{ steps.canary.outputs.alert_submitted }}",
       "producer-attempt": "${{ steps.canary.outputs.producer_attempt }}",
-      "started-at": "${{ steps.canary.outputs.started_at }}",
     });
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
       "Preview iLert alert-stream reconciliation",
@@ -311,7 +310,6 @@ describe("production monitor workflow", () => {
       POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
-      POSTIL_ILERT_CANARY_STARTED_AT: "${{ steps.canary.outputs.started_at }}",
     });
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
@@ -350,8 +348,6 @@ describe("production monitor workflow", () => {
         "${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}",
       POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
-      POSTIL_ILERT_CANARY_STARTED_AT:
-        "${{ needs.alert-stream.outputs.started-at }}",
     });
     const finalizerAttempt = finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",

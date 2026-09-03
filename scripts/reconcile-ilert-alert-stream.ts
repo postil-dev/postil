@@ -84,7 +84,6 @@ interface CanaryOptions {
   fetchFn?: Fetch;
   sleep?: Sleep;
   now?: Clock;
-  startedAt?: string;
 }
 
 interface FinalizerOptions {
@@ -98,7 +97,6 @@ interface FinalizerOptions {
   fetchFn?: Fetch;
   sleep?: Sleep;
   now?: Clock;
-  startedAt?: string;
 }
 
 export interface ReconcileResult {
@@ -2228,7 +2226,6 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
       runId: environment(values, "POSTIL_ILERT_CANARY_RUN_ID"),
       sleep: options.sleep,
       sourceId: requiredSourceId(values),
-      startedAt: values.POSTIL_ILERT_CANARY_STARTED_AT,
     });
     log("iLert canary cleanup is stabilized");
     return;
@@ -2251,11 +2248,8 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
   const runAttempt = canary
     ? environment(values, "POSTIL_ILERT_CANARY_RUN_ATTEMPT")
     : undefined;
-  const startedAt = canary
-    ? new Date((options.now ?? Date.now)()).toISOString()
-    : undefined;
   if (canary) {
-    await recordCanaryAlertSubmission(values, "unknown", startedAt, runAttempt);
+    await recordCanaryAlertSubmission(values, "unknown", runAttempt);
   }
   const result = await reconcileIlertAlertAction({
     ...shared,
@@ -2269,25 +2263,23 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     try {
       await verifyIlertWebhookCanary({
         ...shared,
-        onAlertAttempted: () => recordCanaryAlertSubmission(values, "unknown", startedAt, runAttempt),
+        onAlertAttempted: () => recordCanaryAlertSubmission(values, "unknown", runAttempt),
         onAlertSubmitted: async () => {
           alertAccepted = true;
-          await recordCanaryAlertSubmission(values, "true", startedAt, runAttempt);
+          await recordCanaryAlertSubmission(values, "true", runAttempt);
         },
         runAttempt: runAttempt!,
         runId: runId!,
-        startedAt,
       });
     } catch (error) {
       await recordCanaryAlertSubmission(
         values,
         alertAccepted ? "true" : "unknown",
-        startedAt,
         runAttempt,
       );
       throw error;
     }
-    await recordCanaryAlertSubmission(values, "cleaned", startedAt, runAttempt);
+    await recordCanaryAlertSubmission(values, "cleaned", runAttempt);
     log("Postil persisted the iLert canary create and resolve webhooks");
   }
 }
@@ -2313,14 +2305,13 @@ function canaryAlertSubmission(
 async function recordCanaryAlertSubmission(
   values: Record<string, string | undefined>,
   submitted: CanaryHandoff,
-  startedAt?: string,
   producerAttempt?: string,
 ): Promise<void> {
   const output = values.GITHUB_OUTPUT;
   if (!output) return;
   await appendFile(
     output,
-    `alert_submitted=${submitted}\n${startedAt ? `started_at=${startedAt}\n` : ""}${producerAttempt ? `producer_attempt=${producerAttempt}\n` : ""}`,
+    `alert_submitted=${submitted}\n${producerAttempt ? `producer_attempt=${producerAttempt}\n` : ""}`,
     "utf8",
   );
 }
