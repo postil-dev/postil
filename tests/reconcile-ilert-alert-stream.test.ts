@@ -366,7 +366,7 @@ describe("iLert webhook-action reconciliation", () => {
 
   test("fails closed for a renamed action at the receiver endpoint with an older credential", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
-    const oldCredential = "older-webhook-credential-that-must-not-leak";
+    const syntheticBasicAuthRedactionMarker = "test-fixture-not-a-real-secret";
     const renamed = {
       ...desired,
       alertSources: [{ id: SOURCE_ID + 1 }],
@@ -374,7 +374,7 @@ describe("iLert webhook-action reconciliation", () => {
       name: "Legacy operator webhook",
       params: {
         ...(desired.params as Record<string, unknown>),
-        webhookUrl: `https://postil-ilert:${oldCredential}@postil.example/api/webhooks/ilert`,
+        webhookUrl: `https://postil-ilert:${syntheticBasicAuthRedactionMarker}@postil.example/api/webhooks/ilert`,
       },
     };
     let error: unknown;
@@ -396,7 +396,7 @@ describe("iLert webhook-action reconciliation", () => {
       error = caught;
     }
     expect(String(error)).toContain("conflicting Postil alert action");
-    expect(String(error)).not.toContain(oldCredential);
+    expect(String(error)).not.toContain(syntheticBasicAuthRedactionMarker);
   });
 
   test("adopts one equivalent action after an ambiguous committed POST without retrying", async () => {
