@@ -167,6 +167,8 @@ jobs:
           env-slug: prod
           domain: https://eu.infisical.com
           secret-path: /postil
+      - name: Validate receiver secret before Fly mutation
+        run: bun run scripts/reconcile-ilert-alert-stream.ts --validate-webhook-secret
       - name: Stage runtime secrets
         run: |
           set -euo pipefail

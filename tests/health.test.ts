@@ -367,7 +367,7 @@ describe("production monitor workflow", () => {
     );
   });
 
-  test("deploy staging requires the receiver secret before any Fly mutation", async () => {
+  test("deploy validates the receiver secret with the runtime contract before any Fly mutation", async () => {
     const source = await readFile(
       new URL("../.github/workflows/deploy.yml", import.meta.url),
       "utf8",
@@ -386,7 +386,19 @@ describe("production monitor workflow", () => {
     const stage = workflow.jobs.deploy.steps.find(
       (step) => step.name === "Stage runtime secrets",
     );
+    const validation = workflow.jobs.deploy.steps.find(
+      (step) => step.name === "Validate receiver secret before Fly mutation",
+    );
     const stageRun = stage?.run ?? "";
+    expect(validation?.run).toBe(
+      "bun run scripts/reconcile-ilert-alert-stream.ts --validate-webhook-secret",
+    );
+    const validationIndex = workflow.jobs.deploy.steps.indexOf(validation!);
+    const firstFlyMutationIndex = workflow.jobs.deploy.steps.findIndex((step) =>
+      /flyctl (?:secrets import|secrets unset|volumes create|deploy|machine start|machine exec|ssh console)/u.test(step.run ?? "")
+    );
+    expect(validationIndex).toBeGreaterThanOrEqual(0);
+    expect(validationIndex).toBeLessThan(firstFlyMutationIndex);
     expect(stageRun).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
     expect(stageRun).toContain("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.");
     expect(stageRun.indexOf("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.")).toBeLessThan(

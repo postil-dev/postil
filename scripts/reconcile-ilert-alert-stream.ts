@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { appendFile } from "node:fs/promises";
+import { timingSafeEqual } from "node:crypto";
 
 const API_BASE = "https://api.ilert.com/api";
 const ACTION_NAME = "Postil operator alert stream";
@@ -20,9 +21,11 @@ const CANARY_FINALIZER_DISCOVERY_DEADLINE_MS = 360_000;
 const CANARY_FINALIZER_DISCOVERY_RETRY_MS = 10_000;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 60_000;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
+const ALERT_ACTION_INVENTORY_MAX_PAGES = 50;
 const CANARY_CLEANUP_ATTEMPTS = 4;
 const ALERT_REPORT_TIME_SKEW_MS = 5_000;
-const ALERT_PAGINATION_OVERLAP = 1;
+const CANARY_RERUN_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1_000;
+const ALERT_PAGE_SIZE = 100;
 // GitHub permits the initial workflow run plus 50 reruns.
 export const MAX_CANARY_RUN_ATTEMPT = 51;
 const FINALIZER_STABLE_EMPTY_SCANS = 2;
@@ -429,6 +432,10 @@ export async function finalizeIlertWebhookCanary(
   const currentWindow = handoff === "true"
     ? finalizerCurrentAttemptWindow(options.startedAt)
     : undefined;
+  const startedAt = options.startedAt ? Date.parse(options.startedAt) : Number.NaN;
+  const inventoryLowerBound = Number.isFinite(startedAt)
+    ? startedAt
+    : deadline.now() - CANARY_RERUN_LOOKBACK_MS;
 
   await finalizeDeterministicCanaryKeys(
     cleanup,
@@ -437,6 +444,7 @@ export async function finalizeIlertWebhookCanary(
     handoff,
     currentMain,
     currentWindow,
+    inventoryLowerBound,
   );
 }
 
@@ -498,6 +506,8 @@ interface ReportTimeWindow {
   from: string;
   until: string;
 }
+
+const ALL_ALERT_STATES = ["PENDING", "ACCEPTED", "RESOLVED"] as const;
 
 async function cleanupAfterAlertAttempt(
   options: WaitOptions,
@@ -811,6 +821,7 @@ async function finalizeDeterministicCanaryKeys(
   handoff: CanaryHandoff,
   currentMain: DeterministicCanaryKey,
   currentWindow: ReportTimeWindow | undefined,
+  inventoryLowerBound: number,
 ): Promise<void> {
   const targets = new Map<string, CanaryTarget>();
   // The producer's persisted create-and-resolve proof accounts for the first
@@ -835,11 +846,17 @@ async function finalizeDeterministicCanaryKeys(
   const discover = async (
     deadline: Deadline,
     maxPages?: number,
+    terminal = false,
   ): Promise<{ complete: boolean; open: number }> => {
+    const inventoryWindow = terminal
+      ? finalizerInventoryWindow(inventoryLowerBound, deadline.now())
+      : undefined;
     const result = await discoverOpenDeterministicAlerts(
       { ...options, deadline },
       keys,
+      inventoryWindow,
       maxPages,
+      terminal,
     );
     rememberTargets(targets, result.alerts);
     retainErrors(result.errors);
@@ -938,6 +955,7 @@ async function finalizeDeterministicCanaryKeys(
     const terminalDiscovery = await discover(
       terminalDeadline,
       CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
+      true,
     );
     // A later complete, empty scan proves recovery from a transient inventory
     // failure. Any incomplete or non-empty scan resets that proof.
@@ -1021,7 +1039,9 @@ async function finalizeDeterministicCanaryKeys(
 async function discoverOpenDeterministicAlerts(
   options: CleanupOptions,
   keys: readonly DeterministicCanaryKey[],
+  window?: ReportTimeWindow,
   maxPages?: number,
+  completeInventory = false,
 ): Promise<{
   alerts: CanaryTarget[];
   complete: boolean;
@@ -1040,16 +1060,20 @@ async function discoverOpenDeterministicAlerts(
       const sourceId = group[0]!.sourceId;
       const found = await findAlertsByKeys({
         apiKey: options.apiKey,
+        completeInventory,
         deadline: options.deadline,
         fetchFn: options.fetchFn,
         keys: group.map((key) => key.key),
         maxPages,
         sleep: options.sleep,
         sourceId,
-        states: ["PENDING", "ACCEPTED"],
+        states: completeInventory ? ALL_ALERT_STATES : ["PENDING", "ACCEPTED"],
+        ...(window ?? {}),
         onTarget: (target) => alerts.push(target),
       });
-      open += found.length;
+      open += found.filter((alert) =>
+        alert.status === "PENDING" || alert.status === "ACCEPTED"
+      ).length;
     } catch (error) {
       const target = invalidCanaryAlertTarget(error);
       if (target && !alerts.some((alert) => alert.alertId === target.alertId)) {
@@ -1158,6 +1182,21 @@ function finalizerCurrentAttemptWindow(startedAt: string | undefined): ReportTim
     until: reportTime(
       parsed + RECONCILE_DEADLINE_MS + CANARY_DEADLINE_MS + ALERT_REPORT_TIME_SKEW_MS,
     ),
+  };
+}
+
+function finalizerInventoryWindow(
+  startedAt: number | undefined,
+  now: number,
+): ReportTimeWindow {
+  const from = startedAt === undefined
+    ? now - CANARY_RERUN_LOOKBACK_MS - ALERT_REPORT_TIME_SKEW_MS
+    : startedAt - ALERT_REPORT_TIME_SKEW_MS;
+  return {
+    from: reportTime(from),
+    // Freeze this upper bound for one complete pass. Each delayed pass rebuilds
+    // the window, so delayed Event API materialization remains discoverable.
+    until: reportTime(now + ALERT_REPORT_TIME_SKEW_MS),
   };
 }
 
@@ -1307,6 +1346,7 @@ interface AlertKeyLookupOptions {
   deadline: Deadline;
   fetchFn: Fetch;
   from?: string;
+  completeInventory?: boolean;
   key: string;
   maxPages?: number;
   onTarget?: (target: CanaryTarget) => void;
@@ -1336,20 +1376,43 @@ async function findAlertsByKeys(
     retainedTargetIds.add(target.alertId);
     options.onTarget?.(target);
   };
-  const fetchPage = async (start: number): Promise<{ alerts: Json[]; ids: string[] }> => {
-    assertBeforeDeadline(options.deadline);
-    const query = new URLSearchParams({
-      "max-results": "100",
-      "start-index": String(start),
-    });
+  const queryFor = (start?: number): URLSearchParams => {
+    const query = new URLSearchParams();
+    if (start !== undefined) {
+      query.set("max-results", String(ALERT_PAGE_SIZE));
+      query.set("start-index", String(start));
+    }
     if (options.sourceId) query.append("sources", String(options.sourceId));
     if (options.from) query.append("from", options.from);
     if (options.until) query.append("until", options.until);
     for (const state of options.states ?? []) query.append("states", state);
+    return query;
+  };
+  const fetchCount = async (): Promise<number> => {
+    assertBeforeDeadline(options.deadline);
+    const value = requireObject(
+      await management(
+        options.fetchFn,
+        options.apiKey,
+        `/alerts/count?${queryFor().toString()}`,
+        {},
+        options.deadline,
+        options.sleep,
+      ),
+      "iLert returned an invalid alert inventory count",
+    );
+    const count = value.count;
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+      throw new Error("iLert returned an invalid alert inventory count");
+    }
+    return count;
+  };
+  const fetchPage = async (start: number): Promise<{ alerts: Json[]; ids: string[] }> => {
+    assertBeforeDeadline(options.deadline);
     const alerts = await management(
       options.fetchFn,
       options.apiKey,
-      `/alerts?${query.toString()}`,
+      `/alerts?${queryFor(start).toString()}`,
       {},
       options.deadline,
       options.sleep,
@@ -1386,48 +1449,57 @@ async function findAlertsByKeys(
     return { alerts, ids };
   };
 
-  try {
-    const pages: Array<{ start: number; ids: string[]; length: number }> = [];
-    for (
-      let start = 0, page = 0;
-      ;
-      start += 100 - ALERT_PAGINATION_OVERLAP, page += 1
-    ) {
+  const listCompleteInventory = async (): Promise<Json[]> => {
+    const beforeCount = await fetchCount();
+    const pages: Json[] = [];
+    const ids = new Set<string>();
+    for (let page = 0, start = 0; ; page += 1, start += ALERT_PAGE_SIZE) {
       if (options.maxPages !== undefined && page >= options.maxPages) {
         throw new Error("iLert terminal canary inventory exceeded its pagination limit");
       }
       const found = await fetchPage(start);
-      pages.push({ start, ids: found.ids, length: found.alerts.length });
-      if (found.alerts.length < 100) {
-        // Offset pagination is not a snapshot. Re-read the complete sequence
-        // before treating the scan as complete so balanced insertions and
-        // removals cannot preserve one boundary row while hiding a canary.
-        for (const pageToVerify of pages) {
-          const verified = await fetchPage(pageToVerify.start);
-          if (
-            verified.alerts.length !== pageToVerify.length ||
-            verified.ids.length !== pageToVerify.ids.length ||
-            verified.ids.some((alertId, index) => alertId !== pageToVerify.ids[index])
-          ) {
-            throw new Error("iLert alert inventory changed during offset pagination");
-          }
+      for (const [index, alert] of found.alerts.entries()) {
+        const id = found.ids[index]!;
+        if (ids.has(id)) {
+          throw new Error("iLert alert inventory repeated an alert identity");
         }
-        // Re-read the initial page after every other page has been checked.
-        // That closes the sequence against a leading mutation that occurs
-        // after its first revalidation and before the inventory is accepted.
-        const initialPage = pages[0]!;
-        const closingInitialPage = await fetchPage(initialPage.start);
-        if (
-          closingInitialPage.alerts.length !== initialPage.length ||
-          closingInitialPage.ids.length !== initialPage.ids.length ||
-          closingInitialPage.ids.some((alertId, index) => alertId !== initialPage.ids[index])
-        ) {
-          throw new Error("iLert alert inventory changed during offset pagination");
+        ids.add(id);
+        pages.push(alert);
+      }
+      if (found.alerts.length < ALERT_PAGE_SIZE) break;
+    }
+    const afterCount = await fetchCount();
+    if (beforeCount !== afterCount || afterCount !== ids.size) {
+      throw new Error("iLert alert inventory changed during pagination");
+    }
+    return pages;
+  };
+
+  try {
+    if (!options.completeInventory) {
+      for (let page = 0, start = 0; ; page += 1, start += ALERT_PAGE_SIZE) {
+        if (options.maxPages !== undefined && page >= options.maxPages) {
+          throw new Error("iLert terminal canary inventory exceeded its pagination limit");
         }
-        if (validationError) throw validationError;
-        return [...matches.values()];
+        const found = await fetchPage(start);
+        if (found.alerts.length < ALERT_PAGE_SIZE) {
+          if (validationError) throw validationError;
+          return [...matches.values()];
+        }
       }
     }
+    const first = await listCompleteInventory();
+    const second = await listCompleteInventory();
+    const firstIds = first.map((alert) => positiveId(alert.id));
+    const secondIds = second.map((alert) => positiveId(alert.id));
+    if (
+      firstIds.length !== secondIds.length ||
+      firstIds.some((id, index) => id !== secondIds[index])
+    ) {
+      throw new Error("iLert alert inventory changed during continuity revalidation");
+    }
+    if (validationError) throw validationError;
+    return [...matches.values()];
   } catch (error) {
     if (validationError && error !== validationError) {
       throw new AggregateError(
@@ -1611,26 +1683,50 @@ async function listActions(
   deadline: Deadline,
   sleep: Sleep,
 ): Promise<Json[]> {
-  const actions: Json[] = [];
-  for (let start = 0; ; start += 100) {
-    const query = new URLSearchParams({
-      "start-index": String(start),
-      "max-results": "100",
-    });
-    const page = await management(
-      fetchFn,
-      apiKey,
-      `/alert-actions?${query.toString()}`,
-      {},
-      deadline,
-      sleep,
-    );
-    if (!Array.isArray(page) || page.some((item) => !object(item))) {
-      throw new Error("iLert returned an invalid alert-action list");
+  const list = async (): Promise<Json[]> => {
+    const actions: Json[] = [];
+    const ids = new Set<string>();
+    for (let pageIndex = 0, start = 0; ; pageIndex += 1, start += ALERT_PAGE_SIZE - 1) {
+      if (pageIndex >= ALERT_ACTION_INVENTORY_MAX_PAGES) {
+        throw new Error("iLert alert-action inventory exceeded its pagination limit");
+      }
+      const query = new URLSearchParams({
+        "start-index": String(start),
+        "max-results": String(ALERT_PAGE_SIZE),
+      });
+      const page = await management(
+        fetchFn,
+        apiKey,
+        `/alert-actions?${query.toString()}`,
+        {},
+        deadline,
+        sleep,
+      );
+      if (!Array.isArray(page) || page.some((item) => !object(item))) {
+        throw new Error("iLert returned an invalid alert-action list");
+      }
+      for (const action of page as Json[]) {
+        const id = actionId(action);
+        // Adjacent pages overlap by one record. Deduplication makes the
+        // resulting fingerprint independent of that expected boundary row.
+        if (ids.has(id)) continue;
+        ids.add(id);
+        actions.push(action);
+      }
+      if (page.length < ALERT_PAGE_SIZE) return actions;
     }
-    actions.push(...(page as Json[]));
-    if (page.length < 100) return actions;
+  };
+  const first = await list();
+  const second = await list();
+  const firstIds = first.map(actionId);
+  const secondIds = second.map(actionId);
+  if (
+    firstIds.length !== secondIds.length ||
+    firstIds.some((id, index) => id !== secondIds[index])
+  ) {
+    throw new Error("iLert alert-action inventory changed during continuity validation");
   }
+  return second;
 }
 
 async function loadCandidateActions(
@@ -1736,14 +1832,14 @@ async function loadIntegrationBoundAlertSource(
   try {
     const response = await requestWithRetry(
       fetchFn,
-      `${API_BASE}/alert-sources/${encodeURIComponent(integrationKey)}`,
+      `${API_BASE}/alert-sources/${encodeURIComponent(sourceId)}`,
       { headers: { accept: "application/json", authorization: `Bearer ${apiKey}` } },
       deadline,
       sleep,
       true,
     );
     if (response.status !== 200) throw new Error("binding request failed");
-    return alertSource(await parseJson(response), sourceId);
+    return alertSource(await parseJson(response), sourceId, integrationKey);
   } catch {
     throw new Error("iLert integration binding validation failed");
   }
@@ -1752,16 +1848,25 @@ async function loadIntegrationBoundAlertSource(
 function alertSource(
   value: unknown,
   expectedId: number,
+  expectedIntegrationKey: string,
 ): Json {
   const source = requireObject(value, "iLert returned an invalid alert source");
   const id = positiveNumber(source.id);
   if (
     id !== expectedId ||
-    source.integrationType !== "API"
+    source.integrationType !== "API" ||
+    typeof source.integrationKey !== "string" ||
+    !sameSecret(source.integrationKey, expectedIntegrationKey)
   ) {
     throw new Error("iLert alert source does not match the configured identity");
   }
   return { id };
+}
+
+function sameSecret(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
 function actionId(value: unknown): string {
@@ -1897,11 +2002,12 @@ function nonempty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+export function validWebhookSecret(secret: string): boolean {
+  return /^[\x21-\x7e]{32,512}$/u.test(secret) && new Set(secret).size >= 4;
+}
+
 function requireWebhookSecret(secret: string): void {
-  if (
-    !/^[\x21-\x7e]{32,512}$/u.test(secret) ||
-    new Set(secret).size < 4
-  ) {
+  if (!validWebhookSecret(secret)) {
     throw new Error(
       "POSTIL_ILERT_WEBHOOK_SECRET must contain 32 to 512 random printable ASCII bytes",
     );
@@ -1955,29 +2061,40 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
   if (
     args.some(
       (arg) =>
-        arg !== "--dry-run" && arg !== "--canary" && arg !== "--finalize-canary",
+        arg !== "--dry-run" && arg !== "--canary" && arg !== "--finalize-canary" &&
+        arg !== "--validate-webhook-secret",
     )
   ) {
     throw new Error(
-      "usage: reconcile-ilert-alert-stream.ts [--dry-run] [--canary|--finalize-canary]",
+      "usage: reconcile-ilert-alert-stream.ts [--validate-webhook-secret|--dry-run|--canary|--finalize-canary]",
     );
   }
   const dryRun = args.includes("--dry-run");
   const canary = args.includes("--canary");
   const finalizeCanary = args.includes("--finalize-canary");
+  const validateWebhookSecret = args.includes("--validate-webhook-secret");
+  if (validateWebhookSecret && (dryRun || canary || finalizeCanary)) {
+    throw new Error("--validate-webhook-secret cannot be combined with reconciliation commands");
+  }
   if (dryRun && (canary || finalizeCanary)) {
     throw new Error("--dry-run cannot be combined with a canary command");
   }
   if (canary && finalizeCanary) {
     throw new Error("--canary cannot be combined with --finalize-canary");
   }
-  if (!dryRun && !canary && !finalizeCanary) {
+  if (!validateWebhookSecret && !dryRun && !canary && !finalizeCanary) {
     throw new Error(
       "usage: live reconciliation requires --canary because it needs a recoverable run identity; use --dry-run to preview",
     );
   }
   const values = options.env ?? process.env;
   const log = options.log ?? console.log;
+
+  if (validateWebhookSecret) {
+    requireWebhookSecret(environment(values, "POSTIL_ILERT_WEBHOOK_SECRET"));
+    log("POSTIL_ILERT_WEBHOOK_SECRET is valid");
+    return;
+  }
 
   if (finalizeCanary) {
     const alertSubmitted = canaryAlertSubmission(values);

@@ -490,18 +490,17 @@ deployment and reconciliation workflows load the receiver password from one
 secret record. Reconciliation verifies that the deployed receiver accepts the
 credential before it creates or updates the action. Before any action mutation
 or Event API mutation, reconciliation reads `GET /api/alert-sources/{id}` with
-the URL-encoded Event API integration key and the management bearer credential.
-The returned numeric source id and Event API type must match the configured
-source. The key, management authorization, integration fields, and full lookup
-URL remain confined to the sensitive request. Manual canaries send a
+the configured numeric source id and the management bearer credential. The
+returned numeric source id, Event API type, and Event API integration key must
+match the configured source. The key, management authorization, integration
+fields, and full lookup URL remain confined to the sensitive request. Manual canaries send a
 HIGH-priority production test alert that can invoke the escalation path. They
 use attempt-specific keys derived from the workflow run id and producer run
 attempt, distinct from production monitor keys. Earlier main keys are swept
-through the current attempt and every discovered open alert is resolved with
+through the current attempt and every discovered trusted alert is resolved with
 `PUT /api/alerts/{id}/resolve` then polled by that exact id until management
-reports RESOLVED. Open inventory requests PENDING and ACCEPTED states at the
-server, while accepted-current proof uses a separate bounded all-state lookup.
-A blind same-key Event API RESOLVE is limited to an undiscovered current key.
+reports RESOLVED. A blind same-key Event API RESOLVE is limited to an
+undiscovered current key.
 The main alert is discovered within the configured
 source using a report-time window whose upper bound follows successful Event API
 acceptance. It must remain PENDING or ACCEPTED at HIGH priority and have an
@@ -509,10 +508,13 @@ exact persisted `alert-created` receiver event. A `cleaned` handoff means the
 primary canary also proves the exact persisted `alert-resolved` receiver event.
 The independent cleanup-only finalizer uses the producer attempt for
 accepted-current proof and the running attempt as a sweep ceiling. It accepts
-GitHub's 1 through 51 attempt range, bounds work per attempt, uses
-continuity-checked overlapping pages with a closing initial-page read for
-mutable open-alert inventory, performs delayed consecutive terminal discoveries
-that each complete empty before success, and
+GitHub's 1 through 51 attempt range, bounds work per attempt, and sweeps a
+bounded source-scoped report-time window with PENDING, ACCEPTED, and RESOLVED
+states. Every terminal pass freezes its upper report-time bound, brackets
+offset pagination with matching inventory counts, repeats the complete
+inventory for continuity validation, and advances the bound before the next
+delayed pass. Two complete delayed passes must find no matching open alert
+before success, and
 verifies every retained id as RESOLVED. A cleaned handoff still performs this
 management sweep to resolve a delayed Event API duplicate. If the producer
 output is unavailable, the finalizer uses its running attempt to reconstruct
@@ -524,8 +526,11 @@ because it has no recoverable run identity. The canary does not open the
 authenticated operator SSE stream.
 
 iLert supplies offset pagination rather than a snapshot, cursor, or exact-key
-filter. The bounded continuity checks provide evidence for a complete scan and
-fail closed on observed churn; they do not claim atomic absence proof.
+filter. The bounded count and repeated-inventory checks provide evidence for a
+complete scan and fail closed on observed churn; they do not claim atomic
+absence proof. Deployment validates the iLert receiver secret with the same
+printable-ASCII length and diversity contract used by the receiver before any
+Fly mutation.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
