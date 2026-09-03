@@ -177,6 +177,20 @@ export function equivalentAlertAction(actual: Json, desired: Json): boolean {
   );
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 export async function reconcileIlertAlertAction(
   options: ReconcileOptions,
 ): Promise<ReconcileResult> {
@@ -234,17 +248,59 @@ export async function reconcileIlertAlertAction(
     deadline,
     sleep,
   );
+  // The cleanup and receiver preflight can take most of the reconciliation
+  // budget. Re-read both identities at the mutation boundary so a concurrent
+  // action or source change is never overwritten from a stale plan.
+  const boundarySource = await loadIntegrationBoundAlertSource(
+    fetchFn,
+    options.apiKey,
+    options.integrationKey,
+    options.sourceId,
+    deadline,
+    sleep,
+  );
+  const boundaryDesired = desiredAlertAction(
+    boundarySource,
+    options.webhookSecret,
+    receiverOrigin,
+  );
+  if (!sameJson(desired, boundaryDesired)) {
+    throw new Error("iLert alert-action source binding changed before mutation");
+  }
+  const boundaryActions = await loadCandidateActions(
+    fetchFn,
+    options.apiKey,
+    boundaryDesired,
+    deadline,
+    sleep,
+  );
+  const boundaryExisting = reservedCandidate(
+    boundaryActions,
+    boundaryDesired,
+    options.sourceId,
+  );
+  if (!existing && boundaryExisting) {
+    throw new Error("A Postil alert action appeared before creation; refusing to submit POST");
+  }
+  if (
+    existing &&
+    (!boundaryExisting ||
+      actionId(existing) !== actionId(boundaryExisting) ||
+      !sameJson(existing, boundaryExisting))
+  ) {
+    throw new Error("iLert reserved alert action changed before mutation");
+  }
   if (operation === "unchanged") {
     return { actionId: actionId(existing), operation };
   }
-  const id = existing ? actionId(existing) : null;
+  const id = boundaryExisting ? actionId(boundaryExisting) : null;
   const result = id
     ? requireObject(
       await management(
         fetchFn,
         options.apiKey,
         `/alert-actions/${encodeURIComponent(id)}?include=conditions`,
-        { method: "PUT", body: JSON.stringify({ ...desired, id }) },
+        { method: "PUT", body: JSON.stringify({ ...boundaryDesired, id }) },
         deadline,
         sleep,
       ),
@@ -253,7 +309,7 @@ export async function reconcileIlertAlertAction(
     : await createAlertActionSafely({
       apiKey: options.apiKey,
       deadline,
-      desired,
+      desired: boundaryDesired,
       fetchFn,
       sleep,
       sourceId: options.sourceId,
@@ -276,7 +332,7 @@ export async function reconcileIlertAlertAction(
   if (actionId(confirmed) !== resultId) {
     throw new Error("iLert returned a confirmation for a different alert action");
   }
-  if (!equivalentAlertAction(confirmed, desired)) {
+  if (!equivalentAlertAction(confirmed, boundaryDesired)) {
     throw new Error("iLert did not retain the reconciled alert action");
   }
   return { actionId: resultId, operation };
@@ -432,10 +488,10 @@ export async function finalizeIlertWebhookCanary(
   const currentWindow = handoff === "true"
     ? finalizerCurrentAttemptWindow(options.startedAt)
     : undefined;
-  const startedAt = options.startedAt ? Date.parse(options.startedAt) : Number.NaN;
-  const inventoryLowerBound = Number.isFinite(startedAt)
-    ? startedAt
-    : deadline.now() - CANARY_RERUN_LOOKBACK_MS;
+  // The sweep includes every deterministic attempt key. A producer timestamp
+  // only describes one attempt, so it cannot narrow the shared report-time
+  // inventory without excluding a delayed earlier rerun.
+  const inventoryLowerBound = deadline.now() - CANARY_RERUN_LOOKBACK_MS;
 
   await finalizeDeterministicCanaryKeys(
     cleanup,
@@ -788,8 +844,15 @@ async function precleanPriorAttemptKeys(
   let lastErrors: unknown[] = [];
   let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
 
+  const inventoryLowerBound = options.deadline.now() - CANARY_RERUN_LOOKBACK_MS;
   for (let pass = 0; pass < CANARY_CLEANUP_ATTEMPTS; pass += 1) {
-    const discovered = await discoverOpenDeterministicAlerts(options, keys);
+    const discovered = await discoverOpenDeterministicAlerts(
+      options,
+      keys,
+      finalizerInventoryWindow(inventoryLowerBound, options.deadline.now()),
+      CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
+      true,
+    );
     rememberTargets(targets, discovered.alerts);
     lastErrors = discovered.errors;
     invalidValidationError ??= discovered.validationError;

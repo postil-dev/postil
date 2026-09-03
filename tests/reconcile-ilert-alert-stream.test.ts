@@ -265,12 +265,13 @@ describe("iLert webhook-action reconciliation", () => {
         Response.json([{ id: "72", name: String(desired.name) }]),
         Response.json(drifted),
         new Response(null, { status: 204 }),
+        Response.json(SOURCE),
+        Response.json(drifted),
         Response.json({ ...desired, id: "72" }),
         Response.json({ ...desired, id: "72" }),
       ]),
     });
     expect(result).toEqual({ actionId: "72", operation: "update" });
-    expect(requests[3]!.url).toContain("include=conditions");
     const preflight = requests.find((request) => request.url === `${RECEIVER_ORIGIN}/api/webhooks/ilert`);
     expect(preflight?.headers.get("authorization")).toStartWith("Basic ");
     const update = requests.find((request) => request.method === "PUT");
@@ -295,6 +296,8 @@ describe("iLert webhook-action reconciliation", () => {
         Response.json([{ id: "72", name: String(desired.name) }]),
         Response.json(legacy),
         new Response(null, { status: 204 }),
+        Response.json(SOURCE),
+        Response.json(legacy),
         Response.json({ ...desired, id: "72" }),
         Response.json({ ...desired, id: "72" }),
       ]),
@@ -315,6 +318,8 @@ describe("iLert webhook-action reconciliation", () => {
         Response.json([{ id: "72", name: actionName }]),
         Response.json(desired),
         new Response(null, { status: 204 }),
+        Response.json(SOURCE),
+        Response.json(desired),
       ]),
     });
     expect(result).toEqual({ actionId: "72", operation: "unchanged" });
@@ -476,6 +481,7 @@ describe("iLert webhook-action reconciliation", () => {
         Response.json(SOURCE),
         Response.json([]),
         new Response(null, { status: 204 }),
+        Response.json(SOURCE),
         Response.json({ id: "71" }),
         Response.json([{ id: "71", name: desired.name }]),
         Response.json({ ...desired, id: "71" }),
@@ -491,6 +497,92 @@ describe("iLert webhook-action reconciliation", () => {
       alertSources: Array<Record<string, unknown>>;
     };
     expect(body.alertSources[0]).not.toHaveProperty("integrationKey");
+  });
+
+  test("refuses POST when a reserved action appears during receiver preflight", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const requests: Request[] = [];
+    let boundary = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          boundary = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/api/alert-actions") {
+          return Response.json(boundary ? [{ id: "73", name: desired.name }] : []);
+        }
+        if (url.pathname === "/api/alert-actions/73") {
+          return Response.json({ ...desired, id: "73" });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("appeared before creation");
+    expect(requests.some((request) =>
+      request.method === "POST" || request.method === "PUT"
+    )).toBe(false);
+  });
+
+  test("revalidates the source binding after receiver preflight before POST", async () => {
+    const requests: Request[] = [];
+    let boundary = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) {
+          return Response.json(boundary
+            ? { ...SOURCE, integrationKey: "concurrently-replaced-key" }
+            : SOURCE);
+        }
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          boundary = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/api/alert-actions") return Response.json([]);
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("integration binding validation failed");
+    expect(requests.filter((request) =>
+      new URL(request.url).pathname.startsWith("/api/alert-sources/")
+    )).toHaveLength(2);
+    expect(requests.some((request) => request.method === "POST")).toBe(false);
+  });
+
+  test("refuses PUT when a reserved action changes during receiver preflight", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const initial = { ...desired, conditions: "alert.priority == 'HIGH'", id: "72" };
+    const concurrent = { ...initial, conditions: "alert.status == 'PENDING'" };
+    const requests: Request[] = [];
+    let boundary = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          boundary = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/api/alert-actions") {
+          return Response.json([{ id: "72", name: desired.name }]);
+        }
+        if (url.pathname === "/api/alert-actions/72") {
+          return Response.json(boundary ? concurrent : initial);
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("changed before mutation");
+    expect(requests.some((request) => request.method === "PUT")).toBe(false);
   });
 
   test("fails closed after creation when the global inventory finds a concurrent reserved candidate", async () => {
@@ -1036,8 +1128,9 @@ describe("iLert webhook canary", () => {
     expect(service.requests.some((request) => request.url.endsWith("/alerts/199"))).toBe(true);
   });
 
-  test("uses separate terminal scans to resolve an earlier-attempt alert that appears at 361 seconds", async () => {
-    let currentTime = 0;
+  test("uses the run-wide inventory window for an earlier attempt that appears at 361 seconds", async () => {
+    const runStartedAt = 30 * 24 * 60 * 60 * 1_000;
+    let currentTime = runStartedAt;
     let resolved = false;
     const inventoryTimes: number[] = [];
     const requests: Request[] = [];
@@ -1048,11 +1141,15 @@ describe("iLert webhook canary", () => {
       if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
       if (url.pathname === "/api/events") return new Response(null, { status: 202 });
       if (url.pathname === "/api/alerts/count") {
-        return Response.json({ count: currentTime >= 361_000 ? 1 : 0 });
+        return Response.json({ count: currentTime >= runStartedAt + 361_000 ? 1 : 0 });
       }
       if (url.pathname === "/api/alerts") {
         inventoryTimes.push(currentTime);
-        return Response.json(currentTime >= 361_000 ? [{
+        const from = url.searchParams.get("from");
+        if (url.searchParams.getAll("states").includes("RESOLVED")) {
+          expect(Date.parse(from!)).toBeLessThanOrEqual(0);
+        }
+        return Response.json(currentTime >= runStartedAt + 361_000 ? [{
           alertKey: canaryAlertKey(RUN_ID, "1"),
           alertSource: { id: SOURCE_ID },
           id: 199,
@@ -1078,17 +1175,57 @@ describe("iLert webhook canary", () => {
 
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
-      alertSubmitted: "true",
+      alertSubmitted: "cleaned",
       fetchFn,
+      runAttempt: "2",
+      sweepAttempt: "2",
+      startedAt: new Date(runStartedAt).toISOString(),
       now: () => currentTime,
       sleep: async (milliseconds) => { currentTime += milliseconds; },
     });
-    expect(inventoryTimes).toContain(360_000);
-    expect(inventoryTimes).toContain(365_000);
+    expect(inventoryTimes).toContain(runStartedAt + 360_000);
+    expect(inventoryTimes).toContain(runStartedAt + 365_000);
     expect(requests.some((request) =>
       request.method === "PUT" && request.url.endsWith("/alerts/199/resolve")
     )).toBe(true);
     expect(resolved).toBe(true);
+  });
+
+  test("does not post the current HIGH alert when count-backed preclean loses a shifted prior alert", async () => {
+    const requests: Request[] = [];
+    const unrelated = Array.from({ length: 100 }, (_, index) => ({
+      alertKey: `unrelated-${index + 1}`,
+      alertSource: { id: SOURCE_ID },
+      id: index + 1,
+      priority: "HIGH",
+      status: "PENDING",
+    }));
+    await expect(verifyIlertWebhookCanary({
+      ...canaryOptions,
+      runAttempt: "2",
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.pathname === "/api/alerts/count") return Response.json({ count: 101 });
+        if (url.pathname === "/api/alerts") {
+          return Response.json(Number(url.searchParams.get("start-index")) === 0 ? unrelated : []);
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("did not stabilize prior-attempt canary cleanup");
+    expect(requests.some((request) =>
+      new URL(request.url).pathname === "/api/alerts/count"
+    )).toBe(true);
+    expect(requests.some((request) => {
+      const url = new URL(request.url);
+      return url.pathname === "/api/alerts" &&
+        url.searchParams.getAll("states").join(",") === "PENDING,ACCEPTED,RESOLVED";
+    })).toBe(true);
+    expect(requests.some((request) =>
+      request.method === "POST" && new URL(request.url).pathname === "/api/events"
+    )).toBe(false);
   });
 
   test("accounts for an already resolved accepted current alert through all-state lookup", async () => {
