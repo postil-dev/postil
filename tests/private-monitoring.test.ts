@@ -259,12 +259,20 @@ describe("private monitoring public probes", () => {
 
   test("retries a transient HTTP status and keeps the route healthy", async () => {
     let sitemapAttempts = 0;
+    const lifecycle: string[] = [];
     const checks = await runPublicMonitoringChecks(
       "https://example.test",
       async (input) => {
         if (new URL(String(input)).pathname === "/sitemap.xml") {
           sitemapAttempts += 1;
-          if (sitemapAttempts === 1) return new Response("busy", { status: 503 });
+          lifecycle.push(`attempt-${sitemapAttempts}`);
+          if (sitemapAttempts === 1) {
+            return new Response(new ReadableStream({
+              cancel() {
+                lifecycle.push("cancelled");
+              },
+            }), { status: 503 });
+          }
         }
         return healthyPublicProbeResponse(input);
       },
@@ -273,6 +281,7 @@ describe("private monitoring public probes", () => {
 
     expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
     expect(sitemapAttempts).toBe(2);
+    expect(lifecycle).toEqual(["attempt-1", "cancelled", "attempt-2"]);
   });
 
   test("honors bounded Retry-After delays for rate-limited probes", async () => {

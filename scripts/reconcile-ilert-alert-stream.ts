@@ -548,6 +548,13 @@ export async function finalizeIlertWebhookCanary(
   if (!currentMain) {
     throw new Error("iLert canary cleanup could not reconstruct the producer attempt");
   }
+  await loadManagementBoundAlertSource(
+    fetchFn,
+    options.apiKey,
+    options.sourceId,
+    deadline,
+    sleep,
+  );
   await finalizeManagedCanaryKeys(
     cleanup,
     keys,
@@ -1176,6 +1183,13 @@ async function finalizeManagedCanaryKeys(
       observed.allResolved &&
       stableEmptyScans >= FINALIZER_STABLE_EMPTY_SCANS
     ) {
+      await loadManagementBoundAlertSource(
+        options.fetchFn,
+        options.apiKey,
+        options.sourceId,
+        options.deadline,
+        options.sleep,
+      );
       return;
     }
     const delay = Math.min(

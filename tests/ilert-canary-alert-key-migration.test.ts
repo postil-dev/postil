@@ -5,9 +5,80 @@ import { join } from "node:path";
 import { Client, Pool } from "pg";
 
 import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
+import alertKeySnapshot from "../drizzle/meta/0060_snapshot.json";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
+
+describe("iLert canary alert key migration metadata", () => {
+  test("records the applied schema as the latest generated snapshot", async () => {
+    const previousSnapshot = JSON.parse(
+      await readFile(
+        new URL("../drizzle/meta/0059_snapshot.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { id: string };
+    const snapshot = alertKeySnapshot as {
+      id: string;
+      prevId: string;
+      tables: Record<string, {
+        columns: Record<string, {
+          name: string;
+          type: string;
+          primaryKey: boolean;
+          notNull: boolean;
+        }>;
+        indexes: Record<string, {
+          columns: Array<{ expression: string }>;
+          where?: string;
+        }>;
+        checkConstraints: Record<string, { value: string }>;
+      }>;
+    };
+    const journal = JSON.parse(
+      await readFile(
+        new URL("../drizzle/meta/_journal.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      entries: Array<{
+        idx: number;
+        version: string;
+        when: number;
+        tag: string;
+        breakpoints: boolean;
+      }>;
+    };
+    const events = snapshot.tables["public.ilert_alert_events"]!;
+
+    expect(snapshot.prevId).toBe(previousSnapshot.id);
+    expect(snapshot.id).not.toBe(previousSnapshot.id);
+    expect(events.columns.alert_key).toEqual({
+      name: "alert_key",
+      type: "text",
+      primaryKey: false,
+      notNull: false,
+    });
+    expect(events.indexes.ilert_alert_events_canary_observation_idx).toMatchObject({
+      columns: [
+        { expression: "alert_key" },
+        { expression: "event_type" },
+        { expression: "alert_source_id" },
+      ],
+      where: '"ilert_alert_events"."alert_key" IS NOT NULL',
+    });
+    expect(
+      events.checkConstraints.ilert_alert_events_alert_key_check?.value,
+    ).toContain('length("ilert_alert_events"."alert_key") BETWEEN 1 AND 512');
+    expect(journal.entries.at(-1)).toEqual({
+      idx: 59,
+      version: "7",
+      when: 1788454502113,
+      tag: "0060_ilert_canary_alert_key",
+      breakpoints: true,
+    });
+  });
+});
 
 describeDb("iLert canary alert key migration", () => {
   const databaseName = `postil_ilert_canary_key_${process.pid}_${Date.now()}`;

@@ -459,9 +459,10 @@ operator by its own email path for monitoring; operator email remains for
 business lifecycle and billing notifications only. After each completed pass
 the monitor pings an ilert heartbeat (`POSTIL_MONITOR_HEARTBEAT_URL`), so a
 dead monitor process or persistently failing pass raises a missed-heartbeat
-alert outside the platform's failure domain. Without a configured integration
-key, monitoring alerts are logged only and paging relies on the heartbeat, the
-external uptime checks, and the GitHub monitor.
+alert outside the platform's failure domain. `ILERT_INTEGRATION_KEY` is required
+at monitor startup. If it is missing, startup fails before monitoring passes
+begin; no alert event or successful-pass heartbeat is delivered, and the
+external heartbeat monitor detects the stopped monitor when configured.
 
 iLert alert actions can deliver bounded alert lifecycle events to
 `/api/webhooks/ilert` with HTTP Basic authentication. The receiver stores the

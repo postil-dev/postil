@@ -1715,6 +1715,28 @@ describe("iLert webhook canary", () => {
     expect(service.alertListRequests).toBeGreaterThan(0);
   });
 
+  test("revalidates the management source before accepting empty finalizer scans", async () => {
+    const service = canaryService();
+    let sourceReads = 0;
+    await expect(finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) {
+          sourceReads += 1;
+          if (sourceReads > 1) {
+            return Response.json({ ...SOURCE, integrationType: "EMAIL" });
+          }
+        }
+        return service.fetchFn(input, init);
+      },
+    })).rejects.toThrow("management alert-source validation failed");
+    expect(sourceReads).toBe(2);
+    expect(service.alertListRequests).toBeGreaterThan(0);
+    expect(service.events).toEqual([]);
+  });
+
   test("finalizer continuity accepts an unrelated opaque routine ID without mutation", async () => {
     const requests: Request[] = [];
     await finalizeIlertWebhookCanary({
@@ -1724,6 +1746,9 @@ describe("iLert webhook canary", () => {
         const request = new Request(input, init);
         requests.push(request.clone());
         const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) {
+          return Response.json(SOURCE);
+        }
         if (url.pathname === "/api/alerts/count") return Response.json({ count: 1 });
         if (url.pathname === "/api/alerts") {
           return Response.json([{

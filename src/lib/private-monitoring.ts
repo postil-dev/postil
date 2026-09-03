@@ -1569,6 +1569,7 @@ async function monitoredFetch(
       if (response.status === 429) {
         retryDelay = retryAfterDelayMs(response.headers.get("retry-after")) ?? retryDelay;
       }
+      await response.body?.cancel().catch(() => undefined);
     } catch (error) {
       if (attempt === PUBLIC_PROBE_RETRY_DELAYS_MS.length) throw error;
     }
