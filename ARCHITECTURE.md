@@ -501,16 +501,16 @@ through the current attempt and every discovered trusted alert is resolved with
 `PUT /api/alerts/{id}/resolve` then polled by that exact id until management
 reports RESOLVED. A blind same-key Event API RESOLVE is limited to an
 undiscovered current key.
-The main alert is discovered within the configured
-source using a report-time window whose upper bound follows successful Event API
-acceptance. It must remain PENDING or ACCEPTED at HIGH priority and have an
+The main alert is discovered within the configured source using the same exact
+32-day report-time window as cleanup. It must remain PENDING or ACCEPTED at
+HIGH priority and have an
 exact persisted `alert-created` receiver event. A `cleaned` handoff means the
 primary canary also proves the exact persisted `alert-resolved` receiver event.
 The independent cleanup-only finalizer uses the producer attempt for
 accepted-current proof and the running attempt as a sweep ceiling. It accepts
 GitHub's 1 through 51 attempt range, bounds work per attempt, and sweeps a
-32-day run-wide report-time lookback with PENDING, ACCEPTED, and RESOLVED
-states. Every terminal pass freezes its upper report-time bound, brackets
+exact 32-day run-wide report-time window with PENDING, ACCEPTED, and RESOLVED
+states. Every discovery pass freezes its upper report-time bound, brackets
 offset pagination with matching inventory counts, repeats the complete
 inventory for continuity validation, and advances the bound before the next
 delayed pass. Two complete delayed passes must find no matching open alert

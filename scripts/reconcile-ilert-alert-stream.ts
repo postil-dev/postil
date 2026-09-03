@@ -23,7 +23,6 @@ const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 60_000;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
 const ALERT_ACTION_INVENTORY_MAX_PAGES = 50;
 const CANARY_CLEANUP_ATTEMPTS = 4;
-const ALERT_REPORT_TIME_SKEW_MS = 5_000;
 // GitHub permits reruns for 30 days. Keep two additional days for queueing,
 // setup, smoke checks, and clock skew before cleanup establishes its window.
 export const CANARY_RERUN_LOOKBACK_MS = 32 * 24 * 60 * 60 * 1_000;
@@ -50,6 +49,7 @@ type Clock = () => number;
 type Operation = "create" | "update" | "unchanged";
 type CanaryEventType = "alert-created" | "alert-resolved";
 type CanaryHandoff = "true" | "unknown" | "cleaned";
+type BeforeMutationAttempt = () => Promise<void>;
 
 interface Deadline {
   expiresAt: number;
@@ -296,17 +296,50 @@ export async function reconcileIlertAlertAction(
     return { actionId: actionId(existing), operation };
   }
   const id = boundaryExisting ? actionId(boundaryExisting) : null;
-  // The full action inventory above can take most of the reconciliation
-  // budget. Bind the numeric source and integration key again immediately
-  // before the mutating request.
-  await loadIntegrationBoundAlertSource(
-    fetchFn,
-    options.apiKey,
-    options.integrationKey,
-    options.sourceId,
-    deadline,
-    sleep,
-  );
+  // The guard runs immediately before every action mutation attempt, including
+  // a retry after a transient response. It proves both source binding and the
+  // complete continuity-safe reserved-action inventory are still unchanged.
+  const beforeMutationAttempt: BeforeMutationAttempt = async () => {
+    const attemptSource = await loadIntegrationBoundAlertSource(
+      fetchFn,
+      options.apiKey,
+      options.integrationKey,
+      options.sourceId,
+      deadline,
+      sleep,
+    );
+    const attemptDesired = desiredAlertAction(
+      attemptSource,
+      options.webhookSecret,
+      receiverOrigin,
+    );
+    if (!sameJson(boundaryDesired, attemptDesired)) {
+      throw new Error("iLert alert-action source binding changed before mutation");
+    }
+    const attemptActions = await loadCandidateActions(
+      fetchFn,
+      options.apiKey,
+      attemptDesired,
+      deadline,
+      sleep,
+    );
+    const attemptExisting = reservedCandidate(
+      attemptActions,
+      attemptDesired,
+      options.sourceId,
+    );
+    if (!id && attemptExisting) {
+      throw new Error("A Postil alert action appeared before creation; refusing to submit POST");
+    }
+    if (
+      id &&
+      (!attemptExisting ||
+        actionId(attemptExisting) !== id ||
+        !sameJson(attemptExisting, boundaryExisting))
+    ) {
+      throw new Error("iLert reserved alert action changed before mutation");
+    }
+  };
   const result = id
     ? requireObject(
       await management(
@@ -316,6 +349,8 @@ export async function reconcileIlertAlertAction(
         { method: "PUT", body: JSON.stringify({ ...boundaryDesired, id }) },
         deadline,
         sleep,
+        false,
+        beforeMutationAttempt,
       ),
       "iLert returned an invalid alert action",
     )
@@ -324,6 +359,7 @@ export async function reconcileIlertAlertAction(
       deadline,
       desired: boundaryDesired,
       fetchFn,
+      beforeMutationAttempt,
       sleep,
       sourceId: options.sourceId,
     });
@@ -333,6 +369,7 @@ export async function reconcileIlertAlertAction(
   }
   await confirmUniqueMutatedAlertAction({
     apiKey: options.apiKey,
+    beforeMutationAttempt,
     deadline,
     desired: boundaryDesired,
     expectedId: resultId,
@@ -383,7 +420,6 @@ export async function verifyIlertWebhookCanary(
   let alertAttempted = false;
   let resolutionConfirmed = false;
   let created: CanaryTarget | undefined;
-  let acceptedAt = startedAtMs;
   let primaryError: unknown;
   try {
     assertCleanupReserve(canaryDeadline);
@@ -396,18 +432,15 @@ export async function verifyIlertWebhookCanary(
       receiverOrigin,
       sleep,
       sourceId: options.sourceId,
-      acceptedAt,
       webhookSecret: options.webhookSecret,
     };
     alertAttempted = true;
     await options.onAlertAttempted?.();
-    acceptedAt = now();
     await event(
       submittedOptions,
       "ALERT",
       key,
     );
-    submittedOptions.acceptedAt = acceptedAt;
     await options.onAlertSubmitted?.();
     created = await waitForCreatedDelivery(submittedOptions);
     await resolveAndStabilize(submittedOptions, created, canaryDeadline);
@@ -427,7 +460,6 @@ export async function verifyIlertWebhookCanary(
           key,
           receiverOrigin,
           sleep,
-          acceptedAt,
           sourceId: options.sourceId,
           webhookSecret: options.webhookSecret,
         },
@@ -488,22 +520,12 @@ export async function finalizeIlertWebhookCanary(
   if (!currentMain) {
     throw new Error("iLert canary cleanup could not reconstruct the producer attempt");
   }
-  const currentWindow = handoff === "true"
-    ? finalizerCurrentAttemptWindow(options.startedAt)
-    : undefined;
-  // The sweep includes every deterministic attempt key. A producer timestamp
-  // only describes one attempt, so it cannot narrow the shared report-time
-  // inventory without excluding a delayed earlier rerun.
-  const inventoryLowerBound = deadline.now() - CANARY_RERUN_LOOKBACK_MS;
-
   await finalizeDeterministicCanaryKeys(
     cleanup,
     keys,
     discoveryDeadline,
     handoff,
     currentMain,
-    currentWindow,
-    inventoryLowerBound,
   );
 }
 
@@ -520,7 +542,6 @@ interface WaitOptions extends CleanupOptions {
   key: string;
   receiverOrigin: string;
   sourceId: number;
-  acceptedAt: number;
   webhookSecret: string;
 }
 
@@ -684,18 +705,20 @@ async function findSubmittedAlert(
     apiKey: options.apiKey,
     deadline: options.deadline,
     fetchFn: options.fetchFn,
-    ...submissionWindow(options.acceptedAt, options.deadline.now()),
+    ...rollingCanaryInventoryWindow(options.deadline.now()),
+    completeInventory: true,
     key: options.key,
+    maxPages: CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
     sleep: options.sleep,
     sourceId: options.sourceId,
-    states,
+    states: ALL_ALERT_STATES,
   });
   if (current.length > 1) {
     throw new Error("iLert created multiple alerts for one canary attempt");
   }
-  return current[0]
-    ? canaryObservation(current[0], options.key, options.sourceId)
-    : undefined;
+  if (!current[0]) return undefined;
+  const observed = canaryObservation(current[0], options.key, options.sourceId);
+  return states.includes(observed.status) ? observed : undefined;
 }
 
 async function observeAlertById(
@@ -845,12 +868,11 @@ async function precleanPriorAttemptKeys(
   let lastErrors: unknown[] = [];
   let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
 
-  const inventoryLowerBound = options.deadline.now() - CANARY_RERUN_LOOKBACK_MS;
   for (let pass = 0; pass < CANARY_CLEANUP_ATTEMPTS; pass += 1) {
     const discovered = await discoverOpenDeterministicAlerts(
       options,
       keys,
-      finalizerInventoryWindow(inventoryLowerBound, options.deadline.now()),
+      rollingCanaryInventoryWindow(options.deadline.now()),
       CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
       true,
     );
@@ -884,8 +906,6 @@ async function finalizeDeterministicCanaryKeys(
   discoveryDeadline: Deadline,
   handoff: CanaryHandoff,
   currentMain: DeterministicCanaryKey,
-  currentWindow: ReportTimeWindow | undefined,
-  inventoryLowerBound: number,
 ): Promise<void> {
   const targets = new Map<string, CanaryTarget>();
   // The producer's persisted create-and-resolve proof accounts for the first
@@ -910,17 +930,14 @@ async function finalizeDeterministicCanaryKeys(
   const discover = async (
     deadline: Deadline,
     maxPages?: number,
-    terminal = false,
   ): Promise<{ complete: boolean; open: number }> => {
-    const inventoryWindow = terminal
-      ? finalizerInventoryWindow(inventoryLowerBound, deadline.now())
-      : undefined;
+    const inventoryWindow = rollingCanaryInventoryWindow(deadline.now());
     const result = await discoverOpenDeterministicAlerts(
       { ...options, deadline },
       keys,
       inventoryWindow,
-      maxPages,
-      terminal,
+      maxPages ?? CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
+      true,
     );
     rememberTargets(targets, result.alerts);
     retainErrors(result.errors);
@@ -929,15 +946,16 @@ async function finalizeDeterministicCanaryKeys(
       invalidValidationError = result.validationError;
       validationContextErrors = [...validationContextErrors, result.validationError].slice(-20);
     }
-    if (handoff === "true" && !currentAccountedFor && currentWindow) {
+    if (handoff === "true" && !currentAccountedFor) {
       try {
         const current = await findAlertsByKey({
           apiKey: options.apiKey,
           deadline,
           fetchFn: options.fetchFn,
-          ...currentWindow,
+          ...rollingCanaryInventoryWindow(deadline.now()),
           key: currentMain.key,
-          maxPages,
+          completeInventory: true,
+          maxPages: maxPages ?? CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
           onTarget: (target) => targets.set(target.alertId, target),
           sleep: options.sleep,
           sourceId: currentMain.sourceId,
@@ -1016,7 +1034,6 @@ async function finalizeDeterministicCanaryKeys(
     const terminalDiscovery = await discover(
       terminalDeadline,
       CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
-      true,
     );
     // A later complete, empty scan proves recovery from a transient inventory
     // failure. Any incomplete or non-empty scan resets that proof.
@@ -1224,40 +1241,10 @@ function deterministicCanaryKeys(
   return keys;
 }
 
-function submissionWindow(acceptedAt: number, now: number): ReportTimeWindow {
+function rollingCanaryInventoryWindow(untilMs: number): ReportTimeWindow {
   return {
-    from: reportTime(acceptedAt - ALERT_REPORT_TIME_SKEW_MS),
-    until: reportTime(Math.max(acceptedAt, now) + ALERT_REPORT_TIME_SKEW_MS),
-  };
-}
-
-function finalizerCurrentAttemptWindow(startedAt: string | undefined): ReportTimeWindow {
-  const parsed = startedAt ? Date.parse(startedAt) : Number.NaN;
-  if (!Number.isFinite(parsed)) {
-    throw new Error(
-      "POSTIL_ILERT_CANARY_STARTED_AT is required after an accepted canary submission",
-    );
-  }
-  return {
-    from: reportTime(parsed - ALERT_REPORT_TIME_SKEW_MS),
-    until: reportTime(
-      parsed + RECONCILE_DEADLINE_MS + CANARY_DEADLINE_MS + ALERT_REPORT_TIME_SKEW_MS,
-    ),
-  };
-}
-
-function finalizerInventoryWindow(
-  startedAt: number | undefined,
-  now: number,
-): ReportTimeWindow {
-  const from = startedAt === undefined
-    ? now - CANARY_RERUN_LOOKBACK_MS - ALERT_REPORT_TIME_SKEW_MS
-    : startedAt - ALERT_REPORT_TIME_SKEW_MS;
-  return {
-    from: reportTime(from),
-    // Freeze this upper bound for one complete pass. Each delayed pass rebuilds
-    // the window, so delayed Event API materialization remains discoverable.
-    until: reportTime(now + ALERT_REPORT_TIME_SKEW_MS),
+    from: reportTime(untilMs - CANARY_RERUN_LOOKBACK_MS),
+    until: reportTime(untilMs),
   };
 }
 
@@ -1323,14 +1310,6 @@ async function event(
   priority?: "HIGH" | "LOW",
   summary = "Postil iLert webhook canary",
 ): Promise<void> {
-  await loadIntegrationBoundAlertSource(
-    options.fetchFn,
-    options.apiKey,
-    options.integrationKey,
-    options.sourceId,
-    options.deadline,
-    options.sleep,
-  );
   const response = await requestWithRetry(
     options.fetchFn,
     `${API_BASE}/events`,
@@ -1353,6 +1332,17 @@ async function event(
     },
     options.deadline,
     options.sleep,
+    false,
+    async () => {
+      await loadIntegrationBoundAlertSource(
+        options.fetchFn,
+        options.apiKey,
+        options.integrationKey,
+        options.sourceId,
+        options.deadline,
+        options.sleep,
+      );
+    },
   );
   if (!response.ok) {
     throw new Error(`iLert event request failed with HTTP ${response.status}`);
@@ -1367,6 +1357,7 @@ async function management(
   deadline: Deadline,
   sleep: Sleep,
   sensitive = false,
+  beforeAttempt?: BeforeMutationAttempt,
 ): Promise<unknown> {
   const response = await requestWithRetry(
     fetchFn,
@@ -1381,6 +1372,8 @@ async function management(
     },
     deadline,
     sleep,
+    sensitive,
+    beforeAttempt,
   );
   if (!response.ok) {
     throw new Error(`iLert management request failed with HTTP ${response.status}`);
@@ -1392,14 +1385,6 @@ async function resolveAlertById(
   options: CleanupOptions,
   alertId: string,
 ): Promise<void> {
-  await loadIntegrationBoundAlertSource(
-    options.fetchFn,
-    options.apiKey,
-    options.integrationKey,
-    options.sourceId,
-    options.deadline,
-    options.sleep,
-  );
   const response = await requestWithRetry(
     options.fetchFn,
     `${API_BASE}/alerts/${encodeURIComponent(alertId)}/resolve`,
@@ -1409,6 +1394,17 @@ async function resolveAlertById(
     },
     options.deadline,
     options.sleep,
+    false,
+    async () => {
+      await loadIntegrationBoundAlertSource(
+        options.fetchFn,
+        options.apiKey,
+        options.integrationKey,
+        options.sourceId,
+        options.deadline,
+        options.sleep,
+      );
+    },
   );
   if (response.status !== 200) {
     throw new Error("iLert management alert resolution failed");
@@ -1591,6 +1587,7 @@ function alertSourceId(alert: Json): number | null {
 
 interface CreateAlertActionOptions {
   apiKey: string;
+  beforeMutationAttempt: BeforeMutationAttempt;
   deadline: Deadline;
   desired: Json;
   fetchFn: Fetch;
@@ -1610,10 +1607,14 @@ async function createAlertActionSafely(
         "/alert-actions?include=conditions",
         { method: "POST", body: JSON.stringify(options.desired) },
         options.deadline,
+        options.beforeMutationAttempt,
       ),
       "iLert returned an invalid alert action",
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "iLert integration binding validation failed") {
+      throw error;
+    }
     const candidate = await loadReservedAlertAction(options);
     if (candidate && equivalentAlertAction(candidate, options.desired)) return candidate;
     throw new Error(
@@ -1694,8 +1695,10 @@ async function managementOnce(
   path: string,
   init: RequestInit,
   deadline: Deadline,
+  beforeAttempt?: BeforeMutationAttempt,
 ): Promise<unknown> {
   assertBeforeDeadline(deadline);
+  await beforeAttempt?.();
   let response: Response;
   try {
     response = await fetchFn(`${API_BASE}${path}`, {
@@ -1731,11 +1734,13 @@ async function requestWithRetry(
   deadline: Deadline,
   sleep: Sleep,
   sensitive = false,
+  beforeAttempt?: BeforeMutationAttempt,
 ): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt < REQUEST_ATTEMPTS; attempt += 1) {
     assertBeforeDeadline(deadline);
     const timeout = Math.min(REQUEST_TIMEOUT_MS, remaining(deadline));
+    await beforeAttempt?.();
     try {
       const response = await fetchFn(url, {
         ...init,
