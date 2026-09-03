@@ -662,29 +662,19 @@ function canaryObservation(
   }
   const alertId = positiveId(alert.id);
   const observedSourceId = alertSourceId(alert);
-  const target = alertId && (observedSourceId ?? expectedSourceId)
-    ? {
-      alertId,
-      alertKey: expectedKey,
-      sourceId: observedSourceId ?? expectedSourceId!,
-    }
-    : undefined;
   if (!alertId) {
     throw new InvalidCanaryAlertIdentityError(
       "iLert returned a canary alert without an identity",
-      target,
     );
   }
   if (!observedSourceId) {
     throw new InvalidCanaryAlertIdentityError(
       "iLert returned a canary alert without a valid source",
-      target,
     );
   }
   if (expectedSourceId !== undefined && observedSourceId !== expectedSourceId) {
     throw new InvalidCanaryAlertIdentityError(
       "iLert returned a canary alert from a different source",
-      target,
     );
   }
   const exactTarget: CanaryTarget = {
@@ -1421,6 +1411,18 @@ async function findAlertsByKeys(
           ) {
             throw new Error("iLert alert inventory changed during offset pagination");
           }
+        }
+        // Re-read the initial page after every other page has been checked.
+        // That closes the sequence against a leading mutation that occurs
+        // after its first revalidation and before the inventory is accepted.
+        const initialPage = pages[0]!;
+        const closingInitialPage = await fetchPage(initialPage.start);
+        if (
+          closingInitialPage.alerts.length !== initialPage.length ||
+          closingInitialPage.ids.length !== initialPage.ids.length ||
+          closingInitialPage.ids.some((alertId, index) => alertId !== initialPage.ids[index])
+        ) {
+          throw new Error("iLert alert inventory changed during offset pagination");
         }
         if (validationError) throw validationError;
         return [...matches.values()];

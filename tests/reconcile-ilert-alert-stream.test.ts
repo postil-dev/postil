@@ -940,7 +940,6 @@ describe("iLert webhook canary", () => {
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
     });
-    expect(service.events.some((event) => event.eventType === "RESOLVE")).toBe(true);
     expect(service.requests.some((request) =>
       request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
     )).toBe(true);
@@ -1268,7 +1267,7 @@ describe("iLert webhook canary", () => {
     });
   }
 
-  for (const invalidField of ["status", "priority", "id", "source"] as const) {
+  for (const invalidField of ["status", "priority", "id"] as const) {
     test(`continues past an invalid attempt-1 ${invalidField} to resolve a later attempt-2 alert`, async () => {
       let invalidListingReturned = false;
       const attemptOneKey = canaryAlertKey(RUN_ID, "1");
@@ -1290,7 +1289,7 @@ describe("iLert webhook canary", () => {
             return Response.json([
               {
                 alertKey: attemptOneKey,
-                ...(invalidField === "source" ? {} : { alertSource: { id: SOURCE_ID } }),
+                alertSource: { id: SOURCE_ID },
                 ...(invalidField === "id" ? {} : { id: 98 }),
                 priority: invalidField === "priority" ? "UNKNOWN" : "HIGH",
                 status: invalidField === "status" ? "UNKNOWN" : "PENDING",
@@ -1309,15 +1308,82 @@ describe("iLert webhook canary", () => {
       })).rejects.toThrow(
         invalidField === "id"
           ? "without an identity"
-          : invalidField === "source"
-          ? "without a valid source"
           : `invalid ${invalidField}`,
       );
-      for (const id of invalidField === "id" ? ["99"] : ["98", "99"]) {
+      for (const id of invalidField === "status" || invalidField === "priority"
+        ? ["98", "99"]
+        : ["99"]) {
         expect(service.requests.some((request) =>
           request.method === "PUT" && request.url.endsWith(`/alerts/${id}/resolve`)
         )).toBe(true);
       }
+    });
+  }
+
+  for (const alertSource of [undefined, { id: SOURCE_ID + 1 }] as const) {
+    test(`does not resolve a matching alert with a ${alertSource ? "mismatched" : "missing"} source while later trusted alerts clean`, async () => {
+      const requests: Request[] = [];
+      let currentTime = 0;
+      let trustedResolved = false;
+      const untrustedId = 98;
+      const trustedId = 99;
+      const attemptOneKey = canaryAlertKey(RUN_ID, "1");
+      const attemptTwoKey = canaryAlertKey(RUN_ID, "2");
+      const fetchFn: Fetch = async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.pathname === "/api/alerts") {
+          return Response.json([
+            {
+              alertKey: attemptOneKey,
+              ...(alertSource ? { alertSource } : {}),
+              id: untrustedId,
+              priority: "HIGH",
+              status: "PENDING",
+            },
+            {
+              alertKey: attemptTwoKey,
+              alertSource: { id: SOURCE_ID },
+              id: trustedId,
+              priority: "HIGH",
+              status: trustedResolved ? "RESOLVED" : "PENDING",
+            },
+          ]);
+        }
+        if (request.method === "PUT" && url.pathname === `/api/alerts/${trustedId}/resolve`) {
+          trustedResolved = true;
+          return new Response(null, { status: 200 });
+        }
+        if (url.pathname === `/api/alerts/${trustedId}`) {
+          return Response.json({
+            alertKey: attemptTwoKey,
+            alertSource: { id: SOURCE_ID },
+            id: trustedId,
+            priority: "HIGH",
+            status: trustedResolved ? "RESOLVED" : "PENDING",
+          });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      };
+
+      await expect(finalizeIlertWebhookCanary({
+        ...finalizerOptions(),
+        alertSubmitted: "cleaned",
+        fetchFn,
+        runAttempt: "3",
+        sweepAttempt: "3",
+        now: () => currentTime,
+        sleep: async (milliseconds) => { currentTime += milliseconds; },
+      })).rejects.toThrow(alertSource ? "different source" : "without a valid source");
+      expect(requests.some((request) =>
+        request.method === "PUT" && request.url.endsWith(`/alerts/${untrustedId}/resolve`)
+      )).toBe(false);
+      expect(requests.some((request) =>
+        request.method === "PUT" && request.url.endsWith(`/alerts/${trustedId}/resolve`)
+      )).toBe(true);
+      expect(trustedResolved).toBe(true);
     });
   }
 
@@ -1622,6 +1688,76 @@ describe("iLert webhook canary", () => {
     });
 
     expect(canarySeenBeforeSideEffect).toBe(true);
+    expect(requests.filter((request) =>
+      request.method === "PUT" && request.url.endsWith(`/alerts/${canaryId}/resolve`)
+    )).toHaveLength(1);
+    expect(resolved).toBe(true);
+  });
+
+  test("closes continuity validation with the initial page after later page revalidation", async () => {
+    const requests: Request[] = [];
+    let currentTime = 0;
+    let listRequests = 0;
+    let resolved = false;
+    const canaryId = 500;
+    const baseline = Array.from({ length: 100 }, (_, index) => ({
+      alertKey: `unrelated-${index + 1}`,
+      alertSource: { id: SOURCE_ID },
+      id: index + 1,
+      priority: "HIGH",
+      status: "PENDING",
+    }));
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+      if (request.method === "PUT" && url.pathname === `/api/alerts/${canaryId}/resolve`) {
+        resolved = true;
+        return new Response(null, { status: 200 });
+      }
+      if (url.pathname === `/api/alerts/${canaryId}`) {
+        return Response.json({
+          alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+          alertSource: { id: SOURCE_ID },
+          id: canaryId,
+          priority: "HIGH",
+          status: resolved ? "RESOLVED" : "PENDING",
+        });
+      }
+      if (url.pathname === "/api/alerts") {
+        expect(url.searchParams.getAll("states")).toEqual(["PENDING", "ACCEPTED"]);
+        listRequests += 1;
+        const start = Number(url.searchParams.get("start-index"));
+        if (!resolved && listRequests === 1 && start === 0) return Response.json(baseline);
+        if (!resolved && listRequests === 2 && start === 99) return Response.json([baseline[99]]);
+        if (!resolved && listRequests === 3 && start === 0) return Response.json(baseline);
+        if (!resolved && listRequests === 4 && start === 99) return Response.json([baseline[99]]);
+        if (!resolved && listRequests === 5 && start === 0) {
+          // A leading unrelated row resolves after page-zero revalidation;
+          // the delayed canary takes its position while page 99 is unchanged.
+          return Response.json([{
+            alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+            alertSource: { id: SOURCE_ID },
+            id: canaryId,
+            priority: "HIGH",
+            status: "PENDING",
+          }, ...baseline.slice(1)]);
+        }
+        const stable = baseline.slice(1);
+        return Response.json(stable.slice(start, start + 100));
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    });
+
     expect(requests.filter((request) =>
       request.method === "PUT" && request.url.endsWith(`/alerts/${canaryId}/resolve`)
     )).toHaveLength(1);

@@ -510,9 +510,9 @@ primary canary also proves the exact persisted `alert-resolved` receiver event.
 The independent cleanup-only finalizer uses the producer attempt for
 accepted-current proof and the running attempt as a sweep ceiling. It accepts
 GitHub's 1 through 51 attempt range, bounds work per attempt, uses
-continuity-checked overlapping pages for mutable open-alert inventory, performs
-delayed consecutive terminal discoveries that each complete empty before
-success, and
+continuity-checked overlapping pages with a closing initial-page read for
+mutable open-alert inventory, performs delayed consecutive terminal discoveries
+that each complete empty before success, and
 verifies every retained id as RESOLVED. A cleaned handoff still performs this
 management sweep to resolve a delayed Event API duplicate. If the producer
 output is unavailable, the finalizer uses its running attempt to reconstruct
@@ -522,6 +522,10 @@ command supports `--dry-run`,
 `--canary`, and `--finalize-canary`; unflagged live reconciliation is rejected
 because it has no recoverable run identity. The canary does not open the
 authenticated operator SSE stream.
+
+iLert supplies offset pagination rather than a snapshot, cursor, or exact-key
+filter. The bounded continuity checks provide evidence for a complete scan and
+fail closed on observed churn; they do not claim atomic absence proof.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
