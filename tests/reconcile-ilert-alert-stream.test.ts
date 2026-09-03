@@ -959,6 +959,51 @@ describe("iLert webhook-action reconciliation", () => {
     expect(requests.filter((request) => request.method === "POST")).toHaveLength(1);
   });
 
+  test("releases a failed creation body before ambiguity recovery", async () => {
+    const lifecycle: string[] = [];
+    let creationBodyPending = false;
+    let creationBodyCancellations = 0;
+    let creationAttempted = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        if (creationBodyPending) {
+          throw new Error("recovery started before creation body cancellation");
+        }
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "GET") {
+          if (creationAttempted) lifecycle.push("recovery-inventory");
+          return Response.json([]);
+        }
+        if (url.pathname === "/api/alert-actions" && request.method === "POST") {
+          creationAttempted = true;
+          creationBodyPending = true;
+          lifecycle.push("creation-response");
+          return new Response(new ReadableStream({
+            cancel() {
+              creationBodyCancellations += 1;
+              creationBodyPending = false;
+              lifecycle.push("creation-cancelled");
+            },
+          }), { status: 403 });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).rejects.toThrow("iLert alert-action creation was ambiguous");
+    expect(creationBodyPending).toBe(false);
+    expect(creationBodyCancellations).toBe(1);
+    expect(lifecycle.slice(0, 3)).toEqual([
+      "creation-response",
+      "creation-cancelled",
+      "recovery-inventory",
+    ]);
+  });
+
   test("fails closed after creation when the global inventory finds a concurrent reserved candidate", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
     const oldCredential = "older-webhook-credential-that-must-not-leak";

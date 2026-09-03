@@ -1965,6 +1965,7 @@ async function managementOnce(
       signal: AbortSignal.timeout(timeout),
     });
     if (!response.ok) {
+      await releaseResponseBody(response);
       throw new Error(`iLert alert-action creation request is ambiguous after HTTP ${response.status}`);
     }
     return requireObject(
