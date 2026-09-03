@@ -4,9 +4,10 @@ import { readBoundedWebhookBody } from "@/lib/crypto/webhook";
 import { getDb } from "@/lib/db";
 import {
   configuredIlertWebhookSecret,
-  hasIlertAlertEvent,
+  hasIlertCanaryAlertEvent,
   ILERT_WEBHOOK_MAX_BODY_BYTES,
   isApplicationJson,
+  isIlertCanaryAlertKey,
   parseIlertWebhookBody,
   recordIlertAlertEvent,
   verifyIlertWebhookAuthorization,
@@ -16,7 +17,6 @@ import { reportOperationalFailure } from "@/lib/server-observability";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const canaryAlertId = /^[1-9][0-9]{0,63}$/u;
 const canarySourceId = /^[1-9][0-9]{0,18}$/u;
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -30,13 +30,13 @@ export async function GET(request: Request): Promise<NextResponse> {
       headers: { "cache-control": "no-store" },
     });
   }
-  const alertId = query.get("alertId");
+  const alertKey = query.get("alertKey");
   const eventType = query.get("eventType");
   const sourceId = query.get("sourceId");
   if (
     query.size !== 3 ||
-    !alertId ||
-    !canaryAlertId.test(alertId) ||
+    !alertKey ||
+    !isIlertCanaryAlertKey(alertKey) ||
     (eventType !== "alert-created" && eventType !== "alert-resolved") ||
     !sourceId ||
     !canarySourceId.test(sourceId)
@@ -48,9 +48,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const received = await hasIlertAlertEvent(
+    const received = await hasIlertCanaryAlertEvent(
       getDb(),
-      alertId,
+      alertKey,
       eventType,
       BigInt(sourceId),
     );

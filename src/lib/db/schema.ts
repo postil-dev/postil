@@ -1651,6 +1651,7 @@ export const ilertAlertEvents = pgTable(
       .generatedAlwaysAsIdentity(),
     eventId: uuid("event_id").notNull(),
     alertId: text("alert_id").notNull(),
+    alertKey: text("alert_key"),
     eventType: text("event_type").notNull(),
     status: text("status").notNull(),
     priority: text("priority").notNull(),
@@ -1671,6 +1672,10 @@ export const ilertAlertEvents = pgTable(
     check(
       "ilert_alert_events_alert_id_check",
       sql`${t.alertId} ~ '^[1-9][0-9]{0,63}$'`,
+    ),
+    check(
+      "ilert_alert_events_alert_key_check",
+      sql`${t.alertKey} IS NULL OR length(${t.alertKey}) BETWEEN 1 AND 512`,
     ),
     check(
       "ilert_alert_events_event_type_check",

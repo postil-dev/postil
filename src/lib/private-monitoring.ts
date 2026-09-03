@@ -1425,8 +1425,8 @@ async function probeOk(
       result.response.ok,
       `${url.toString()} returned HTTP ${result.response.status}${retryExhaustionSuffix(result)}.`,
     );
-  } catch {
-    return availabilityCheck(key, summary, false, requestFailure(url));
+  } catch (error) {
+    return availabilityCheck(key, summary, false, requestFailure(url, error));
   }
 }
 
@@ -1453,8 +1453,8 @@ async function probeDependencies(
       healthy,
       `${url.toString()} returned HTTP ${response.status} with ${healthy ? "healthy" : "invalid"} readiness data${retryExhaustionSuffix(result)}.`,
     );
-  } catch {
-    return availabilityCheck("public-dependencies", "Web dependencies are ready", false, requestFailure(url));
+  } catch (error) {
+    return availabilityCheck("public-dependencies", "Web dependencies are ready", false, requestFailure(url, error));
   }
 }
 
@@ -1480,8 +1480,8 @@ async function probeRobots(
       healthy,
       `${url.toString()} returned HTTP ${response.status} with ${healthy ? "expected" : "unexpected"} directives${retryExhaustionSuffix(result)}.`,
     );
-  } catch {
-    return availabilityCheck("public-robots", "Robots policy exposes public pages", false, requestFailure(url));
+  } catch (error) {
+    return availabilityCheck("public-robots", "Robots policy exposes public pages", false, requestFailure(url, error));
   }
 }
 
@@ -1505,8 +1505,8 @@ async function probeRedirect(
       healthy,
       `${url.toString()} returned HTTP ${response.status} to ${actual}; expected ${expected.toString()}${retryExhaustionSuffix(result)}.`,
     );
-  } catch {
-    return availabilityCheck(key, summary, false, requestFailure(url));
+  } catch (error) {
+    return availabilityCheck(key, summary, false, requestFailure(url, error));
   }
 }
 
@@ -1528,8 +1528,8 @@ async function probeNoIndex(
       healthy,
       `${url.toString()} returned HTTP ${response.status} with X-Robots-Tag ${value}${retryExhaustionSuffix(result)}.`,
     );
-  } catch {
-    return availabilityCheck(key, summary, false, requestFailure(url));
+  } catch (error) {
+    return availabilityCheck(key, summary, false, requestFailure(url, error));
   }
 }
 
@@ -1576,8 +1576,13 @@ function retryExhaustionSuffix(result: MonitoredFetchResult): string {
   return result.retriesExhausted ? " after retries were exhausted" : "";
 }
 
-function requestFailure(url: URL): string {
-  return boundedDetail(`${url.toString()} request failed after retries were exhausted.`);
+function requestFailure(url: URL, error: unknown): string {
+  const transport = error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : String(error);
+  return boundedDetail(redactSecrets(
+    `${url.toString()} request failed after three attempts were exhausted: ${transport}`,
+  ));
 }
 
 function validateCheckSet(checks: readonly PrivateMonitoringCheck[]): void {

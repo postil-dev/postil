@@ -296,15 +296,16 @@ describe("private monitoring public probes", () => {
     expect(loginAttempts).toBe(1);
   });
 
-  test("reports bounded exhaustion without transport internals", async () => {
+  test("reports redacted final transport details after three exhausted attempts", async () => {
     let faviconAttempts = 0;
     const delays: number[] = [];
+    const rawCredential = `sk-or-v1-${"sensitivevalue".repeat(2)}`;
     const checks = await runPublicMonitoringChecks(
       "https://example.test",
       async (input) => {
         if (new URL(String(input)).pathname === "/favicon.ico") {
           faviconAttempts += 1;
-          throw new Error("private socket internals");
+          throw new TypeError(`socket closed while using ${rawCredential}`);
         }
         return healthyPublicProbeResponse(input);
       },
@@ -313,11 +314,11 @@ describe("private monitoring public probes", () => {
 
     expect(checks.find((check) => check.key === "public-favicon")).toMatchObject({
       healthy: false,
-      detail: "https://example.test/favicon.ico request failed after retries were exhausted.",
+      detail: "https://example.test/favicon.ico request failed after three attempts were exhausted: TypeError: socket closed while using [redacted api key]",
     });
     expect(faviconAttempts).toBe(3);
     expect(delays).toEqual([100, 250]);
-    expect(JSON.stringify(checks)).not.toContain("private socket internals");
+    expect(JSON.stringify(checks)).not.toContain(rawCredential);
   });
 
   test("does not surface correlated route incidents from one failed attempt each", async () => {
@@ -370,7 +371,7 @@ describe("private monitoring public probes", () => {
     const failed = checks.find((check) => check.key === "public-dependencies");
     expect(failed).toMatchObject({ healthy: false, severity: "critical" });
     expect(failed?.detail).toBe(
-      "https://example.test/api/health/dependencies request failed after retries were exhausted.",
+      "https://example.test/api/health/dependencies request failed after three attempts were exhausted: Error: simulated dependency failure",
     );
     expect(dependencyAttempts).toBe(3);
     expect(failed?.detail.length).toBeLessThanOrEqual(1_000);

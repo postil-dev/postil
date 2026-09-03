@@ -749,7 +749,6 @@ async function resolveAndStabilize(
         observed.status === "RESOLVED" &&
         await receiverEventReceived(
           cleanupOptions,
-          target.alertId,
           "alert-resolved",
         )
       ) {
@@ -784,7 +783,7 @@ async function waitForCreatedDelivery(
     if (
       (observed?.status === "PENDING" || observed?.status === "ACCEPTED") &&
       observed.priority === "HIGH" &&
-      await receiverEventReceived(options, observed.alertId, "alert-created")
+      await receiverEventReceived(options, "alert-created")
     ) {
       return observed;
     }
@@ -1392,11 +1391,10 @@ function rollingCanaryInventoryWindow(untilMs: number): ReportTimeWindow {
 
 async function receiverEventReceived(
   options: WaitOptions,
-  alertId: string,
   eventType: CanaryEventType,
 ): Promise<boolean> {
   const query = new URLSearchParams({
-    alertId,
+    alertKey: options.key,
     eventType,
     sourceId: String(options.sourceId),
   });

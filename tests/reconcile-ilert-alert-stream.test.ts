@@ -2945,7 +2945,7 @@ function canaryService(options: {
         return new Response(null, { status: 503 });
       }
       const query = new URL(request.url).searchParams;
-      const alert = alerts.find((item) => String(item.id) === query.get("alertId"));
+      const alert = alerts.find((item) => item.alertKey === query.get("alertKey"));
       const received = query.get("sourceId") === String(options.observedSourceId ?? SOURCE_ID) &&
         (query.get("eventType") === "alert-created"
         ? alert?.createdReceived === true

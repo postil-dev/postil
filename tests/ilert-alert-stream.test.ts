@@ -24,6 +24,7 @@ import {
 
 const describeDb = process.env.POSTIL_TEST_DATABASE_URL ? describe : describe.skip;
 const TEST_WEBHOOK_SECRET = "test-ilert-webhook-password-32-bytes";
+const TEST_CANARY_KEY = "postil-ilert-webhook-canary-123456789-2";
 const OPERATOR_GITHUB_ID = 991_001;
 const CUSTOMER_ADMIN_GITHUB_ID = 991_002;
 const OPERATOR_TOKEN = `pcli_${"a".repeat(43)}`;
@@ -156,7 +157,37 @@ describeDb("iLert durable operator alert stream", () => {
       sequence,
       eventId: "7b21f505-bd0f-49a2-bf8f-f238919b23fc",
       alertId: "12797430",
+      alertKey: null,
     });
+  });
+
+  test("observes only exact persisted canary lifecycle events", async () => {
+    const created = await postWebhook(eventFixture({
+      alertKey: TEST_CANARY_KEY,
+      eventId: "f57d2564-908d-40d1-89cc-bc60a0e816ec",
+    }));
+    expect(created.status).toBe(202);
+
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    const observe = (eventType: "alert-created" | "alert-resolved") => GET(
+      new Request(
+        `https://postil.dev/api/webhooks/ilert?alertKey=${TEST_CANARY_KEY}&eventType=${eventType}&sourceId=2269078`,
+        { headers: { authorization: basicAuthorization() } },
+      ),
+    );
+    expect(await (await observe("alert-created")).json()).toEqual({ received: true });
+    expect(await (await observe("alert-resolved")).json()).toEqual({ received: false });
+
+    const resolved = await postWebhook(eventFixture({
+      alertKey: TEST_CANARY_KEY,
+      eventId: "18da024f-9d34-4a3c-8fd7-a5919b99c074",
+      eventType: "alert-resolved",
+      status: "RESOLVED",
+    }));
+    expect(resolved.status).toBe(202);
+    const resolution = await observe("alert-resolved");
+    expect(resolution.headers.get("cache-control")).toBe("no-store");
+    expect(await resolution.json()).toEqual({ received: true });
   });
 
   test("requires both a renewable CLI token and the operator GitHub allowlist", async () => {
@@ -265,6 +296,7 @@ describeDb("iLert durable operator alert stream", () => {
     );
     const names = columns.rows.map((row) => row.column_name);
     expect(names).toContain("payload_sha256");
+    expect(names).toContain("alert_key");
     expect(names).not.toContain("payload");
     expect(names).not.toContain("raw_payload");
     expect(names).not.toContain("authorization");

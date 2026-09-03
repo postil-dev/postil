@@ -414,6 +414,13 @@
       "when": 1787873286640,
       "tag": "0059_publication_lifecycle_nonblocking_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1788454502113,
+      "tag": "0060_ilert_canary_alert_key",
+      "breakpoints": true
     }
   ]
 }
