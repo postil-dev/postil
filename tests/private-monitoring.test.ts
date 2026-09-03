@@ -284,6 +284,83 @@ describe("private monitoring public probes", () => {
     expect(lifecycle).toEqual(["attempt-1", "cancelled", "attempt-2"]);
   });
 
+  test("releases a successful terminal response body after inspection", async () => {
+    let cancellations = 0;
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/sitemap.xml") {
+          return new Response(new ReadableStream({
+            cancel() {
+              cancellations += 1;
+            },
+          }), { status: 200 });
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
+    expect(cancellations).toBe(1);
+  });
+
+  test("consumes parsed terminal response bodies without cancelling them", async () => {
+    let cancellations = 0;
+    let dependencyResponse: Response | undefined;
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/api/health/dependencies") {
+          dependencyResponse = new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"ok":true,"database":"up"}'));
+              controller.close();
+            },
+            cancel() {
+              cancellations += 1;
+            },
+          }), { status: 200 });
+          return dependencyResponse;
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "public-dependencies")?.healthy).toBe(true);
+    expect(dependencyResponse?.bodyUsed).toBe(true);
+    expect(cancellations).toBe(0);
+  });
+
+  test("releases every response body when transient HTTP retries are exhausted", async () => {
+    let faviconAttempts = 0;
+    const cancellations: number[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        if (new URL(String(input)).pathname === "/favicon.ico") {
+          faviconAttempts += 1;
+          const attempt = faviconAttempts;
+          return new Response(new ReadableStream({
+            cancel() {
+              cancellations.push(attempt);
+            },
+          }), { status: 503 });
+        }
+        return healthyPublicProbeResponse(input);
+      },
+      { sleep: async () => undefined },
+    );
+
+    expect(checks.find((check) => check.key === "public-favicon")).toMatchObject({
+      healthy: false,
+      detail: "https://example.test/favicon.ico returned HTTP 503 after retries were exhausted.",
+    });
+    expect(faviconAttempts).toBe(3);
+    expect(cancellations).toEqual([1, 2, 3]);
+  });
+
   test("honors bounded Retry-After delays for rate-limited probes", async () => {
     let attempt = 0;
     const delays: number[] = [];

@@ -1564,6 +1564,7 @@ async function monitoredFetch(
       const retryable = TRANSIENT_PUBLIC_PROBE_STATUSES.has(response.status);
       if (!retryable || attempt === PUBLIC_PROBE_RETRY_DELAYS_MS.length) {
         const body = readBody ? await response.text() : null;
+        if (!readBody) await response.body?.cancel().catch(() => undefined);
         return { response, body, retriesExhausted: retryable };
       }
       if (response.status === 429) {
