@@ -477,9 +477,11 @@ allowlist. Transport keepalives do not query alert state. The receiver and
 stream make no outbound iLert API calls and cannot acknowledge, accept, or
 resolve an alert.
 
-The production-monitor workflow reconciles the iLert Webhook action with the
-`ILERT_API_KEY` management bearer credential and sends monitor and canary
-events with the `ILERT_INTEGRATION_KEY` Event API credential. Its
+The production-monitor workflow loads the workflow-only `ILERT_API_KEY`
+management bearer credential through its dedicated least-privilege Infisical
+OIDC identity and sends monitor and canary events with the
+`ILERT_INTEGRATION_KEY` Event API credential. The management credential is not
+part of the application environment. Its
 `POSTIL_ILERT_ALERT_SOURCE_ID` GitHub Actions variable selects the alert source
 whose action is reconciled. `POSTIL_ILERT_WEBHOOK_SECRET` supplies the receiver
 password embedded as URL-encoded HTTP Basic credentials in that action, and
@@ -497,8 +499,10 @@ use attempt-specific keys derived from the workflow run id and producer run
 attempt, distinct from production monitor keys. Earlier main keys are swept
 through the current attempt and every discovered open alert is resolved with
 `PUT /api/alerts/{id}/resolve` then polled by that exact id until management
-reports RESOLVED. A blind same-key Event API RESOLVE is limited to an
-undiscovered current key. The main alert is discovered within the configured
+reports RESOLVED. Open inventory requests PENDING and ACCEPTED states at the
+server, while accepted-current proof uses a separate bounded all-state lookup.
+A blind same-key Event API RESOLVE is limited to an undiscovered current key.
+The main alert is discovered within the configured
 source using a report-time window whose upper bound follows successful Event API
 acceptance. It must remain PENDING or ACCEPTED at HIGH priority and have an
 exact persisted `alert-created` receiver event. A `cleaned` handoff means the
@@ -506,8 +510,11 @@ primary canary also proves the exact persisted `alert-resolved` receiver event.
 For a `true` or `unknown` handoff, the independent cleanup-only finalizer uses
 the producer attempt for accepted-current proof and the running attempt as a
 sweep ceiling. It accepts GitHub's 1 through 50 attempt range, bounds work per
-attempt, performs terminal discovery, and verifies every retained id as
-RESOLVED. It never reads receiver configuration or reconciles the action. The
+attempt, performs delayed consecutive terminal discoveries that each complete
+empty before success, and verifies every retained id as RESOLVED. If the
+producer output is unavailable, the finalizer uses its running attempt to
+reconstruct the deterministic identity. It never reads receiver configuration
+or reconciles the action. The
 command supports `--dry-run`,
 `--canary`, and `--finalize-canary`; unflagged live reconciliation is rejected
 because it has no recoverable run identity. The canary does not open the

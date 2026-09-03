@@ -568,7 +568,7 @@ jobs:
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
-          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          identity-id: ${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}
           project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
           env-slug: prod
           domain: https://eu.infisical.com
@@ -635,7 +635,7 @@ jobs:
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
-          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
+          identity-id: ${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}
           project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
           env-slug: prod
           domain: https://eu.infisical.com
@@ -656,7 +656,7 @@ jobs:
         env:
           POSTIL_ILERT_ALERT_SOURCE_ID: ${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}
           POSTIL_ILERT_CANARY_ALERT_SUBMITTED: ${{ needs.alert-stream.outputs.alert-submitted }}
-          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ needs.alert-stream.outputs.producer-attempt }}
+          POSTIL_ILERT_CANARY_RUN_ATTEMPT: ${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}
           POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: ${{ github.run_attempt }}
           POSTIL_ILERT_CANARY_RUN_ID: ${{ github.run_id }}
           POSTIL_ILERT_CANARY_STARTED_AT: ${{ needs.alert-stream.outputs.started-at }}
@@ -761,8 +761,6 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load iLert integration secret from Infisical
-        id: load-alerting-secret
-        continue-on-error: true
         uses: Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db # v1.0.17
         with:
           method: oidc
@@ -772,12 +770,10 @@ jobs:
           domain: https://eu.infisical.com
           secret-path: /postil
           secret-name: ILERT_INTEGRATION_KEY
-      - name: Warn when routine alert resolution is unavailable
-        if: ${{ steps.load-alerting-secret.outcome == 'failure' }}
-        run: echo "::warning::The optional iLert integration key could not be loaded; the resolve action safely no-ops when the key is absent."
       - name: Resolve ilert alert
         uses: ./.github/actions/ilert-event
         with:
           event-type: RESOLVE
           summary: Postil production monitor recovered
           alert-key: postil-production-monitor
+          require-delivery: true

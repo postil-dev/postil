@@ -779,7 +779,6 @@ async function finalizeDeterministicCanaryKeys(
   let fatalError: unknown;
   let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
   let recentErrors: unknown[] = [];
-  let lastDiscovery: { complete: boolean; open: number } | undefined;
 
   const retainErrors = (errors: readonly unknown[]) => {
     if (errors.length > 0) recentErrors = [...recentErrors, ...errors].slice(-20);
@@ -858,7 +857,7 @@ async function finalizeDeterministicCanaryKeys(
   };
 
   while (remaining(discoveryDeadline) > 0) {
-    lastDiscovery = await discover(discoveryDeadline);
+    await discover(discoveryDeadline);
     const resolved = await resolveKnownAlerts(options, targets);
     retainErrors(resolved.errors);
     const observed = await observeKnownAlerts(options, targets);
@@ -875,27 +874,31 @@ async function finalizeDeterministicCanaryKeys(
     if (delay > 0) await options.sleep(delay);
   }
 
-  const terminalDeadline: Deadline = {
-    expiresAt: Math.min(
-      options.deadline.expiresAt - CANARY_CLEANUP_RESERVE_MS,
-      options.deadline.now() + CANARY_FINALIZER_TERMINAL_INVENTORY_MS,
-    ),
-    now: options.deadline.now,
-  };
-  const terminalDiscovery = remaining(terminalDeadline) > 0
-    ? await discover(terminalDeadline, CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES)
-    : { complete: false, open: 0 };
-  lastDiscovery = terminalDiscovery;
-  const inventoryIncomplete = !terminalDiscovery.complete;
-  let stableEmptyScans = lastDiscovery?.complete ? 1 : 0;
+  let inventoryIncomplete = false;
+  let stableEmptyScans = 0;
 
-  while (remaining(options.deadline) > 0) {
+  while (remaining(options.deadline) > CANARY_CLEANUP_RESERVE_MS) {
+    const terminalDeadline: Deadline = {
+      expiresAt: Math.min(
+        options.deadline.expiresAt - CANARY_CLEANUP_RESERVE_MS,
+        options.deadline.now() + CANARY_FINALIZER_TERMINAL_INVENTORY_MS,
+      ),
+      now: options.deadline.now,
+    };
+    if (remaining(terminalDeadline) <= 0) break;
+    const terminalDiscovery = await discover(
+      terminalDeadline,
+      CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES,
+    );
+    if (!terminalDiscovery.complete) inventoryIncomplete = true;
+    stableEmptyScans = terminalDiscovery.complete && terminalDiscovery.open === 0
+      ? stableEmptyScans + 1
+      : 0;
     const resolved = await resolveKnownAlerts(options, targets);
     retainErrors(resolved.errors);
     const observed = await observeKnownAlerts(options, targets);
     retainErrors(observed.errors);
     retainInvalidValidation(observed.errors);
-    if (lastDiscovery?.complete) stableEmptyScans += 1;
     if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
       currentAccountedFor = true;
     }
@@ -908,6 +911,22 @@ async function finalizeDeterministicCanaryKeys(
       stableEmptyScans >= FINALIZER_STABLE_EMPTY_SCANS
     ) {
       return;
+    }
+    const delay = Math.min(
+      CANARY_CLEANUP_RETRY_MS,
+      remaining(options.deadline) - CANARY_CLEANUP_RESERVE_MS,
+    );
+    if (delay > 0) await options.sleep(delay);
+  }
+
+  while (remaining(options.deadline) > 0) {
+    const resolved = await resolveKnownAlerts(options, targets);
+    retainErrors(resolved.errors);
+    const observed = await observeKnownAlerts(options, targets);
+    retainErrors(observed.errors);
+    retainInvalidValidation(observed.errors);
+    if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
+      currentAccountedFor = true;
     }
     const delay = Math.min(CANARY_CLEANUP_RETRY_MS, remaining(options.deadline));
     if (delay > 0) await options.sleep(delay);
@@ -1240,6 +1259,7 @@ async function findAlertsByKeys(
 ): Promise<Json[]> {
   const matches: Json[] = [];
   const keys = new Set(options.keys);
+  let validationError: InvalidCanaryAlertValidationError | undefined;
   for (let start = 0, page = 0; ; start += 100, page += 1) {
     if (options.maxPages !== undefined && page >= options.maxPages) {
       throw new Error("iLert terminal canary inventory exceeded its pagination limit");
@@ -1252,6 +1272,7 @@ async function findAlertsByKeys(
     if (options.sourceId) query.append("sources", String(options.sourceId));
     if (options.from) query.append("from", options.from);
     if (options.until) query.append("until", options.until);
+    for (const state of options.states ?? []) query.append("states", state);
     const alerts = await management(
       options.fetchFn,
       options.apiKey,
@@ -1275,10 +1296,17 @@ async function findAlertsByKeys(
       } catch (error) {
         const target = invalidCanaryAlertTarget(error);
         if (target) options.onTarget?.(target);
+        if (error instanceof InvalidCanaryAlertValidationError) {
+          validationError ??= error;
+          continue;
+        }
         throw error;
       }
     }
-    if (alerts.length < 100) return matches;
+    if (alerts.length < 100) {
+      if (validationError) throw validationError;
+      return matches;
+    }
   }
 }
 

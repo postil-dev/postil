@@ -302,12 +302,17 @@ describe("production monitor workflow", () => {
       POSTIL_ILERT_CANARY_ALERT_SUBMITTED:
         "${{ needs.alert-stream.outputs.alert-submitted }}",
       POSTIL_ILERT_CANARY_RUN_ATTEMPT:
-        "${{ needs.alert-stream.outputs.producer-attempt }}",
+        "${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}",
       POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
       POSTIL_ILERT_CANARY_STARTED_AT:
         "${{ needs.alert-stream.outputs.started-at }}",
     });
+    const finalizerAttempt = finalizer?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
+    )?.env?.POSTIL_ILERT_CANARY_RUN_ATTEMPT;
+    expect(resolveFinalizerAttempt(finalizerAttempt, "1", "2")).toBe("1");
+    expect(resolveFinalizerAttempt(finalizerAttempt, "", "2")).toBe("2");
     for (const job of [alertStream, finalizer]) {
       expect(job?.steps?.find((step) => step.uses?.startsWith("actions/checkout@"))?.with)
         .toMatchObject({ ref: "${{ github.sha }}" });
@@ -325,6 +330,13 @@ describe("production monitor workflow", () => {
     };
     expectScopedSecretLoads(alertStream, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY", "POSTIL_ILERT_WEBHOOK_SECRET"]);
     expectScopedSecretLoads(finalizer, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY"]);
+    for (const job of [alertStream, finalizer]) {
+      const managementLoad = job?.steps?.find((step) =>
+        step.with?.["secret-name"] === "ILERT_API_KEY"
+      );
+      expect(managementLoad?.with?.["identity-id"])
+        .toBe("${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}");
+    }
     expect(finalizer?.steps?.filter((step) => step.with?.["secret-name"])
       .every((step) => step.if?.includes("alert-submitted != 'cleaned'"))).toBe(true);
     expect(workflow.jobs.notify?.if).not.toContain("reconcile_alert_stream");
@@ -401,20 +413,27 @@ describe("production monitor workflow", () => {
     expect(resolve.if).toContain("inputs.reconcile_alert_stream != true");
     expect(resolve.steps.some((step) => step.name === "Check whether the previous run failed")).toBe(false);
     expect(resolve.steps.find((step) => step.name === "Load iLert integration secret from Infisical")).toMatchObject({
-      "continue-on-error": true,
-      id: "load-alerting-secret",
       uses: "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db",
       with: {
         "secret-name": "ILERT_INTEGRATION_KEY",
         "secret-path": "/postil",
       },
     });
-    expect(resolve.steps.find(
-      (step) => step.name === "Warn when routine alert resolution is unavailable",
-    )?.if).toContain("steps.load-alerting-secret.outcome == 'failure'");
+    expect(resolve.steps.find((step) => step.name === "Load iLert integration secret from Infisical"))
+      .not.toHaveProperty("continue-on-error");
     expect(resolve.steps.find((step) => step.name === "Resolve ilert alert")).toMatchObject({
       uses: "./.github/actions/ilert-event",
+      with: { "require-delivery": true },
     });
+  });
+
+  test("keeps the iLert management credential outside application environment files", async () => {
+    const [compose, environmentExample] = await Promise.all([
+      readFile(new URL("../docker-compose.yml", import.meta.url), "utf8"),
+      readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    ]);
+    expect(environmentExample).not.toContain("ILERT_API_KEY=");
+    expect(compose).not.toContain("ILERT_API_KEY");
   });
 
   test("routine iLert resolve safely no-ops when its optional key is absent", async () => {
@@ -442,6 +461,33 @@ describe("production monitor workflow", () => {
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("nothing to resolve");
+  });
+
+  test("production recovery fails when the iLert integration key is unavailable", async () => {
+    const source = await readFile(
+      new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+      "utf8",
+    );
+    const action = parse(source) as {
+      runs: { steps: Array<{ name?: string; run?: string }> };
+    };
+    const run = action.runs.steps.find((step) => step.name === "Send event")?.run;
+    expect(run).toBeDefined();
+    const result = spawnSync("bash", ["-c", run!], {
+      encoding: "utf8",
+      env: {
+        ALERT_KEY: "test-alert",
+        DETAILS: "",
+        EVENT_TYPE: "RESOLVE",
+        NODE_ENV: "test",
+        PATH: process.env.PATH,
+        PRIORITY: "HIGH",
+        REQUIRE_DELIVERY: "true",
+        SUMMARY: "test resolve",
+      } as NodeJS.ProcessEnv,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("ILERT_INTEGRATION_KEY is unset");
   });
 
   test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {
@@ -649,4 +695,15 @@ function finalizerRunsAfterAlertStream(condition: string | undefined, result: st
       condition.includes("inputs.reconcile_alert_stream == true") &&
       (result !== "skipped" || !condition.includes("needs.alert-stream.result != 'skipped'")),
   );
+}
+
+function resolveFinalizerAttempt(
+  expression: string | undefined,
+  producerAttempt: string,
+  workflowAttempt: string,
+): string {
+  if (expression !== "${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}") {
+    throw new Error("finalizer attempt handoff is not recoverable");
+  }
+  return producerAttempt || workflowAttempt;
 }

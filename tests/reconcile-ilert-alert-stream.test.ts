@@ -888,7 +888,7 @@ describe("iLert webhook canary", () => {
     expect(service.requests.some((request) => request.url.endsWith("/alerts/199"))).toBe(true);
   });
 
-  test("scans at the discovery cutoff and resolves an alert that appears at 355 seconds", async () => {
+  test("uses separate terminal scans to resolve an earlier-attempt alert that appears at 361 seconds", async () => {
     let currentTime = 0;
     let resolved = false;
     const inventoryTimes: number[] = [];
@@ -901,8 +901,8 @@ describe("iLert webhook canary", () => {
       if (url.pathname === "/api/events") return new Response(null, { status: 202 });
       if (url.pathname === "/api/alerts") {
         inventoryTimes.push(currentTime);
-        return Response.json(currentTime >= 355_000 ? [{
-          alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+        return Response.json(currentTime >= 361_000 ? [{
+          alertKey: canaryAlertKey(RUN_ID, "1"),
           alertSource: { id: SOURCE_ID },
           id: 199,
           priority: "HIGH",
@@ -933,6 +933,7 @@ describe("iLert webhook canary", () => {
       sleep: async (milliseconds) => { currentTime += milliseconds; },
     });
     expect(inventoryTimes).toContain(360_000);
+    expect(inventoryTimes).toContain(365_000);
     expect(requests.some((request) =>
       request.method === "PUT" && request.url.endsWith("/alerts/199/resolve")
     )).toBe(true);
@@ -967,7 +968,25 @@ describe("iLert webhook canary", () => {
     expect(service.statuses).toEqual(["RESOLVED"]);
   });
 
-  test("does not enumerate 1,100 resolved alerts while checking deterministic open keys", async () => {
+  test("finalizer sweeps earlier attempts from a running-attempt fallback identity", async () => {
+    const service = canaryService({ existing: true, status: "PENDING" });
+    await runCli({
+      args: ["--finalize-canary"],
+      env: cliEnvironment({
+        POSTIL_ILERT_CANARY_ALERT_SUBMITTED: "unknown",
+        POSTIL_ILERT_CANARY_RUN_ATTEMPT: "2",
+        POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "2",
+      }),
+      fetchFn: service.fetchFn,
+      ...finalizerTiming(),
+      log: () => undefined,
+    });
+    expect(service.requests.some((request) =>
+      request.method === "PUT" && request.url.endsWith("/alerts/98/resolve")
+    )).toBe(true);
+  });
+
+  test("uses server-side open-state inventory for a large resolved history", async () => {
     const requests: Request[] = [];
     const historical = Array.from({ length: 1_100 }, (_, index) => ({
       alertKey: `historical-${index}`,
@@ -981,6 +1000,7 @@ describe("iLert webhook canary", () => {
       if (request.url.endsWith("/events")) return new Response(null, { status: 202 });
       if (request.url.includes("/alerts?")) {
         const query = new URL(request.url).searchParams;
+        if (query.getAll("states").length > 0) return Response.json([]);
         const start = Number(query.get("start-index"));
         return Response.json(historical.slice(start, start + 100));
       }
@@ -988,9 +1008,18 @@ describe("iLert webhook canary", () => {
     };
     await finalizeIlertWebhookCanary({ ...finalizerOptions(), fetchFn });
     const alertQueries = requests.filter((request) => request.url.includes("/alerts?"));
-    expect(alertQueries.length).toBeGreaterThan(8);
-    expect(alertQueries.some((request) => new URL(request.url).searchParams.get("start-index") === "1000")).toBe(true);
-    expect(alertQueries.every((request) => !new URL(request.url).searchParams.has("states"))).toBe(true);
+    expect(alertQueries.length).toBeGreaterThan(2);
+    const openInventoryQueries = alertQueries.filter((request) => {
+      const states = new URL(request.url).searchParams.getAll("states");
+      return states.includes("PENDING") && states.includes("ACCEPTED");
+    });
+    expect(openInventoryQueries.length).toBeGreaterThan(2);
+    expect(openInventoryQueries.every((request) =>
+      new URL(request.url).searchParams.get("start-index") === "0"
+    )).toBe(true);
+    expect(openInventoryQueries.every((request) =>
+      new URL(request.url).searchParams.getAll("states").join(",") === "PENDING,ACCEPTED"
+    )).toBe(true);
   });
 
   for (const status of ["UNKNOWN", undefined] as const) {
@@ -1162,7 +1191,54 @@ describe("iLert webhook canary", () => {
     });
   }
 
-  test("fails closed after a discovery-deadline pagination failure while resolving IDs from prior pages", async () => {
+  for (const invalidField of ["status", "priority"] as const) {
+    test(`continues past an invalid attempt-1 ${invalidField} to resolve a later attempt-2 alert`, async () => {
+      let invalidListingReturned = false;
+      const attemptOneKey = canaryAlertKey(RUN_ID, "1");
+      const attemptTwoKey = canaryAlertKey(RUN_ID, "2");
+      const service = canaryService({
+        initialAlerts: [
+          { alertKey: attemptOneKey, id: 98, priority: "HIGH", status: "PENDING" },
+          { alertKey: attemptTwoKey, id: 99, priority: "HIGH", status: "PENDING" },
+        ],
+      });
+      await expect(finalizeIlertWebhookCanary({
+        ...finalizerOptions(),
+        runAttempt: "3",
+        sweepAttempt: "3",
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          if (!invalidListingReturned && request.url.includes("/alerts?")) {
+            invalidListingReturned = true;
+            return Response.json([
+              {
+                alertKey: attemptOneKey,
+                alertSource: { id: SOURCE_ID },
+                id: 98,
+                priority: invalidField === "priority" ? "UNKNOWN" : "HIGH",
+                status: invalidField === "status" ? "UNKNOWN" : "PENDING",
+              },
+              {
+                alertKey: attemptTwoKey,
+                alertSource: { id: SOURCE_ID },
+                id: 99,
+                priority: "HIGH",
+                status: "PENDING",
+              },
+            ]);
+          }
+          return service.fetchFn(input, init);
+        },
+      })).rejects.toThrow(`invalid ${invalidField}`);
+      for (const id of ["98", "99"]) {
+        expect(service.requests.some((request) =>
+          request.method === "PUT" && request.url.endsWith(`/alerts/${id}/resolve`)
+        )).toBe(true);
+      }
+    });
+  }
+
+  test("fails closed after an incomplete terminal inventory while resolving IDs from prior pages", async () => {
     const requests: Request[] = [];
     let currentTime = 0;
     let resolved = false;
