@@ -514,15 +514,16 @@ export async function finalizeIlertWebhookCanary(
   const fetchFn = options.fetchFn ?? fetch;
   const sleep = options.sleep ?? Bun.sleep;
   const now = options.now ?? Date.now;
+  const startedAt = now();
   const identity = canaryRunIdentity(options.runId, options.runAttempt);
   const sweepAttempt = canaryRunIdentity(options.runId, options.sweepAttempt ?? options.runAttempt)
     .runAttempt;
   const deadline: Deadline = {
-    expiresAt: now() + CANARY_FINALIZER_DEADLINE_MS,
+    expiresAt: startedAt + CANARY_FINALIZER_DEADLINE_MS,
     now,
   };
   const discoveryDeadline: Deadline = {
-    expiresAt: now() + CANARY_FINALIZER_DISCOVERY_DEADLINE_MS,
+    expiresAt: startedAt + CANARY_FINALIZER_DISCOVERY_DEADLINE_MS,
     now,
   };
   const cleanup: CleanupOptions = {
@@ -1028,6 +1029,8 @@ async function finalizeManagedCanaryKeys(
   let invalidValidationError: InvalidCanaryAlertValidationError | undefined;
   let validationContextErrors: unknown[] = [];
   let recentErrors: unknown[] = [];
+  const resolutionAttempts = new Map<string, number>();
+  const observationAttempts = new Map<string, number>();
 
   const retainErrors = (errors: readonly unknown[]) => {
     if (errors.length > 0) recentErrors = [...recentErrors, ...errors].slice(-20);
@@ -1099,7 +1102,7 @@ async function finalizeManagedCanaryKeys(
     ) {
       try {
         await event(
-          options,
+          { ...options, deadline },
           "RESOLVE",
           currentMain.key,
         );
@@ -1114,9 +1117,10 @@ async function finalizeManagedCanaryKeys(
 
   while (remaining(discoveryDeadline) > 0) {
     await discover(discoveryDeadline);
-    const resolved = await resolveKnownAlerts(options, targets);
+    const discoveryOptions = { ...options, deadline: discoveryDeadline };
+    const resolved = await resolveKnownAlerts(discoveryOptions, targets, resolutionAttempts);
     retainErrors(resolved.errors);
-    const observed = await observeKnownAlerts(options, targets);
+    const observed = await observeKnownAlerts(discoveryOptions, targets, observationAttempts);
     retainErrors(observed.errors);
     retainInvalidValidation(observed.errors);
     if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
@@ -1132,14 +1136,18 @@ async function finalizeManagedCanaryKeys(
 
   let inventoryIncomplete = false;
   let stableEmptyScans = 0;
+  const terminalPhaseDeadline: Deadline = {
+    expiresAt: options.deadline.expiresAt - CANARY_FINALIZER_CLEANUP_RESERVE_MS,
+    now: options.deadline.now,
+  };
 
-  while (remaining(options.deadline) > CANARY_FINALIZER_CLEANUP_RESERVE_MS) {
+  while (remaining(terminalPhaseDeadline) > 0) {
     const terminalDeadline: Deadline = {
       expiresAt: Math.min(
-        options.deadline.expiresAt - CANARY_FINALIZER_CLEANUP_RESERVE_MS,
-        options.deadline.now() + CANARY_FINALIZER_TERMINAL_INVENTORY_MS,
+        terminalPhaseDeadline.expiresAt,
+        terminalPhaseDeadline.now() + CANARY_FINALIZER_TERMINAL_INVENTORY_MS,
       ),
-      now: options.deadline.now,
+      now: terminalPhaseDeadline.now,
     };
     if (remaining(terminalDeadline) <= 0) break;
     const terminalDiscovery = await discover(
@@ -1152,9 +1160,10 @@ async function finalizeManagedCanaryKeys(
     stableEmptyScans = terminalDiscovery.complete && terminalDiscovery.open === 0
       ? stableEmptyScans + 1
       : 0;
-    const resolved = await resolveKnownAlerts(options, targets);
+    const terminalOptions = { ...options, deadline: terminalDeadline };
+    const resolved = await resolveKnownAlerts(terminalOptions, targets, resolutionAttempts);
     retainErrors(resolved.errors);
-    const observed = await observeKnownAlerts(options, targets);
+    const observed = await observeKnownAlerts(terminalOptions, targets, observationAttempts);
     retainErrors(observed.errors);
     retainInvalidValidation(observed.errors);
     if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
@@ -1172,15 +1181,15 @@ async function finalizeManagedCanaryKeys(
     }
     const delay = Math.min(
       CANARY_CLEANUP_RETRY_MS,
-      remaining(options.deadline) - CANARY_FINALIZER_CLEANUP_RESERVE_MS,
+      remaining(terminalPhaseDeadline),
     );
     if (delay > 0) await options.sleep(delay);
   }
 
   while (remaining(options.deadline) > 0) {
-    const resolved = await resolveKnownAlerts(options, targets);
+    const resolved = await resolveKnownAlerts(options, targets, resolutionAttempts);
     retainErrors(resolved.errors);
-    const observed = await observeKnownAlerts(options, targets);
+    const observed = await observeKnownAlerts(options, targets, observationAttempts);
     retainErrors(observed.errors);
     retainInvalidValidation(observed.errors);
     if (handoff === "unknown" && currentTargetResolved(currentMain.key, targets, resolved, observed)) {
@@ -1278,15 +1287,21 @@ async function discoverOpenManagedAlerts(
 async function observeKnownAlerts(
   options: ManagementCleanupOptions,
   targets: Map<string, CanaryTarget>,
+  attempts?: Map<string, number>,
 ): Promise<{ allResolved: boolean; errors: unknown[]; resolvedIds: Set<string> }> {
   const errors: unknown[] = [];
   const resolvedIds = new Set<string>();
   let allResolved = true;
-  for (const [alertId, target] of targets) {
+  for (const target of fairlyOrderedTargets(targets, attempts)) {
+    if (remaining(options.deadline) <= 0) {
+      allResolved = false;
+      break;
+    }
+    attempts?.set(target.alertId, (attempts.get(target.alertId) ?? 0) + 1);
     try {
       const observed = await observeAlertById(options, target);
-      targets.set(alertId, observed);
-      if (observed.status === "RESOLVED") resolvedIds.add(alertId);
+      targets.set(target.alertId, observed);
+      if (observed.status === "RESOLVED") resolvedIds.add(target.alertId);
       else allResolved = false;
     } catch (error) {
       errors.push(error);
@@ -1299,14 +1314,17 @@ async function observeKnownAlerts(
 async function resolveKnownAlerts(
   options: ManagementCleanupOptions,
   targets: ReadonlyMap<string, CanaryTarget>,
+  attempts?: Map<string, number>,
 ): Promise<{ errors: unknown[]; resolvedIds: Set<string> }> {
   const errors: unknown[] = [];
   const resolvedIds = new Set<string>();
-  for (const target of targets.values()) {
+  for (const target of fairlyOrderedTargets(targets, attempts)) {
     if (target.status === "RESOLVED") {
       resolvedIds.add(target.alertId);
       continue;
     }
+    if (remaining(options.deadline) <= 0) break;
+    attempts?.set(target.alertId, (attempts.get(target.alertId) ?? 0) + 1);
     try {
       await resolveAlertById(options, target.alertId);
       resolvedIds.add(target.alertId);
@@ -1315,6 +1333,19 @@ async function resolveKnownAlerts(
     }
   }
   return { errors, resolvedIds };
+}
+
+function fairlyOrderedTargets(
+  targets: ReadonlyMap<string, CanaryTarget>,
+  attempts?: ReadonlyMap<string, number>,
+): CanaryTarget[] {
+  const retained = [...targets.values()];
+  if (!attempts) return retained;
+  // Give later retained IDs a first attempt before retrying earlier failures.
+  return retained
+    .map((target, index) => ({ attempts: attempts.get(target.alertId) ?? 0, index, target }))
+    .sort((left, right) => left.attempts - right.attempts || right.index - left.index)
+    .map(({ target }) => target);
 }
 
 function currentTargetResolved(

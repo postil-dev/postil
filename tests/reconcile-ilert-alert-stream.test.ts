@@ -1931,6 +1931,74 @@ describe("iLert webhook canary", () => {
     expect(service.requests.some((request) => request.url.endsWith("/alerts/199"))).toBe(true);
   });
 
+  test("partitions finalizer deadlines and does not starve a later retained ID", async () => {
+    let currentTime = 0;
+    let healthyResolved = false;
+    const requestTimes: Array<{ request: Request; time: number }> = [];
+    const alerts = Array.from({ length: 10 }, (_, index) => ({
+      alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+      alertSource: { id: SOURCE_ID },
+      id: index + 1,
+      priority: "HIGH",
+      status: "PENDING",
+    }));
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      requestTimes.push({ request: request.clone(), time: currentTime });
+      if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+      if (url.pathname === "/api/alerts/count") return Response.json({ count: alerts.length });
+      if (url.pathname === "/api/alerts") {
+        return Response.json(alerts.map((alert) => ({
+          ...alert,
+          status: alert.id === 10 && healthyResolved ? "RESOLVED" : "PENDING",
+        })));
+      }
+      const resolveId = /\/alerts\/([1-9][0-9]*)\/resolve$/u.exec(url.pathname)?.[1];
+      if (request.method === "PUT" && resolveId) {
+        if (resolveId === "10") {
+          healthyResolved = true;
+          return new Response(null, { status: 200 });
+        }
+        currentTime += 5_000;
+        return new Response(null, { status: 503, headers: { "retry-after": "10" } });
+      }
+      const detailId = /\/alerts\/([1-9][0-9]*)$/u.exec(url.pathname)?.[1];
+      if (detailId) {
+        const alert = alerts[Number(detailId) - 1]!;
+        return Response.json({
+          ...alert,
+          status: alert.id === 10 && healthyResolved ? "RESOLVED" : "PENDING",
+        });
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    await expect(finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      alertSubmitted: "cleaned",
+      fetchFn,
+      now: () => currentTime,
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+    })).rejects.toThrow("did not verify every discovered alert as RESOLVED");
+
+    const terminalInventoryTimes = requestTimes.filter(({ request }) => {
+      const url = new URL(request.url);
+      return url.pathname === "/api/alerts" && url.searchParams.getAll("states").includes("RESOLVED");
+    }).map(({ time }) => time);
+    const resolutionTimes = requestTimes.filter(({ request }) =>
+      request.method === "PUT" && request.url.includes("/alerts/")
+    ).map(({ time }) => time);
+    expect(healthyResolved).toBe(true);
+    expect(terminalInventoryTimes).toContain(CANARY_FINALIZER_BUDGETS.discoveryMs);
+    expect(resolutionTimes.some((time) =>
+      time >= CANARY_FINALIZER_BUDGETS.discoveryMs +
+        CANARY_FINALIZER_BUDGETS.terminalValidationMs
+    )).toBe(true);
+    expect(currentTime).toBe(CANARY_FINALIZER_BUDGETS.operationMs);
+    expect(requestTimes.every(({ time }) => time < CANARY_FINALIZER_BUDGETS.operationMs)).toBe(true);
+  });
+
   test("uses the 32-day inventory window throughout bounded delayed discovery", async () => {
     const runStartedAt = 30 * 24 * 60 * 60 * 1_000 + 10 * 60 * 1_000;
     let currentTime = runStartedAt;
