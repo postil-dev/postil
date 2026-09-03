@@ -516,20 +516,40 @@ describe("iLert webhook canary", () => {
     expect(canaryAlertKey(RUN_ID, "2")).toBe(
       "postil-ilert-webhook-canary-12345-2",
     );
-    expect(canaryAlertKey(RUN_ID, "50")).toBe(
-      "postil-ilert-webhook-canary-12345-50",
+    expect(canaryAlertKey(RUN_ID, "51")).toBe(
+      "postil-ilert-webhook-canary-12345-51",
     );
   });
 
-  test("accepts attempt 50 as a finalizer sweep ceiling", async () => {
-    const service = canaryService();
+  test("accepts attempt 51 as a finalizer sweep ceiling", async () => {
+    const service = canaryService({
+      initialAlerts: [
+        {
+          alertKey: canaryAlertKey(RUN_ID, "50"),
+          id: 98,
+          status: "PENDING",
+        },
+      ],
+    });
     await finalizeIlertWebhookCanary({
       ...finalizerOptions(),
       fetchFn: service.fetchFn,
       runAttempt: "1",
-      sweepAttempt: "50",
+      sweepAttempt: "51",
     });
     expect(service.alertListRequests).toBeGreaterThan(0);
+    expect(service.requests.some((request) => request.url.endsWith("/alerts/98/resolve"))).toBe(true);
+  });
+
+  test("rejects attempt 52 for deterministic keys and finalizer sweeps", async () => {
+    expect(() => canaryAlertKey(RUN_ID, "52")).toThrow(
+      "GitHub run attempt must be between 1 and 51",
+    );
+    await expect(finalizeIlertWebhookCanary({
+      ...finalizerOptions(),
+      runAttempt: "1",
+      sweepAttempt: "52",
+    })).rejects.toThrow("GitHub run attempt must be between 1 and 51");
   });
 
   test("attempt 2 pre-cleans attempt 1 main key before its HIGH alert", async () => {

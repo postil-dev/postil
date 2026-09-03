@@ -22,7 +22,8 @@ const CANARY_FINALIZER_TERMINAL_INVENTORY_MS = 60_000;
 const CANARY_FINALIZER_TERMINAL_INVENTORY_MAX_PAGES = 20;
 const CANARY_CLEANUP_ATTEMPTS = 4;
 const ALERT_REPORT_TIME_SKEW_MS = 5_000;
-const MAX_CANARY_RUN_ATTEMPT = 50;
+// GitHub permits the initial workflow run plus 50 reruns.
+const MAX_CANARY_RUN_ATTEMPT = 51;
 const FINALIZER_STABLE_EMPTY_SCANS = 2;
 const CANARY_KEY_PREFIX = "postil-ilert-webhook-canary";
 
