@@ -552,11 +552,12 @@ jobs:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
-    # The 24-minute job budget reserves three minutes for setup, seven minutes
-    # for preview reconciliation, thirteen for reconcile plus canary, and one
-    # for runner overhead. The canary reserves its final two minutes for
-    # repeated resolution verification before it can send ALERT.
-    timeout-minutes: 24
+    # The 45-minute job budget reserves five minutes for setup, seven minutes
+    # for preview reconciliation, thirteen for reconcile plus canary, twelve
+    # for in-job cleanup, and eight minutes of runner headroom. The canary
+    # reserves its final two minutes for repeated resolution verification before
+    # it can send ALERT.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

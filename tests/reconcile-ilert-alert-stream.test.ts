@@ -1341,6 +1341,76 @@ describe("iLert webhook canary", () => {
     )).toBe(true);
   });
 
+  test("latches a malformed matching record across later retry-exhausted pagination", async () => {
+    let currentTime = 0;
+    let firstPage = true;
+    let pageTwoFailures = 3;
+    let resolved = false;
+    const fetchFn: Fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+      if (request.method === "PUT" && url.pathname === "/api/alerts/98/resolve") {
+        resolved = true;
+        return new Response(null, { status: 200 });
+      }
+      if (url.pathname === "/api/alerts/98") {
+        return Response.json({
+          alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+          alertSource: { id: SOURCE_ID },
+          id: 98,
+          priority: "HIGH",
+          status: resolved ? "RESOLVED" : "PENDING",
+        });
+      }
+      if (url.pathname === "/api/alerts") {
+        const start = Number(url.searchParams.get("start-index"));
+        if (firstPage && start === 0) {
+          firstPage = false;
+          return Response.json([
+            {
+              alertKey: canaryAlertKey(RUN_ID, RUN_ATTEMPT),
+              alertSource: { id: SOURCE_ID },
+              id: 98,
+              priority: "HIGH",
+              status: "UNKNOWN",
+            },
+            ...Array.from({ length: 99 }, (_, index) => ({
+              alertKey: `unrelated-${index}`,
+              alertSource: { id: SOURCE_ID },
+              id: index + 100,
+              priority: "HIGH",
+              status: "PENDING",
+            })),
+          ]);
+        }
+        if (start === 100 && pageTwoFailures > 0) {
+          pageTwoFailures -= 1;
+          return new Response(null, { status: 503 });
+        }
+        return Response.json([]);
+      }
+      throw new Error(`unexpected request: ${request.method} ${request.url}`);
+    };
+
+    let failure: unknown;
+    try {
+      await finalizeIlertWebhookCanary({
+        ...finalizerOptions(),
+        fetchFn,
+        now: () => currentTime,
+        sleep: async (milliseconds) => { currentTime += milliseconds; },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(errorMessages(failure).some((message) => message.includes("invalid status"))).toBe(true);
+    expect(errorMessages(failure).some((message) => message.includes("HTTP 503"))).toBe(true);
+    expect(pageTwoFailures).toBe(0);
+    expect(resolved).toBe(true);
+  });
+
   test("finalizer CLI is cleanup-only and never reads or mutates alert actions", async () => {
     const service = canaryService({ existing: true, staleOpenReadsAfterResolve: 2, status: "PENDING" });
     await runCli({
@@ -1668,4 +1738,20 @@ function queuedFetch(requests: Request[], responses: Response[]): Fetch {
     if (!response) throw new Error("unexpected request");
     return response;
   };
+}
+
+function errorMessages(error: unknown, seen = new Set<unknown>()): string[] {
+  if (typeof error === "string") return [error];
+  if (!error || typeof error !== "object" || seen.has(error)) return [];
+  seen.add(error);
+  if (error instanceof AggregateError) {
+    return [
+      error.message,
+      ...error.errors.flatMap((nested) => errorMessages(nested, seen)),
+    ];
+  }
+  if (error instanceof Error) {
+    return [error.message, ...errorMessages(error.cause, seen)];
+  }
+  return [];
 }

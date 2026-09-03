@@ -246,7 +246,8 @@ describe("production monitor workflow", () => {
     expect(source).toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");
     const alertStream = workflow.jobs["alert-stream"];
     expect(alertStream?.needs).toEqual(["smoke", "release-recovery"]);
-    expect(alertStream?.["timeout-minutes"]).toBe(24);
+    const setupAndSecretLoadBudgetMinutes = 5;
+    const runnerHeadroomMinutes = 8;
     expect(alertStream?.name).toBe("Reconcile and verify iLert webhook delivery");
     expect(alertStream?.if).toContain("always()");
     expect(alertStream?.if).toContain("inputs.reconcile_alert_stream == true");
@@ -264,15 +265,15 @@ describe("production monitor workflow", () => {
     expect(alertStream?.steps?.map((step) => step.name)).toContain(
       "Reconcile and verify the attempt-specific iLert webhook canary",
     );
-    expect(alertStream?.steps?.find(
+    const preview = alertStream?.steps?.find(
       (step) => step.name === "Preview iLert alert-stream reconciliation",
-    )?.run).toContain("timeout 7m");
-    expect(alertStream?.steps?.find(
+    );
+    const canary = alertStream?.steps?.find(
       (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
-    )?.run).toContain("timeout 13m");
-    expect(alertStream?.steps?.find(
-      (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
-    )?.env).toMatchObject({
+    );
+    expect(boundedStepMinutes(preview)).toBe(7);
+    expect(boundedStepMinutes(canary)).toBe(13);
+    expect(canary?.env).toMatchObject({
       POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
       POSTIL_ILERT_RECEIVER_ORIGIN: "https://postil.dev",
@@ -280,16 +281,28 @@ describe("production monitor workflow", () => {
     const inJobFinalizer = alertStream?.steps?.find(
       (step) => step.name === "Resolve and stabilize the current iLert canary before job exit",
     );
-    expect(inJobFinalizer?.if).toContain("always()");
-    expect(inJobFinalizer?.if).toContain("steps.canary.outcome != 'skipped'");
-    expect(alertStream?.steps?.indexOf(inJobFinalizer!)).toBeGreaterThan(
-      alertStream?.steps?.findIndex(
-        (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
-      ) ?? -1,
+    const cleanupIndex = alertStream?.steps?.indexOf(inJobFinalizer!) ?? -1;
+    const canaryIndex = alertStream?.steps?.indexOf(canary!) ?? -1;
+    expect(cleanupIndex).toBeGreaterThan(canaryIndex);
+    expect(boundedStepMinutes(inJobFinalizer)).toBe(12);
+    expect(alertStream?.["timeout-minutes"]).toBeGreaterThanOrEqual(
+      setupAndSecretLoadBudgetMinutes +
+        (alertStream?.steps ?? []).reduce(
+          (total, step) => total + boundedStepMinutes(step),
+          0,
+        ) +
+        runnerHeadroomMinutes,
     );
-    expect(inJobFinalizer?.run).toContain(
-      "timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary",
-    );
+    expect(alertStream?.["timeout-minutes"]! - (
+      setupAndSecretLoadBudgetMinutes +
+      (alertStream?.steps ?? []).slice(0, cleanupIndex).reduce(
+        (total, step) => total + boundedStepMinutes(step),
+        0,
+      )
+    )).toBeGreaterThanOrEqual(boundedStepMinutes(inJobFinalizer) + runnerHeadroomMinutes);
+    for (const outcome of ["success", "failure", "cancelled", "skipped"] as const) {
+      expect(inJobCleanupRuns(inJobFinalizer?.if, outcome)).toBe(outcome !== "skipped");
+    }
     expect(inJobFinalizer?.run).not.toContain(" --canary");
     expect(inJobFinalizer?.env).toMatchObject({
       POSTIL_ILERT_CANARY_ALERT_SUBMITTED: "${{ steps.canary.outputs.alert_submitted }}",
@@ -298,23 +311,16 @@ describe("production monitor workflow", () => {
       POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
       POSTIL_ILERT_CANARY_STARTED_AT: "${{ steps.canary.outputs.started_at }}",
     });
-    expect(inJobFinalizerRunsDuringCancellation(inJobFinalizer?.if)).toBe(true);
     const finalizer = workflow.jobs["alert-stream-finalize"];
     expect(finalizer?.needs).toBe("alert-stream");
     expect(finalizer?.["timeout-minutes"]).toBe(20);
-    expect(finalizer?.if).toContain("always()");
+    expect(finalizer?.if).toBe(
+      "${{ always() && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+    );
     expect(finalizer?.name).toBe("Finalize iLert webhook canary cleanup");
     expect(finalizer?.if).toContain("inputs.reconcile_alert_stream == true");
     expect(finalizer?.if).toContain("needs.alert-stream.result != 'skipped'");
     expect(finalizer?.if).toContain("github.ref == 'refs/heads/main'");
-    for (const [result, runs] of [
-      ["skipped", false],
-      ["failure", true],
-      ["cancelled", true],
-      ["success", true],
-    ] as const) {
-      expect(finalizerRunsAfterAlertStream(finalizer?.if, result)).toBe(runs);
-    }
     expect(finalizer?.steps?.find(
       (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
     )?.run).toContain("timeout 12m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary");
@@ -711,14 +717,6 @@ exit "${"${stale_found}"}"
   });
 });
 
-function finalizerRunsAfterAlertStream(condition: string | undefined, result: string): boolean {
-  return Boolean(
-    condition?.includes("always()") &&
-      condition.includes("inputs.reconcile_alert_stream == true") &&
-      (result !== "skipped" || !condition.includes("needs.alert-stream.result != 'skipped'")),
-  );
-}
-
 function resolveFinalizerAttempt(
   expression: string | undefined,
   producerAttempt: string,
@@ -730,9 +728,26 @@ function resolveFinalizerAttempt(
   return producerAttempt || workflowAttempt;
 }
 
-function inJobFinalizerRunsDuringCancellation(condition: string | undefined): boolean {
-  return Boolean(
-    condition?.includes("always()") &&
-      condition.includes("steps.canary.outcome != 'skipped'"),
-  );
+function boundedStepMinutes(step: { run?: string } | undefined): number {
+  const match = /^timeout (\d+)m\b/u.exec(step?.run ?? "");
+  if (!match) return 0;
+  return Number(match[1]);
+}
+
+function inJobCleanupRuns(
+  condition: string | undefined,
+  canaryOutcome: "success" | "failure" | "cancelled" | "skipped",
+): boolean {
+  const expression = condition ?? "";
+  if (
+    !expression.includes("always()") ||
+    expression.includes("cancelled()") ||
+    expression.includes("success()")
+  ) {
+    return false;
+  }
+  if (expression.includes("steps.canary.outcome != 'skipped'")) {
+    return canaryOutcome !== "skipped";
+  }
+  return false;
 }
