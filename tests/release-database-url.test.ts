@@ -345,7 +345,7 @@ describe("release database connection", () => {
       'recovery_target_sha="${recovery_targets[0]}"',
     );
     expect(productionMonitorWorkflow).toContain(
-      "needs: [smoke, release-recovery]",
+      "needs: [deployment-trust, smoke, release-recovery]",
     );
     expect(productionMonitorWorkflow).toContain(
       "Postil release recovery failed",

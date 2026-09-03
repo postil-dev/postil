@@ -20,8 +20,7 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   # Deployment-completion monitors keep independent workflow owners, while
@@ -34,9 +33,71 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  deployment-trust:
+    name: Verify triggering deployment
+    permissions:
+      actions: read
+    runs-on: ubuntu-latest
+    outputs:
+      trusted: ${{ steps.evidence.outputs.trusted }}
+      conclusion: ${{ steps.evidence.outputs.conclusion }}
+    steps:
+      - name: Verify deployment job evidence
+        id: evidence
+        env:
+          DEPLOY_EVENT: ${{ github.event.workflow_run.event }}
+          DEPLOY_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          DEPLOY_RUN_ID: ${{ github.event.workflow_run.id }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "trusted=false" >> "${GITHUB_OUTPUT}"
+          echo "conclusion=" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            echo "trusted=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${EVENT_REF}" == "refs/heads/main" ]]; then
+              echo "trusted=true" >> "${GITHUB_OUTPUT}"
+            fi
+            exit 0
+          fi
+          if [[ "${EVENT_NAME}" != "workflow_run" ]]; then
+            exit 0
+          fi
+          if [[ "${DEPLOY_EVENT}" != "workflow_run" && "${DEPLOY_EVENT}" != "workflow_dispatch" ]]; then
+            exit 0
+          fi
+
+          jobs="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${DEPLOY_RUN_ID}/attempts/${DEPLOY_RUN_ATTEMPT}/jobs?per_page=100")"
+          authorization_conclusion="$(jq -er '
+            [.jobs[] | select(.name == "Authorize deployment source")]
+            | if length == 1 then .[0].conclusion else error("authorization job evidence is not unique") end
+          ' <<<"${jobs}")"
+          deployment_conclusion="$(jq -er '
+            [.jobs[] | select(.name == "Deploy production")]
+            | if length == 1 then .[0].conclusion else error("deployment job evidence is not unique") end
+          ' <<<"${jobs}")"
+          echo "conclusion=${deployment_conclusion}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${authorization_conclusion}" != "success" ]]; then
+            exit 0
+          fi
+          case "${deployment_conclusion}" in
+            success|failure|cancelled|timed_out)
+              echo "trusted=true" >> "${GITHUB_OUTPUT}"
+              ;;
+          esac
+
   release-recovery:
     name: Recover abandoned release preparation
-    if: ${{ (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'success') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: deployment-trust
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && (github.event_name != 'workflow_run' || needs.deployment-trust.outputs.conclusion != 'success') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     concurrency:
       group: fly-deploy
       queue: max
@@ -174,7 +235,8 @@ jobs:
 
   smoke:
     name: Smoke check production
-    if: ${{ github.event_name != 'workflow_run' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: deployment-trust
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && github.event_name != 'workflow_run' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
@@ -544,7 +606,8 @@ jobs:
     # alerts whose producer and two finalizers were both interrupted. This job
     # has no Event API credential and never emits a new canary or resolves a
     # routine production-monitor alert.
-    if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: deployment-trust
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -579,14 +642,14 @@ jobs:
 
   alert-stream:
     name: Reconcile and verify iLert webhook delivery
-    needs: [smoke, release-recovery]
+    needs: [deployment-trust, smoke, release-recovery]
     outputs:
       alert-submitted: ${{ steps.canary.outputs.alert_submitted }}
       producer-attempt: ${{ steps.canary.outputs.producer_attempt }}
     # Manual canaries run only after smoke succeeds; failed or cancelled
     # production checks must not emit a test page. Production failures use the
     # stable alert key owned by the notify and resolve jobs below.
-    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -667,12 +730,12 @@ jobs:
 
   alert-stream-finalize:
     name: Finalize iLert webhook canary cleanup
-    needs: alert-stream
+    needs: [deployment-trust, alert-stream]
     # This separate job runs after success, failure, cancellation, or timeout.
     # The primary canary proves its receiver events before a cleaned handoff,
     # but this job still sweeps iLert management inventory for a delayed Event
     # API duplicate and fails closed if that inventory is incomplete.
-    if: ${{ always() && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -728,8 +791,8 @@ jobs:
   # runs into one alert, and the resolve job auto-closes it on recovery.
   notify:
     name: Raise external alert
-    needs: [smoke, release-recovery]
-    if: ${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: [deployment-trust, smoke, release-recovery]
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -771,8 +834,8 @@ jobs:
 
   resolve-release-recovery:
     name: Resolve release recovery alert
-    needs: release-recovery
-    if: ${{ always() && (needs.release-recovery.outputs.clear == 'true' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: [deployment-trust, release-recovery]
+    if: ${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.release-recovery.outputs.clear == 'true' || (github.event_name == 'workflow_run' && needs.deployment-trust.outputs.conclusion == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
       id-token: write
@@ -821,8 +884,8 @@ jobs:
   # monitor run resolves that key, including one after a manual canary.
   resolve:
     name: Resolve external alert
-    needs: smoke
-    if: ${{ needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}
+    needs: [deployment-trust, smoke]
+    if: ${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}
     permissions:
       contents: read
       id-token: write

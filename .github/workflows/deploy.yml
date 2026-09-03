@@ -16,18 +16,30 @@ concurrency:
   queue: max
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 
 jobs:
-  deploy:
+  authorize:
+    name: Authorize deployment source
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+    permissions: {}
     runs-on: ubuntu-latest
+    steps:
+      - name: Record trusted deployment source
+        run: echo "Deployment source is trusted."
+
+  deploy:
+    name: Deploy production
+    needs: authorize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     # Skips quietly until the FLY_DEPLOY_ENABLED repo variable is set to
-    # 'true' (and the FLY_API_TOKEN secret is configured). Also skips a
-    # workflow_run event whose ci run did not succeed; workflow_dispatch
-    # (manual deploy) has no associated ci run and always proceeds.
-    if: vars.FLY_DEPLOY_ENABLED == 'true' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    # 'true' (and the FLY_API_TOKEN secret is configured). The authorization
+    # job admits only successful push-originated ci runs on main or a manual
+    # run dispatched from main.
+    if: ${{ needs.authorize.result == 'success' && vars.FLY_DEPLOY_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
