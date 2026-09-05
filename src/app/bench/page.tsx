@@ -113,6 +113,7 @@ export default function BenchPage() {
           provider routes for two models. A deployment with provider, retention,
           or price constraints needs measurements under the same contract.
         </p>
+        <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Provider route measurements">
         <table>
           <thead>
             <tr>
@@ -146,6 +147,7 @@ export default function BenchPage() {
             </tr>
           </tbody>
         </table>
+        </div>
 
         <h2>Scope</h2>
         <p>

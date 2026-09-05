@@ -30,7 +30,7 @@ export function SiteHeader() {
         </Link>
         <nav
           aria-label="Primary"
-          className="hidden items-center gap-4 text-[15px] lg:flex xl:gap-7"
+          className="hidden items-center gap-5 text-[15px] xl:flex"
         >
           {NAV.map((item) => (
             <Link
