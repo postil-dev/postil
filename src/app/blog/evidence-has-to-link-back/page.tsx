@@ -1,99 +1,61 @@
 import Link from "next/link";
-
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { EvidenceTrail } from "@/components/blog-figures";
 import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
 const post = getBlogPost("evidence-has-to-link-back");
 export const metadata = blogPostMetadata(post);
-const articleJsonLd = blogPostJsonLd(post);
 
 export default function EvidenceLinksArticle() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16 md:py-20">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(blogPostJsonLd(post)) }} />
       <BlogArticleHeader post={post} />
-
       <div className="prose-postil blog-prose mt-10">
         <p>
-          Evidence for an AI code reviewer should be inspectable, not just
-          persuasive. A screenshot or polished demo can show what a product
-          looks like, but it cannot answer the practical question: what code was
-          reviewed, at what state, and where is the artifact that produced the
-          claim? Postil&apos;s public <Link href="/evidence">evidence page</Link>{" "}
-          is built around real review output from public Postil repositories, so
-          the examples can link back to source.
+          To assess an AI review finding, open the code it refers to. Check the cited line,
+          read the surrounding change, and decide whether the claimed failure follows.
+          Postil&apos;s <Link href="/evidence">public examples</Link> pair review output with
+          links to the source pull request so you can make that assessment yourself.
         </p>
-
-        <h2>The pull request is not a fixed object</h2>
+        <EvidenceTrail />
+        <h2>Inspect the code the reviewer saw</h2>
         <p>
-          A pull request changes over time. New commits arrive, force-pushes
-          replace history, conversations move, and the final merge state may not
-          be the same state a reviewer saw. That is why a useful evidence link
-          has to point at the reviewed commit, not only at the PR conversation.
+          A pull request can contain several revisions. Its final diff may include a fix
+          that is absent from the reviewed revision. The revision link selects the
+          reviewed commit&apos;s changes. Compare those with the example&apos;s displayed diff:
+          a pull-request review can cover more than one commit. The conversation alone may
+          describe a different state of the code.
         </p>
         <p>
-          The work merged in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/pull/321"
-            rel="noopener"
-          >
-            postil-dev/postil#321
-          </a>{" "}
-          added that breadcrumb to the evidence UI. Each evidence card exposes a
-          repository link and a pull-request-files link scoped to the reviewed
-          commit SHA. PR #321 is merged into <code>main</code>; its merge commit
-          is{" "}
-          <a
-            href="https://github.com/postil-dev/postil/commit/1b9182c262e55609a60a4723b2c5bd1f74651c1b"
-            rel="noopener"
-          >
-            <code>1b9182c262e55609a60a4723b2c5bd1f74651c1b</code>
-          </a>
-          .
+          A finding should identify its location and explain a consequence. Ask whether
+          the surrounding control flow supports that explanation and whether relevant
+          checks exist elsewhere. A plausible comment is a claim to investigate, not proof
+          that a bug exists.
         </p>
-
-        <h2>The data keeps the verification record</h2>
+        <h2>Read the verdict separately</h2>
         <p>
-          The public evidence data is in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/blob/main/src/data/evidence/index.ts"
-            rel="noopener"
-          >
-            <code>src/data/evidence/index.ts</code>
-          </a>
-          . The file documents the rule it follows: public examples come from
-          Postil&apos;s public repositories; finding titles and bodies are copied
-          from check-run annotations; review and gate titles and summaries are
-          copied from their check-runs; check-run IDs and the reviewed head SHA
-          are retained as the verification record.
+          Review text explains the issue. The gate result records whether it blocks under
+          the repository&apos;s rules. An advisory warning and a blocking error can both
+          be useful findings, but they have different effects on a merge. Inspect the
+          verdict for the same reviewed commit, using the <Link href="/docs/gate">gate rules</Link>{" "}
+          to interpret it.
         </p>
         <p>
-          The page does not rely on invented sample PRs for those cases. Its UI
-          shows the reviewed diff excerpt or complete diff, the finding text
-          Postil produced, and the gate outcome for the reviewed commit. For
-          silent reviews, the evidence case links a pull request where Postil
-          left no visible review comment.
+          A silent example shows a review without visible findings. It does not establish
+          that the code is defect-free. Likewise, a published example demonstrates one
+          review outcome; it does not measure the reviewer&apos;s detection rate across a
+          codebase. The <Link href="/bench">benchmark</Link> addresses that separate question
+          on a defined test corpus.
         </p>
-
-        <h2>Truthful links are part of the claim</h2>
+        <h2>Know what the record preserves</h2>
         <p>
-          Evidence links also keep the gate and review boundary honest. If a
-          case says the gate failed, the source data has a gate check-run URL and
-          a <code>gate.failing</code> value. If a case says the review advised
-          without blocking, the findings live in the advisory review output
-          while the gate remains passing. If a case says the review was silent,
-          the public PR has no visible Postil review comment.
-        </p>
-        <p>
-          Some GitHub check-run pages can become unavailable in the UI after
-          GitHub&apos;s retention window. Postil still keeps the reviewed head
-          SHA and check-run URLs in the evidence data, while the visible page
-          links to the repository and the PR files at the reviewed commit. That
-          is the durable part of the public claim: readers can inspect the code
-          state the example refers to instead of trusting a fictional demo.
+          The evidence page includes diff excerpts, finding text, and gate outcomes.
+          Its <a href="https://github.com/postil-dev/postil/blob/main/src/data/evidence/index.ts">public source data</a>{" "}
+          retains the reviewed commit and check-run references. If an upstream check page
+          is unavailable, the retained text remains a published record, but the missing
+          page limits independent verification. A code link verifies the input; it cannot
+          by itself verify what a reviewer said about it.
         </p>
       </div>
     </div>

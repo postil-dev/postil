@@ -8,6 +8,7 @@ const NAV: readonly NavItem[] = [
   { href: "/why-postil", label: "Why Postil" },
   { href: "/how-it-works", label: "How it works" },
   { href: "/evidence", label: "See it run" },
+  { href: "/bench", label: "Bench" },
   { href: "/pricing", label: "Pricing" },
   { href: "/security", label: "Security" },
   { href: "/docs", label: "Docs" },

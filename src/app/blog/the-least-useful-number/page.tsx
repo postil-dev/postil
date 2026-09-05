@@ -1,242 +1,79 @@
 import Link from "next/link";
-
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
 import { CostAgainstGateChart, DetectionSpreadChart } from "@/components/bench-charts";
-import {
-  DETECTION_BAND_POINTS,
-  MODELS_IN_DETECTION_BAND,
-  SCORED_MODELS,
-} from "@/components/bench-table";
+import { CleanReviewChart } from "@/components/blog-figures";
+import { BENCH, benchModel, secondsLabel } from "@/components/bench-table";
 import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
 const post = getBlogPost("the-least-useful-number");
 export const metadata = blogPostMetadata(post);
-const articleJsonLd = blogPostJsonLd(post);
+const luna = benchModel("openai/gpt-5.6-luna");
+const kimi = benchModel("moonshotai/kimi-k2.7-code");
 
 export default function LeastUsefulNumberArticle() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16 md:py-20">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(blogPostJsonLd(post)) }} />
       <BlogArticleHeader post={post} />
-
       <div className="prose-postil blog-prose mt-10">
         <p>
-          We publish a{" "}
-          <Link href="/bench" className="text-rust underline">
-            table of model benchmark results
-          </Link>
-          . It was measured
-          against a fixture set that no longer exists, on a build seven minor
-          versions old, and it flattered every small model on it. So we re-ran
-          everything: {SCORED_MODELS.length} models, one corpus, one binary,
-          one afternoon. The results changed which model we run, and they
-          changed what we think the table is for.
+          A reviewer can flag most seeded regions and still interrupt clean pull requests.
+          Choosing a model requires both measurements, along with the accuracy of its merge
+          decisions and the cost of a complete review. Postil&apos;s <Link href="/bench">model benchmark</Link>{" "}
+          reports them separately on {BENCH.defectCases} defect fixtures and {BENCH.cleanCases} clean fixtures.
+          Its detection score counts findings that overlap a seeded location; it does not
+          verify that the finding explains the defect correctly.
         </p>
-
-        <h2>Detection rate barely separates anything</h2>
+        <h2>Read the variation before the ranking</h2>
         <p>
-          The column everyone leads with is how many seeded defects a model
-          finds. We ran three models four times each, against the same fixtures
-          with the same binary, to see how stable that number is.
+          Repeated runs of the same model produce different detection scores. The chart
+          shows each run on the same corpus, including a run with substantial output failures.
+          Overlapping results are a reason to gather more evidence before choosing between
+          models with similar scores.
         </p>
         <DetectionSpreadChart />
         <p>
-          One unchanged model, one unchanged fixture set, nine points of
-          movement. On our full table, {MODELS_IN_DETECTION_BAND} of{" "}
-          {SCORED_MODELS.length} models sit within {DETECTION_BAND_POINTS}{" "}
-          points of the best one. The headline metric cannot tell most of
-          them apart, and a single-run comparison between two of them mostly
-          reports which run you happened to get.
+          These few repeats do not establish confidence intervals or prove that two models
+          are equivalent. They show how much a single measurement can move under the
+          screening conditions.
+        </p>
+        <h2>Check what happens on clean code</h2>
+        <CleanReviewChart />
+        <p>
+          Silence counts clean fixtures with no reported finding. False findings count
+          unmatched envelope findings across clean and defect fixtures, so a single review
+          can contribute several. Read both
+          alongside the unscored-case count: an output failure is not evidence that a model
+          correctly recognized clean code.
         </p>
         <p>
-          Detection still matters. The problem is resolution: an instrument
-          that moves nine points on its own cannot report a three-point
-          difference. Our release gate did exactly that, and blocked five of
-          seven releases by comparing one run against a baseline taken from a
-          single high run of the same distribution.
+          Gate correctness asks a different question: did the pass or fail decision match
+          the fixture&apos;s expected verdict? The results table reports that percentage over
+          scored cases and lists unscored cases separately. Detection alone does not tell
+          you whether a review blocks the right changes.
         </p>
-
-        <h2>Silence separates them cleanly</h2>
-        <p>
-          Two columns were steady across repeats: how often a model stays quiet
-          on a clean pull request, and how often the merge gate blocks exactly
-          when it should. Those are also the two that decide whether anyone
-          keeps the tool switched on.
-        </p>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Model</th>
-              <th scope="col">Detected</th>
-              <th scope="col">Silent on 13 clean PRs</th>
-              <th scope="col">False findings</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><code>mistralai/mistral-small-3.2-24b</code></td>
-              <td>91.2%</td>
-              <td>6</td>
-              <td>7</td>
-            </tr>
-            <tr>
-              <td><code>google/gemma-3-27b-it</code></td>
-              <td>87.7%</td>
-              <td>4</td>
-              <td>8</td>
-            </tr>
-            <tr>
-              <td><code>qwen/qwen3-32b</code></td>
-              <td>86.0%</td>
-              <td>8</td>
-              <td>12</td>
-            </tr>
-            <tr>
-              <td><code>openai/gpt-5.6-luna</code></td>
-              <td>96.5%</td>
-              <td>13</td>
-              <td>0</td>
-            </tr>
-          </tbody>
-        </table>
-        <p>
-          Those first three sit within five points of each other on
-          detection and behave nothing alike. Gemma 3 interrupts nine of
-          thirteen clean pull requests. Our own published table had it at 97%
-          with one false positive, because the old corpus had fewer adversarial
-          clean cases. Mistral Small was published at 100% detection and zero
-          false positives; on the current fixtures it raises seven false
-          findings and stays quiet on six of thirteen clean diffs.
-        </p>
-        <p>
-          We had been recommending both. That is what a benchmark table
-          costs once its fixtures have moved on, and it is why every figure on
-          the new page carries the digest of the corpus it was scored
-          against.
-        </p>
-
-        <h2>A version number is not an upgrade</h2>
-        <p>
-          The day before we ran this, the vendor of the model we were using
-          released its successor. Same family, same context window, same price.
-          It failed to produce valid structured output on eighteen of
-          seventy cases, emitted twice the reasoning tokens, and cost three
-          times as much. Upgrading on the version number would have bought a
-          worse reviewer at triple the price.
-        </p>
-
-        <h2>Cost is a reasoning budget, not a price</h2>
-        <p>
-          The cheapest model per token in our sweep charges $0.08 per million
-          input tokens. It emitted 582,000 completion tokens to finish the
-          fixture set and took 87 seconds at the ninety-fifth percentile. The
-          model that won the sweep emitted 31,500 completion tokens, finished
-          in 21 seconds, and cost less in total despite a higher per-token
-          price.
-        </p>
-        <p>
-          A review's cost follows how much the model reasons before
-          answering, not its per-token price. That number is on no pricing
-          page, so the only way to get it is to run the model.
-        </p>
+        <h2>Measure the complete bill</h2>
         <CostAgainstGateChart />
-
-        <h2>We were measuring a route we cannot use</h2>
         <p>
-          We made the same mistake three times. Our screening harness lets
-          the router pick any endpoint.
-          Hosted reviews cannot: they require a zero-retention endpoint, pin
-          one upstream provider, and cap the price. Every number above was
-          measured without those constraints, and we kept reading them as
-          though they described what customers would get.
+          Token prices need token counts to become a review cost. Reasoning, output length,
+          and retries affect the bill. In this screening sample, <code>{luna.id}</code> costs{" "}
+          ${luna.totalCostUsd!.toFixed(4)} across {luna.casesRun} fixtures, with a p95 latency
+          of {secondsLabel(luna.latencyMsP95)}. That is a measured test-run cost, not a quote
+          for reviewing a production repository.
+        </p>
+        <h2>Use the provider settings you intend to deploy</h2>
+        <p>
+          The main table uses unconstrained provider routing. Separate provider-constrained
+          results use a pinned endpoint with a zero-retention requirement and price limits.
+          For <code>{kimi.id}</code>, p95 latency is {secondsLabel(kimi.latencyMsP95)} in the
+          screening run and {secondsLabel(kimi.pinnedProviderContract?.latencyMsP95)} in the
+          provider-constrained summary. Routing is part of the experiment.
         </p>
         <p>
-          Re-running the two finalists under the real contract settled it.
-          One was unaffected. The other, which we were about to select for its
-          18-second tail latency, went to 58 seconds once pinned to a
-          zero-retention provider, because the endpoint the router had been
-          choosing for it is one we may not use.
-        </p>
-        <p>
-          If you run a benchmark to pick a model for a constrained deployment,
-          constrain the benchmark the same way. Otherwise you are measuring a
-          product you cannot ship.
-        </p>
-
-        <h2>What we changed</h2>
-        <p>
-          Hosted reviews now run on{" "}
-          <a
-            href="https://openrouter.ai/openai/gpt-5.6-luna"
-            rel="noopener noreferrer"
-            className="text-rust underline"
-          >
-            <code>openai/gpt-5.6-luna</code>
-          </a>
-          , pinned to a zero-retention endpoint, replacing{" "}
-          <a
-            href="https://openrouter.ai/z-ai/glm-5.2"
-            rel="noopener noreferrer"
-            className="text-rust underline"
-          >
-            <code>z-ai/glm-5.2</code>
-          </a>
-          . It decides the merge gate correctly 86% of the time against the
-          previous model&apos;s 74%, raised no false finding in any run, stayed
-          silent on every clean fixture, and costs about a seventh as much. The{" "}
-          <Link href="/changelog" className="text-rust underline">
-            changelog
-          </Link>{" "}
-          records the release.
-        </p>
-        <p>
-          It was a model we had already rejected. In July a preflight guard
-          refused it because projected qualification spend exceeded its cap, so
-          it made zero calls. The price has since fallen fivefold. We filed
-          that rejection the same way we file a quality failure, so nobody
-          went back to it when the price moved. A rejection on cost expires;
-          ours did not say so.
-        </p>
-        <p>
-          We also re-recorded our release baseline from the median of four runs
-          rather than a single run, which is what stops the gate failing by
-          construction on a metric that moves nine points on its own.
-        </p>
-
-        <h2>Read it yourself</h2>
-        <p>
-          Every model we scored is on the{" "}
-          <Link href="/bench" className="text-rust underline">
-            model bench page
-          </Link>
-          , including the ones that did badly and the one that could not be
-          reached at all, with the{" "}
-          <a href="/bench/postil-model-bench.json" className="text-rust underline">
-            raw report
-          </a>{" "}
-          and the command to reproduce it. The harness is in the{" "}
-          <a
-            href="https://github.com/postil-dev/postil-cli/tree/main/bench"
-            rel="noopener noreferrer"
-            className="text-rust underline"
-          >
-            CLI repository
-          </a>
-          , and{" "}
-          <Link href="/docs/models" className="text-rust underline">
-            the model catalogue
-          </Link>{" "}
-          lists what each option costs.
-          These are our fixtures and we build the product they score, so apply
-          our own{" "}
-          <Link href="/blog/ai-code-review-benchmarks" className="text-rust underline">
-            five-point test for benchmarks
-          </Link>{" "}
-          to them, and re-run the command yourself if the numbers matter to a
-          decision you are making.
+          Start with the <Link href="/bench#run-the-suite">benchmark instructions</Link>, inspect
+          the <a href="/bench/postil-model-bench.json">report data</a>, and test representative
+          changes from your own codebase. Keep the corpus, model settings, provider policy,
+          failures, and total cost with the results so the comparison remains inspectable.
         </p>
       </div>
     </div>

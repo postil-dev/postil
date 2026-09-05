@@ -56,13 +56,13 @@ export const BLOG_POSTS = [
   {
     slug: "ai-code-review-benchmarks",
     publishedOn: "2026-07-08",
-    title: "Four AI code review benchmarks, four home-team winners",
+    title: "How to compare AI code review benchmarks",
     description:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
+      "Read the dataset, scoring rules, clean cases, and failed runs before comparing AI code review scores. Find and run the public Postil benchmark suite.",
     socialDescription:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
+      "Read the dataset, scoring rules, clean cases, and failed runs before comparing AI code review scores. Find and run the public Postil benchmark suite.",
     excerpt:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks can't be trusted at face value, and a five-point test for spotting a rigged one.",
+      "Read the dataset, scoring rules, clean cases, and failed runs before comparing AI code review scores. Find and run the public Postil benchmark suite.",
   },
   {
     slug: "why-copilot-cant-block-your-merge",
@@ -104,33 +104,33 @@ export const BLOG_POSTS = [
     publishedOn: "2026-07-11",
     title: "The gate is separate from the review",
     description:
-      "Postil splits advisory review output from the branch-protection gate: postil/review explains findings, while postil/gate carries the required merge verdict.",
+      "Use postil/gate for the required merge verdict and postil/review for advisory findings. Understand blocking rules and incomplete reviews.",
     socialDescription:
-      "A merge gate and a review comment stream are different controls. Postil keeps them separate as postil/gate and postil/review.",
+      "Use postil/gate for the required merge verdict and postil/review for advisory findings. Understand blocking rules and incomplete reviews.",
     excerpt:
-      "Postil keeps advisory findings and the branch-protection verdict separate: postil/review explains, while postil/gate carries the required merge decision.",
+      "Use postil/gate for the required merge verdict and postil/review for advisory findings. Understand blocking rules and incomplete reviews.",
   },
   {
     slug: "evidence-has-to-link-back",
     publishedOn: "2026-07-11",
-    title: "Evidence has to link back",
+    title: "How to verify an AI code review finding",
     description:
-      "Postil's public evidence examples link back to the source repository and the pull request files at the reviewed commit, with check-run artifacts retained in the data.",
+      "Trace a review finding to the code it describes, inspect the gate result, and understand what a public example can establish.",
     socialDescription:
-      "Public AI review examples should resolve to the real PR state behind the claim, not a fictional demo.",
+      "Trace a review finding to the code it describes, inspect the gate result, and understand what a public example can establish.",
     excerpt:
-      "Public AI review examples should resolve to the source repository, the reviewed pull request state, and the check-run records behind the claim.",
+      "Trace a review finding to the code it describes, inspect the gate result, and understand what a public example can establish.",
   },
   {
     slug: "the-least-useful-number",
     publishedOn: "2026-08-19",
-    title: "The least useful number on our own benchmark",
+    title: "How to read a model benchmark beyond detection rate",
     description:
-      "We scored eighteen models on one fixture set in one afternoon. Detection rate moved nine points between runs of a single unchanged model, which is wider than the gap between most models. Silence and gate correctness separate them; the headline metric does not.",
+      "Compare detection, clean-case silence, gate correctness, latency, and measured review cost on the Postil benchmark corpus.",
     socialDescription:
-      "Eighteen models, one fixture set. Detection rate moved nine points between runs of the same model. The headline metric is the least useful one on the table.",
+      "Compare detection, clean-case silence, gate correctness, latency, and measured review cost on the Postil benchmark corpus.",
     excerpt:
-      "We scored eighteen models on one fixture set. Detection rate moved nine points between runs of a single unchanged model, wider than the gap between most models on the table. Here is what separates them instead, and what it cost us to find out.",
+      "Compare detection, clean-case silence, gate correctness, latency, and measured review cost on the Postil benchmark corpus.",
   },
 ] as const satisfies readonly BlogPost[];
 

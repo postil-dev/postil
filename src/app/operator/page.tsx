@@ -13,6 +13,15 @@ import { githubFindingLocationUrl, githubPrUrl } from "@/lib/github-links";
 import { requireOperatorAccess } from "@/lib/operator-access";
 import { getPool } from "@/lib/db";
 import {
+  formatUsdCents,
+  formatUsdMicros,
+  getOperatorBillingProviderActions,
+  getOperatorFinancialSummary,
+  OPERATOR_FINANCIAL_PERIOD_DAYS,
+  type OperatorBillingProviderAction,
+  type OperatorFinancialSummary,
+} from "@/lib/operator-financials";
+import {
   getPrivateMonitoringDashboard,
   type PrivateMonitoringDashboard,
 } from "@/lib/private-monitoring";
@@ -100,6 +109,167 @@ function UsageSummary({ summary }: { summary: OperatorUsageSummary }) {
         </p>
         <p className="mt-1 text-2xl font-semibold">{summary.reviews24h.toLocaleString()}</p>
       </div>
+    </section>
+  );
+}
+
+function ProviderBillingActionCard({
+  label,
+  provider,
+}: {
+  label: string;
+  provider: OperatorBillingProviderAction;
+}) {
+  return (
+    <div className="card p-4">
+      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+        {label}
+      </p>
+      <p className="mt-2 text-lg font-semibold">
+        {provider.status === "connected" ? provider.provider : "Not connected"}
+      </p>
+      {provider.href && provider.action && (
+        <a
+          href={provider.href}
+          rel="noopener noreferrer"
+          className="mt-3 inline-block text-sm text-rust underline decoration-rust/40 underline-offset-2 hover:decoration-rust"
+        >
+          {provider.action}
+        </a>
+      )}
+      {provider.instruction && (
+        <p className="mt-2 text-xs text-charcoal/70">{provider.instruction}</p>
+      )}
+    </div>
+  );
+}
+
+function FinancialSummary({ summary }: { summary: OperatorFinancialSummary }) {
+  const providerActions = getOperatorBillingProviderActions();
+  return (
+    <section id="financials" className="mt-8 scroll-mt-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">Costs and billing</p>
+          <h2 className="serif-display mt-2 text-2xl">Runtime and model ledger</h2>
+        </div>
+        <div className="text-right font-mono text-xs text-charcoal/60">
+          <p>Last {OPERATOR_FINANCIAL_PERIOD_DAYS} days</p>
+          <p className="mt-1">
+            {formatTimestamp(summary.period.start)} to {formatTimestamp(summary.period.end)}
+          </p>
+          <Link href="/operator#monitoring" className="mt-2 inline-block text-rust hover:underline">
+            Billing health
+          </Link>
+        </div>
+      </div>
+
+      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-charcoal/70">
+        Recorded model usage cost includes customer-provider and hosted usage. It is not a
+        complete Postil operating-expense total. Settlement amounts show records updated during
+        this period in their present status.
+      </p>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="card p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            Recorded model usage cost
+          </p>
+          <p className="mt-2 text-2xl font-semibold">
+            {formatUsdMicros(summary.modelUsage.totalCostMicros)}
+          </p>
+          <p className="mt-2 text-xs text-charcoal/70">
+            {summary.modelUsage.events.toLocaleString()} usage event(s).
+          </p>
+        </div>
+        <div className="card p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            Average recorded cost per review
+          </p>
+          <p className="mt-2 text-2xl font-semibold">
+            {summary.modelUsage.pricedReviewAverageMicros === null
+              ? "Not recorded"
+              : formatUsdMicros(summary.modelUsage.pricedReviewAverageMicros)}
+          </p>
+          <p className="mt-2 text-xs text-charcoal/70">
+            {summary.modelUsage.pricedReviews.toLocaleString()} review(s) with priced usage
+            event(s) in this period. Reviews with missing costs contribute partial totals.
+          </p>
+        </div>
+        <div className="card p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            Charged settlements updated
+          </p>
+          <p className="mt-2 text-2xl font-semibold">
+            {formatUsdCents(summary.customerBilling.chargedCents)}
+          </p>
+          <p className="mt-2 text-xs text-charcoal/70">
+            {summary.customerBilling.chargedSettlements.toLocaleString()} settlement record(s), current
+            status <code>charged</code>.
+          </p>
+        </div>
+        <div className="card p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            Open settlements updated
+          </p>
+          <p className="mt-2 text-2xl font-semibold">
+            {formatUsdCents(summary.customerBilling.openCents)}
+          </p>
+          <p className="mt-2 text-xs text-charcoal/70">
+            {summary.customerBilling.openSettlements.toLocaleString()} record(s) in <code>pending</code>, {" "}
+            <code>charging</code>, or <code>reconciling</code>; {" "}
+            {summary.customerBilling.failedSettlements.toLocaleString()} <code>failed</code>.
+          </p>
+        </div>
+      </div>
+
+      <div className="card mt-4 overflow-x-auto">
+        <table className="w-full min-w-[42rem] text-left text-xs">
+          <thead className="border-b border-stone bg-paper font-mono text-[10px] uppercase tracking-[0.12em] text-charcoal/50">
+            <tr>
+              <th className="px-4 py-3 font-normal">Model</th>
+              <th className="px-4 py-3 font-normal">Provider</th>
+              <th className="px-4 py-3 text-right font-normal">Events</th>
+              <th className="px-4 py-3 text-right font-normal">Recorded cost</th>
+              <th className="px-4 py-3 font-normal">Cost completeness</th>
+            </tr>
+          </thead>
+          <tbody>
+            {summary.modelUsage.models.map((model) => (
+              <tr key={model.model} className="border-b border-stone/60 last:border-b-0">
+                <td className="max-w-[18rem] break-words px-4 py-3 font-mono">{model.model}</td>
+                <td className="px-4 py-3 text-charcoal/60">Not recorded</td>
+                <td className="px-4 py-3 text-right font-mono">{model.events.toLocaleString()}</td>
+                <td className="px-4 py-3 text-right font-mono">{formatUsdMicros(model.costMicros)}</td>
+                <td className="px-4 py-3 text-charcoal/70">
+                  {model.unpricedEvents === 0
+                    ? "Fully priced"
+                    : `${model.unpricedEvents.toLocaleString()} unpriced event(s)`}
+                </td>
+              </tr>
+            ))}
+            {summary.modelUsage.models.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-charcoal/50">
+                  No model usage recorded in this period.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        <ProviderBillingActionCard label="Runtime infrastructure" provider={providerActions.runtime} />
+        <ProviderBillingActionCard label="Customer billing" provider={providerActions.customer} />
+        <ProviderBillingActionCard label="Model billing" provider={providerActions.model} />
+      </div>
+
+      {summary.modelUsage.unpricedEvents > 0 && (
+        <p className="mt-3 font-mono text-xs text-rust">
+          {summary.modelUsage.unpricedEvents.toLocaleString()} usage event(s) have no stored model cost and are excluded from recorded spend.
+        </p>
+      )}
     </section>
   );
 }
@@ -562,10 +732,11 @@ export default async function OperatorDashboardPage({
   const params = await searchParams;
   const filters = parseOperatorReviewFilters(params);
   const { db, user } = await requireOperatorAccess();
-  const [reviews, monitoring, usageSummary] = await Promise.all([
+  const [reviews, monitoring, usageSummary, financialSummary] = await Promise.all([
     getOperatorReviewRows(db, filters),
     getPrivateMonitoringDashboard(getPool()),
     getOperatorUsageSummary(db),
+    getOperatorFinancialSummary(db),
   ]);
   const totalRows = reviews[0]?.totalRows ?? 0;
   const shownRows = reviews.length;
@@ -583,6 +754,8 @@ export default async function OperatorDashboardPage({
       </div>
 
       <UsageSummary summary={usageSummary} />
+
+      <FinancialSummary summary={financialSummary} />
 
       <MonitoringStatus monitoring={monitoring} />
 

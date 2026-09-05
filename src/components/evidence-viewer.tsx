@@ -187,7 +187,7 @@ export function extractBreadcrumbs(
 
   return {
     repo: `https://github.com/${source.owner}/${source.repo}`,
-    prFilesAtCommit: `https://github.com/${source.owner}/${source.repo}/pull/${source.prNumber}/files?sha=${commitSha}`,
+    prFilesAtCommit: `https://github.com/${source.owner}/${source.repo}/pull/${source.prNumber}/files/${commitSha}`,
     ...(reviewComment ? { reviewComment } : {}),
   };
 }

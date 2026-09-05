@@ -1,5 +1,12 @@
 # Postil repository rules
 
+Public articles and reference pages explain the product without requiring
+repository history. Keep implementation PRs, authoring decisions, removed
+fixtures, and old release comparisons out of explanatory prose. Quantitative
+claims cite public evidence and state the sample, units, and failed-case
+handling. Derive charts and repeated figures from the same data. Keep benchmark
+setup runnable from a public checkout and link it from results pages.
+
 After focused tests, coding agents run the full completed diff through the
 local hosted-review harness before handoff. Use the pull request's actual base:
 

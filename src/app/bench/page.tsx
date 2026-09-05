@@ -2,6 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import {
+  CostAgainstGateChart,
+  DetectionSpreadChart,
+} from "@/components/bench-charts";
+import {
   BENCH,
   BenchTable,
   benchModel,
@@ -15,12 +19,12 @@ const LUNA = benchModel("openai/gpt-5.6-luna");
 const K27 = benchModel("moonshotai/kimi-k2.7-code");
 
 export const metadata: Metadata = {
-  title: "Model bench — every model we tested, on one fixture set",
-  description: `${SCORED_MODELS.length} models scored on the same ${BENCH.defectCases + BENCH.cleanCases} review fixtures with the same binary on one afternoon: detection, gate correctness, silence on clean pull requests, cost and latency. Raw report included.`,
+  title: "Model bench: one fixture set",
+  description: `${SCORED_MODELS.length} model results on the same ${BENCH.defectCases + BENCH.cleanCases} review fixtures and binary, with detection, gate correctness, silence on clean pull requests, cost, latency, and raw data.`,
   alternates: { canonical: "/bench" },
   openGraph: {
-    title: "Model bench — every model we tested",
-    description: `${SCORED_MODELS.length} models, one fixture set, one binary, one afternoon. Including the ones that did badly.`,
+    title: "Model bench: one fixture set",
+    description: `${SCORED_MODELS.length} model results with shared fixtures, binary, and raw data.`,
     url: "/bench",
     images: ["/opengraph-image"],
   },
@@ -28,93 +32,91 @@ export const metadata: Metadata = {
 
 const REPORT_PATH = "/bench/postil-model-bench.json";
 
+function pinnedPercent(value: number | undefined): string {
+  return value === undefined ? "Not recorded" : `${(value * 100).toFixed(1)}%`;
+}
+
 export default function BenchPage() {
   return (
     <div className="mx-auto max-w-4xl px-6 py-16 md:py-20">
       <p className="eyebrow">Resources</p>
       <h1 className="serif-display mt-4 text-4xl md:text-5xl">Model bench.</h1>
       <p className="mt-6 text-lg text-ink-soft">
-        {SCORED_MODELS.length} models scored against the current fixture set,
-        including the ones that did badly, plus {UNREACHABLE_MODELS.length} that
-        could not be reached at all. One corpus, one binary, one afternoon, so
-        the rows are comparable to each other.
+        {SCORED_MODELS.length} scored models and {UNREACHABLE_MODELS.length} unreachable
+        model row use the same fixture corpus, evaluator, and binary. The raw
+        report records the inputs needed to compare another run with this one.
       </p>
 
-      <div className="prose-postil mt-10">
-        <p>
-          Generated {formatBenchDate(BENCH.generatedAt)} with{" "}
-          {BENCH.cliVersion}. {BENCH.defectCases} fixtures carry a seeded
-          defect and {BENCH.cleanCases} are clean pull requests where the
-          correct review is silence. Each model saw all{" "}
-          {BENCH.defectCases + BENCH.cleanCases} once.
+      <section className="mt-12" aria-labelledby="quality-cost-chart-heading">
+        <h2
+          id="quality-cost-chart-heading"
+          className="serif-display text-2xl text-charcoal"
+        >
+          Quality and total run cost
+        </h2>
+        <p className="prose-postil mt-2 max-w-2xl">
+          Every point uses the same {BENCH.defectCases + BENCH.cleanCases} fixtures:
+          {BENCH.defectCases} seeded-defect pull requests and {BENCH.cleanCases} clean
+          pull requests. Cost is the USD total for that one screening run, not a
+          provider rate card. Gate-verdict correctness excludes cases without a
+          valid envelope, which the table records under No envelope. The chart
+          describes this fixture corpus and screening route only.
         </p>
-      </div>
+        <CostAgainstGateChart />
+      </section>
 
-      <div className="mt-8">
+      <section className="mt-10" aria-labelledby="raw-results-heading">
+        <h2 id="raw-results-heading" className="serif-display text-2xl text-charcoal">
+          Raw results
+        </h2>
+        <p className="mt-2 text-sm text-charcoal/70">
+          The table retains the denominators, validity failures, total cost, and
+          p95 latency for every attempted model.
+        </p>
         <BenchTable />
-      </div>
-
-      <div className="prose-postil mt-10">
-        <p className="text-sm">
-          <a href={REPORT_PATH} className="text-rust underline" download>
-            Download the raw report
-          </a>{" "}
-          (JSON). It carries the fixture-corpus, evaluator and binary digests,
-          so you can tell whether any other table is measuring the same thing.
-        </p>
-      </div>
+      </section>
 
       <div className="prose-postil mt-14">
-        <h2>What the columns mean</h2>
+        <h2>Interpreting the results</h2>
         <p>
-          <strong>Detected</strong> is the share of seeded defects the model
-          flagged. <strong>Gate correct</strong> is how often the merge gate
-          blocked exactly when it should have, which is the number that decides
-          whether a review costs someone a merge.{" "}
+          <strong>Detected</strong> is the share of defect fixtures with a finding
+          overlapping the seeded path and line range. The evaluator does not verify the
+          diagnosis. The <a href="https://github.com/postil-dev/postil-cli/blob/e6ccd5aba3edb599c0cbd14a42bf6c4cf272969e/bench/src/live.ts#L818" className="text-rust underline">report&apos;s scoring rules</a>{" "}
+          define the location match and unmatched-finding count. <strong>Gate correct</strong> is the share of valid envelopes
+          whose gate result matches the fixture outcome.{" "}
           <strong>Silent on clean</strong> counts the clean pull requests the
-          model left alone. <strong>False findings</strong> counts findings
-          raised against no defect. <strong>No envelope</strong> counts runs
-          that never produced valid structured output, which fail closed rather
-          than passing unreviewed code.
+          model left alone. <strong>False findings</strong> counts unmatched envelope findings
+          across both clean and defect fixtures. <strong>No envelope</strong> counts fixture
+          runs without a valid structured output.
         </p>
 
-        <h2>Read the column, not the decimal</h2>
+        <h2>Repeated screening runs</h2>
         <p>
-          Each figure is one run of a non-deterministic model. We ran two
-          models four times each to measure how much that matters: detection
-          rate moved over roughly nine percentage points for a single unchanged
-          model, which is wider than the gap between most rows in the table.
-          Treat differences under about five points as noise.
+          The report contains four screening runs for each of three models. The
+          chart shows each observed detection rate and marks the degraded run
+          separately. These repeated runs use screening routing and do not
+          establish a ranking for a different provider route.
         </p>
+        <DetectionSpreadChart />
+
+        <h2>Cost measurement</h2>
         <p>
-          Gate correctness and silence on clean pull requests were far steadier
-          across repeats, and they separate the models that detection rate
-          cannot. If you take one thing from this table, take that: the
-          headline metric is the least useful one on it.
+          Total cost is the observed USD charge for one full screening run. It
+          includes the model output required for these fixtures and does not
+          represent a provider price list or the cost of another corpus.
         </p>
 
-        <h2>Cost is not the sticker price</h2>
+        <h2>Provider route measurements</h2>
         <p>
-          Total cost here is what the run actually billed, not a rate card. How
-          much a model reasons before answering moves it far more than its
-          per-token price does. The cheapest model per token in this table
-          emitted more than half a million completion tokens to finish the set;
-          the cheapest model per <em>review</em> emitted thirty thousand and
-          scored higher. Price the work, not the tokens.
-        </p>
-
-        <h2>Routing changes the answer</h2>
-        <p>
-          The rows above come from screening runs, which let the router pick
-          any endpoint. Hosted reviews cannot do that: they require a
-          zero-retention endpoint, pin one upstream provider, and apply a price
-          ceiling. Re-running two models under that contract moved the numbers
-          enough to change which one we chose.
+          The screening results allow routed endpoints. This table records the
+          screening p95 latency and the p95 latency observed on the named pinned
+          provider routes for two models. A deployment with provider, retention,
+          or price constraints needs measurements under the same contract.
         </p>
         <table>
           <thead>
             <tr>
-              <th scope="col">Model, pinned</th>
+              <th scope="col">Model and pinned provider</th>
               <th scope="col">Detected</th>
               <th scope="col">Gate correct</th>
               <th scope="col">p95 screening</th>
@@ -123,59 +125,55 @@ export default function BenchPage() {
           </thead>
           <tbody>
             <tr>
-              <td><code>openai/gpt-5.6-luna</code> on Azure</td>
-              <td>89.5%</td>
-              <td>85.5%</td>
+              <td>
+                <code>openai/gpt-5.6-luna</code> on{" "}
+                {LUNA.pinnedProviderContract?.provider}
+              </td>
+              <td>{pinnedPercent(LUNA.pinnedProviderContract?.detectionRate)}</td>
+              <td>{pinnedPercent(LUNA.pinnedProviderContract?.gateVerdictCorrectness)}</td>
               <td>{secondsLabel(LUNA.latencyMsP95)}</td>
               <td>{secondsLabel(LUNA.pinnedProviderContract?.latencyMsP95)}</td>
             </tr>
             <tr>
-              <td><code>moonshotai/kimi-k2.7-code</code> on CoreWeave</td>
-              <td>94.7%</td>
-              <td>85.5%</td>
+              <td>
+                <code>moonshotai/kimi-k2.7-code</code> on{" "}
+                {K27.pinnedProviderContract?.provider}
+              </td>
+              <td>{pinnedPercent(K27.pinnedProviderContract?.detectionRate)}</td>
+              <td>{pinnedPercent(K27.pinnedProviderContract?.gateVerdictCorrectness)}</td>
               <td>{secondsLabel(K27.latencyMsP95)}</td>
               <td>{secondsLabel(K27.pinnedProviderContract?.latencyMsP95)}</td>
             </tr>
           </tbody>
         </table>
-        <p>
-          One model was unaffected; the other lost its entire latency
-          advantage, because the endpoint the router had been choosing for it
-          was not one a zero-retention deployment can use. If you are picking a
-          model for a privacy-constrained deployment, measure it on the route
-          you are allowed to take, not the cheapest one available.
-        </p>
 
-        <h2>What this cannot tell you</h2>
+        <h2>Scope</h2>
         <p>
-          These are seeded defects on synthetic pull requests. A capable model
-          can saturate them, so a high score shows that a model handles the
-          review pipeline and obvious bugs at the stated cost, not that it will
-          find the subtle bug in your codebase. The clean fixtures are the more
-          transferable half: a model that cannot stay quiet here will not stay
-          quiet on your diffs either.
+          The fixtures are synthetic pull requests with seeded defects and clean
+          changes. The report measures this review pipeline on those fixtures;
+          it does not establish performance on a separate codebase, corpus, or
+          provider route.
         </p>
         <p>
-          These are our fixtures, and we build the product they score. Read the{" "}
+          The fixture corpus is maintained with the reviewed system. Read the{" "}
           <Link href="/blog/ai-code-review-benchmarks" className="text-rust underline">
-            five-point test for benchmarks
+            guide to comparing benchmarks
           </Link>{" "}
-          and apply it to this page too. The reproduction command below is the
-          honest answer to that problem: run it yourself.
+          when evaluating this report or another benchmark.
         </p>
 
-        <h2>Run it yourself</h2>
+        <h2 id="run-the-suite">Run it yourself</h2>
         <p>
-          The harness is in the{" "}
+          Start with the public{" "}
           <a
-            href="https://github.com/postil-dev/postil-cli"
+            href="https://github.com/postil-dev/postil-cli/blob/main/bench/README.md"
             rel="noopener noreferrer"
             className="text-rust underline"
           >
-            CLI repository
-          </a>{" "}
-          under <code>bench/</code>. Live mode spends real inference tokens and
-          never prints your key.
+            CLI benchmark README
+          </a>
+          . It describes mock mode and live inference. Live mode spends real
+          inference tokens.
         </p>
         <pre tabIndex={0} aria-label="Code sample">
           <code>{`cargo build --release
@@ -185,23 +183,34 @@ REVIEW_MODEL=openai/gpt-5.6-luna \\
   bun run bench:live -- --json-out .runs/luna.json`}</code>
         </pre>
         <p>
-          One model per run. Compare only against runs whose{" "}
+          Run one model per report. Compare only runs whose{" "}
           <code>fixtureCorpusSha256</code> and <code>evaluatorSha256</code>{" "}
           match yours; a different corpus is a different test.
         </p>
       </div>
 
-      <div className="prose-postil mt-14 text-sm">
+      <details className="prose-postil mt-14 text-sm">
+        <summary className="cursor-pointer font-medium text-charcoal">
+          Report identity and reproduction data
+        </summary>
         <p>
-          Fixture corpus <code>{BENCH.fixtureCorpusSha256.slice(0, 16)}</code>,
-          evaluator <code>{BENCH.evaluatorSha256.slice(0, 16)}</code>, binary{" "}
-          <code>{BENCH.benchmarkedBinarySha256.slice(0, 16)}</code>.{" "}
+          Report timestamp {formatBenchDate(BENCH.generatedAt)}; CLI version{" "}
+          <code>{BENCH.cliVersion}</code>; fixture corpus{" "}
+          <code>{BENCH.fixtureCorpusSha256.slice(0, 16)}</code>; evaluator{" "}
+          <code>{BENCH.evaluatorSha256.slice(0, 16)}</code>; binary{" "}
+          <code>{BENCH.benchmarkedBinarySha256.slice(0, 16)}</code>.
+        </p>
+        <p>
+          <a href={REPORT_PATH} className="text-rust underline" download>
+            Download the raw report (JSON)
+          </a>{" "}
+          or read the{" "}
           <Link href="/docs/models" className="text-rust underline">
-            Model catalogue and local inference
+            model catalogue and local inference guide
           </Link>
           .
         </p>
-      </div>
+      </details>
     </div>
   );
 }

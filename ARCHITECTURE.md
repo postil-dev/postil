@@ -129,6 +129,12 @@ scoped re-check with visible progress.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
+The operator dashboard aggregates recorded model costs, missing-price counts,
+per-model usage, and settlement statuses over a bounded 30-day UTC period.
+Recorded usage includes customer-provider costs and does not represent total
+operating expense. Runtime invoices remain in the infrastructure provider's
+billing dashboard.
+
 Organization administrators manage the billing contact on the billing page.
 New addresses remain pending until a single-use, 24-hour token is consumed;
 replacements leave the existing verified address active until the new address is

@@ -91,7 +91,7 @@ describe("extractBreadcrumbs", () => {
     ).toEqual({
       repo: "https://github.com/postil-dev/postil",
       prFilesAtCommit:
-        "https://github.com/postil-dev/postil/pull/275/files?sha=4d08309409e3b250cca5db5f53527e39a3a71ef9",
+        "https://github.com/postil-dev/postil/pull/275/files/4d08309409e3b250cca5db5f53527e39a3a71ef9",
       reviewComment:
         "https://github.com/postil-dev/postil/pull/275#discussion_r1234567890",
     });
@@ -106,7 +106,7 @@ describe("extractBreadcrumbs", () => {
     ).toEqual({
       repo: "https://github.com/postil-dev/postil",
       prFilesAtCommit:
-        "https://github.com/postil-dev/postil/pull/295/files?sha=5976fccf72ef93dbf5b175482fac1c79cb9890f2",
+        "https://github.com/postil-dev/postil/pull/295/files/5976fccf72ef93dbf5b175482fac1c79cb9890f2",
     });
   });
 
@@ -119,7 +119,7 @@ describe("extractBreadcrumbs", () => {
     ).toEqual({
       repo: "https://github.com/postil-dev/postil",
       prFilesAtCommit:
-        "https://github.com/postil-dev/postil/pull/275/files?sha=4d08309409e3b250cca5db5f53527e39a3a71ef9",
+        "https://github.com/postil-dev/postil/pull/275/files/4d08309409e3b250cca5db5f53527e39a3a71ef9",
     });
   });
 
