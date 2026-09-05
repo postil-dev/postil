@@ -33,7 +33,7 @@ export interface OperatorFinancialSummary {
 
 export interface OperatorBillingProviderAction {
   provider: string;
-  status: "connected" | "not_connected";
+  status: "connected" | "external" | "not_connected";
   href: string | null;
   action: string | null;
   instruction: string | null;
@@ -203,10 +203,10 @@ export function getOperatorBillingProviderActions(
     },
     model: {
       provider: "OpenRouter",
-      status: openRouterConfigured ? "connected" : "not_connected",
+      status: openRouterConfigured ? "external" : "not_connected",
       href: openRouterConfigured ? "https://openrouter.ai/activity" : null,
       action: openRouterConfigured ? "Open OpenRouter activity" : null,
-      instruction: openRouterConfigured ? "Hosted provider account; customer BYOK accounts are separate." : null,
+      instruction: openRouterConfigured ? "OpenRouter is the selected hosted endpoint. Open the provider account to inspect billing; customer BYOK accounts are separate." : null,
     },
   };
 }

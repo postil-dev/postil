@@ -41,7 +41,7 @@ describe("operator financial ledger formatting", () => {
       },
       model: {
         provider: "OpenRouter",
-        status: "connected",
+        status: "external",
         href: "https://openrouter.ai/activity",
       },
     });

@@ -80,7 +80,6 @@ export function DetectionSpreadChart() {
           const hi = Math.max(...bounded);
           const colour = SERIES[row % SERIES.length]!;
           const spread = `${(hi - lo).toFixed(1)} pt spread`;
-          const spreadFitsRight = x(hi) + 14 + spread.length * 7 <= width - 4;
           return (
             <g key={model.id}>
               <text
@@ -124,9 +123,9 @@ export function DetectionSpreadChart() {
               ))}
               {scoredRates.length > 0 ? (
                 <text
-                  x={spreadFitsRight ? x(hi) + 14 : x(hi) - 14}
-                  y={y + 4}
-                  textAnchor={spreadFitsRight ? "start" : "end"}
+                  x={padLeft - 14}
+                  y={y + 22}
+                  textAnchor="end"
                   fontSize={12}
                   fill={INK_SOFT}
                   fontFamily="ui-monospace, monospace"

@@ -126,7 +126,7 @@ function ProviderBillingActionCard({
         {label}
       </p>
       <p className="mt-2 text-lg font-semibold">
-        {provider.status === "connected" ? provider.provider : "Not connected"}
+        {provider.status === "not_connected" ? "Not connected" : provider.provider}
       </p>
       {provider.href && provider.action && (
         <a

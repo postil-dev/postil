@@ -23,8 +23,8 @@ export function SiteHeader() {
           <Image
             src="/brand/postil-logo.svg"
             alt="Postil"
-            width={130}
-            height={45}
+            width={148}
+            height={48}
             priority
           />
         </Link>
