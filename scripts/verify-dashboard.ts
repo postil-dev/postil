@@ -224,6 +224,10 @@ try {
   );
   await verifyPage(`${origin}/operator`, headers, [
     "Review and run ledger",
+    "Recorded model usage cost",
+    "Runtime infrastructure",
+    "Not connected",
+    "Open Fly.io dashboard",
     "demo-dev",
     "unavailable",
   ]);

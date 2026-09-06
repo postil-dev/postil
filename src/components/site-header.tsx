@@ -8,6 +8,7 @@ const NAV: readonly NavItem[] = [
   { href: "/why-postil", label: "Why Postil" },
   { href: "/how-it-works", label: "How it works" },
   { href: "/evidence", label: "See it run" },
+  { href: "/bench", label: "Bench" },
   { href: "/pricing", label: "Pricing" },
   { href: "/security", label: "Security" },
   { href: "/docs", label: "Docs" },
@@ -22,14 +23,14 @@ export function SiteHeader() {
           <Image
             src="/brand/postil-logo.svg"
             alt="Postil"
-            width={130}
-            height={45}
+            width={148}
+            height={48}
             priority
           />
         </Link>
         <nav
           aria-label="Primary"
-          className="hidden items-center gap-4 text-[15px] lg:flex xl:gap-7"
+          className="hidden items-center gap-5 text-[15px] xl:flex"
         >
           {NAV.map((item) => (
             <Link

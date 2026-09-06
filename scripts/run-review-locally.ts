@@ -36,8 +36,9 @@ const DEFAULT_PR_NUMBER = 1;
 const HOSTED_CLI_ARCHIVE = "postil-x86_64-unknown-linux-gnu.tar.gz";
 const MAX_HOSTED_CLI_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const APPROVED_LOCAL_REVIEW_CASCADE =
-  "z-ai/glm-5.2,moonshotai/kimi-k2.7-code";
-const APPROVED_LOCAL_REVIEW_FALLBACK = "moonshotai/kimi-k2.7-code";
+  "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code";
+const APPROVED_LOCAL_REVIEW_FALLBACK =
+  "openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code";
 
 type DiffTarget =
   | { kind: "staged" }

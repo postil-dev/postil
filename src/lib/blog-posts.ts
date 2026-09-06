@@ -56,13 +56,13 @@ export const BLOG_POSTS = [
   {
     slug: "ai-code-review-benchmarks",
     publishedOn: "2026-07-08",
-    title: "Four AI code review benchmarks, four home-team winners",
+    title: "What code review benchmarks measure",
     description:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
+      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
     socialDescription:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
+      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
     excerpt:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks can't be trusted at face value, and a five-point test for spotting a rigged one.",
+      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
   },
   {
     slug: "why-copilot-cant-block-your-merge",
@@ -102,35 +102,35 @@ export const BLOG_POSTS = [
   {
     slug: "the-gate-is-separate-from-the-review",
     publishedOn: "2026-07-11",
-    title: "The gate is separate from the review",
+    title: "When a review blocks a merge",
     description:
-      "Postil splits advisory review output from the branch-protection gate: postil/review explains findings, while postil/gate carries the required merge verdict.",
+      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
     socialDescription:
-      "A merge gate and a review comment stream are different controls. Postil keeps them separate as postil/gate and postil/review.",
+      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
     excerpt:
-      "Postil keeps advisory findings and the branch-protection verdict separate: postil/review explains, while postil/gate carries the required merge decision.",
+      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
   },
   {
     slug: "evidence-has-to-link-back",
     publishedOn: "2026-07-11",
-    title: "Evidence has to link back",
+    title: "Checking a review finding",
     description:
-      "Postil's public evidence examples link back to the source repository and the pull request files at the reviewed commit, with check-run artifacts retained in the data.",
+      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
     socialDescription:
-      "Public AI review examples should resolve to the real PR state behind the claim, not a fictional demo.",
+      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
     excerpt:
-      "Public AI review examples should resolve to the source repository, the reviewed pull request state, and the check-run records behind the claim.",
+      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
   },
   {
     slug: "the-least-useful-number",
     publishedOn: "2026-08-19",
-    title: "The least useful number on our own benchmark",
+    title: "Choosing a code review model",
     description:
-      "We scored eighteen models on one fixture set in one afternoon. Detection rate moved nine points between runs of a single unchanged model, which is wider than the gap between most models. Silence and gate correctness separate them; the headline metric does not.",
+      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
     socialDescription:
-      "Eighteen models, one fixture set. Detection rate moved nine points between runs of the same model. The headline metric is the least useful one on the table.",
+      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
     excerpt:
-      "We scored eighteen models on one fixture set. Detection rate moved nine points between runs of a single unchanged model, wider than the gap between most models on the table. Here is what separates them instead, and what it cost us to find out.",
+      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
   },
 ] as const satisfies readonly BlogPost[];
 

@@ -1,99 +1,49 @@
 import Link from "next/link";
-
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { EvidenceTrail } from "@/components/blog-figures";
 import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
 const post = getBlogPost("evidence-has-to-link-back");
 export const metadata = blogPostMetadata(post);
-const articleJsonLd = blogPostJsonLd(post);
 
 export default function EvidenceLinksArticle() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16 md:py-20">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(blogPostJsonLd(post)) }} />
       <BlogArticleHeader post={post} />
-
       <div className="prose-postil blog-prose mt-10">
         <p>
-          Evidence for an AI code reviewer should be inspectable, not just
-          persuasive. A screenshot or polished demo can show what a product
-          looks like, but it cannot answer the practical question: what code was
-          reviewed, at what state, and where is the artifact that produced the
-          claim? Postil&apos;s public <Link href="/evidence">evidence page</Link>{" "}
-          is built around real review output from public Postil repositories, so
-          the examples can link back to source.
+          A review finding needs enough source material to test its claim. Postil&apos;s
+          {" "}<Link href="/evidence">public examples</Link> retain the pull request, reviewed
+          head commit, diff excerpt, finding text, and gate outcome together.
         </p>
-
-        <h2>The pull request is not a fixed object</h2>
+        <EvidenceTrail />
+        <h2>A documentation and CI finding</h2>
         <p>
-          A pull request changes over time. New commits arrive, force-pushes
-          replace history, conversations move, and the final merge state may not
-          be the same state a reviewer saw. That is why a useful evidence link
-          has to point at the reviewed commit, not only at the PR conversation.
+          One published finding identifies <code>cli-ref</code> values that point to an action
+          repository commit although that setting resolves against the CLI repository. The setting
+          therefore resolves to a commit that does not exist in the target repository, which makes the
+          CI installation fail. The diff excerpt and finding text expose the two repository identities
+          behind that conclusion.
         </p>
         <p>
-          The work merged in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/pull/321"
-            rel="noopener"
-          >
-            postil-dev/postil#321
-          </a>{" "}
-          added that breadcrumb to the evidence UI. Each evidence card exposes a
-          repository link and a pull-request-files link scoped to the reviewed
-          commit SHA. PR #321 is merged into <code>main</code>; its merge commit
-          is{" "}
-          <a
-            href="https://github.com/postil-dev/postil/commit/1b9182c262e55609a60a4723b2c5bd1f74651c1b"
-            rel="noopener"
-          >
-            <code>1b9182c262e55609a60a4723b2c5bd1f74651c1b</code>
-          </a>
-          .
+          The commit link opens that commit&apos;s own change view, not the complete pull-request review
+          diff. A pull request can contain later commits, so its final diff can differ from the state
+          that the reviewer saw. The evidence record identifies that reviewed state explicitly.
         </p>
-
-        <h2>The data keeps the verification record</h2>
+        <h2>Finding text and gate outcome</h2>
         <p>
-          The public evidence data is in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/blob/main/src/data/evidence/index.ts"
-            rel="noopener"
-          >
-            <code>src/data/evidence/index.ts</code>
-          </a>
-          . The file documents the rule it follows: public examples come from
-          Postil&apos;s public repositories; finding titles and bodies are copied
-          from check-run annotations; review and gate titles and summaries are
-          copied from their check-runs; check-run IDs and the reviewed head SHA
-          are retained as the verification record.
+          Review text states the claimed defect. The retained gate record describes the conclusion
+          published under the repository&apos;s <Link href="/docs/gate">gate rules</Link>. These records
+          answer separate questions: whether the explanation fits the code, and what conclusion the
+          configured policy produced.
         </p>
         <p>
-          The page does not rely on invented sample PRs for those cases. Its UI
-          shows the reviewed diff excerpt or complete diff, the finding text
-          Postil produced, and the gate outcome for the reviewed commit. For
-          silent reviews, the evidence case links a pull request where Postil
-          left no visible review comment.
-        </p>
-
-        <h2>Truthful links are part of the claim</h2>
-        <p>
-          Evidence links also keep the gate and review boundary honest. If a
-          case says the gate failed, the source data has a gate check-run URL and
-          a <code>gate.failing</code> value. If a case says the review advised
-          without blocking, the findings live in the advisory review output
-          while the gate remains passing. If a case says the review was silent,
-          the public PR has no visible Postil review comment.
-        </p>
-        <p>
-          Some GitHub check-run pages can become unavailable in the UI after
-          GitHub&apos;s retention window. Postil still keeps the reviewed head
-          SHA and check-run URLs in the evidence data, while the visible page
-          links to the repository and the PR files at the reviewed commit. That
-          is the durable part of the public claim: readers can inspect the code
-          state the example refers to instead of trusting a fictional demo.
+          GitHub check-run pages can become unavailable, so those links do not independently establish
+          an outcome. The <a href="https://github.com/postil-dev/postil/blob/main/src/data/evidence/index.ts">public source data</a>
+          {" "}retains the displayed finding, commit reference, and gate record. A silent example
+          records no visible finding; the <Link href="/bench">benchmark</Link> measures behaviour
+          across a defined corpus.
         </p>
       </div>
     </div>

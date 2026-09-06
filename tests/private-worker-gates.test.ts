@@ -91,7 +91,7 @@ describe("private repository worker defense in depth", () => {
     );
   });
 
-  test("private author enforcement activates only after the managed fleet replacement", () => {
+  test("private author maintenance remains separate from managed fleet replacement", () => {
     const deploy = readFileSync(".github/workflows/deploy.yml", "utf8");
     const activation = readFileSync("scripts/activate-release-jobs.ts", "utf8");
     const deactivation = readFileSync(
@@ -100,9 +100,11 @@ describe("private repository worker defense in depth", () => {
     );
     expect(deploy.indexOf("Deploy managed fleet")).toBeLessThan(
       deploy.indexOf(
-        "Verify and activate release capabilities after fleet replacement",
+        "Verify additive release preparation",
       ),
     );
+    expect(deploy).toContain('"bun run jobs:activate-release"');
+    expect(deploy).not.toContain("jobs:activate-release --maintenance");
     expect(activation).toContain("activatePrivateReviewAuthorIdentity");
     expect(activation.indexOf("activatePublicationLifecycleRelease")).toBeLessThan(
       activation.indexOf("activateReleaseJobs"),

@@ -4,29 +4,23 @@ import { useState, type CSSProperties } from "react";
 
 import {
   BENCH,
-  benchModel,
   SCORED_MODELS,
   secondsLabel,
   type BenchModelResult,
 } from "@/components/bench-table";
 
-// Palette validated against the ivory chart surface for three categorical
-// slots: lightness band, chroma floor, CVD separation (worst adjacent ΔE 26.5),
-// normal-vision floor (ΔE 29.0) and contrast (all >= 3:1) all pass.
 const SERIES = ["#b8431f", "#2a78d6", "#008300"] as const;
-const AXIS = "#8d9199";
+const AXIS = "#3d464d";
 const GRID = "#e3ded8";
-const CONTEXT = "#b6b1aa";
+const CONTEXT = "#76716a";
 const INK = "#1b2329";
 const INK_SOFT = "#3d464d";
+const FIXTURE_COUNT = BENCH.defectCases + BENCH.cleanCases;
 
 function shortName(id: string): string {
   return id.split("/")[1] ?? id;
 }
 
-/** Detection rate across repeated runs of one unchanged model. The job is to
- * show that the three distributions overlap, so the runs are drawn as
- * individual marks on one shared scale rather than summarised. */
 export function DetectionSpreadChart() {
   const repeats = BENCH.repeatRuns;
   if (!repeats) return null;
@@ -46,10 +40,11 @@ export function DetectionSpreadChart() {
 
   return (
     <figure className="my-8">
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Repeated detection results, scroll horizontally on small screens">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="w-full"
-        role="img"
+        className="min-w-[640px] w-full"
+        role="group"
         aria-label="Detection rate across four runs of each of three models, showing overlapping ranges"
       >
         {ticks.map((tick) => (
@@ -79,17 +74,12 @@ export function DetectionSpreadChart() {
           const y = padTop + row * rowHeight + rowHeight / 2 - 8;
           const degraded = new Set(model.degradedRunIndexes ?? []);
           const rates = model.detectionRates.map((rate) => rate * 100);
-          // The spread is a claim about judgement, so a run that failed to
-          // produce output on much of the corpus does not set its bounds. It
-          // still plots, hollow, so the reader sees it happened.
-          // A model whose every run degraded has no judgement to bound, so the
-          // bar spans the readings there are rather than Math.min of nothing,
-          // which is Infinity and renders the whole row as NaN coordinates.
           const scoredRates = rates.filter((_, index) => !degraded.has(index));
           const bounded = scoredRates.length > 0 ? scoredRates : rates;
           const lo = Math.min(...bounded);
           const hi = Math.max(...bounded);
           const colour = SERIES[row % SERIES.length]!;
+          const spread = `${(hi - lo).toFixed(1)} pt spread`;
           return (
             <g key={model.id}>
               <text
@@ -117,40 +107,42 @@ export function DetectionSpreadChart() {
                   cx={x(rate)}
                   cy={y}
                   r={6}
+                  tabIndex={0}
+                  role="img"
+                  aria-label={`${model.id}, run ${index + 1}: ${rate.toFixed(1)}% seeded-region hits${degraded.has(index) ? ", degraded output" : ""}`}
                   fill={degraded.has(index) ? "#f7f5f1" : colour}
                   stroke={degraded.has(index) ? colour : "#f7f5f1"}
                   strokeWidth={2}
                 >
                   <title>
                     {degraded.has(index)
-                      ? `${model.id} run ${index + 1}: ${rate.toFixed(1)}% — most cases produced no valid output`
-                      : `${model.id} run ${index + 1}: ${rate.toFixed(1)}% detected`}
+                      ? `${model.id} run ${index + 1}: ${rate.toFixed(1)}%; degraded output`
+                      : `${model.id} run ${index + 1}: ${rate.toFixed(1)}% seeded-region hits`}
                   </title>
                 </circle>
               ))}
               {scoredRates.length > 0 ? (
                 <text
-                  x={x(hi) + 14}
-                  y={y + 4}
+                  x={padLeft - 14}
+                  y={y + 22}
+                  textAnchor="end"
                   fontSize={12}
                   fill={INK_SOFT}
                   fontFamily="ui-monospace, monospace"
                 >
-                  {(hi - lo).toFixed(1)} pt spread
+                  {spread}
                 </text>
               ) : null}
             </g>
           );
         })}
       </svg>
+      </div>
       <figcaption className="mt-2 text-sm text-charcoal/70">
-        Each filled dot is one run of the same model against the same 70
-        fixtures. The ranges overlap almost completely, which is why a single
-        run cannot rank these models. The hollow dot is a run where 16 of 70
-        cases produced no valid output: it is shown rather than dropped,
-        because discarding bad runs is how a benchmark flatters itself, and
-        left out of the spread, which is a claim about judgement rather than
-        availability.
+        Each dot is one screening run against the same {FIXTURE_COUNT} fixtures.
+        Filled dots define the displayed detection-rate spread. A hollow dot
+        marks a run with widespread invalid output; it remains visible but does
+        not define the spread.
       </figcaption>
     </figure>
   );
@@ -161,14 +153,6 @@ const HIGHLIGHTED = [
   "z-ai/glm-5.2",
   "moonshotai/kimi-k2.7-code",
 ] as const;
-
-const ORDINALS = [
-  "lowest",
-  "second-lowest",
-  "third-lowest",
-  "fourth-lowest",
-  "fifth-lowest",
-];
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
@@ -190,8 +174,6 @@ interface CostGatePoint {
   cy: number;
   colour: string;
   radius: number;
-  /** Spoken and shown on the card: every figure the row carries for this model
-   * that bears on the trade-off the chart is about. */
   metrics: { label: string; value: string }[];
 }
 
@@ -199,9 +181,6 @@ const LABEL_GAP = 14;
 const LABEL_CHAR = 7.3; // 12.5px monospace advance width
 const LABEL_BAND = 11; // vertical reach of one label line either side of a mark
 
-/** Where a permanent label sits relative to its mark: right of it, else left,
- * else under or over it. A name laid across another mark reads as two things
- * at once, so the first placement clear of every other mark wins. */
 function labelPlacement(
   point: CostGatePoint,
   all: CostGatePoint[],
@@ -237,25 +216,6 @@ function labelPlacement(
   return { x: right, y: point.cy + 4, anchor: "start" };
 }
 
-/** Cost against gate-verdict correctness for every scored model.
- *
- * Decision rules this chart is drawn to, so later edits do not re-litigate
- * them point by point:
- * - Cost runs high to low left to right, so the model a reader should want
- *   sits in the top right corner. A scatter reads best when both axes point
- *   the same way.
- * - No rules across the plot. Nineteen marks on two axes carry the shape on
- *   their own; a single hairline under the plot separates the cost labels
- *   from the marks and is the only line that earns its ink.
- * - Three models carry the argument and the rest are context, so this is an
- *   emphasis chart: one hue each for the three, a recessive grey for the
- *   other sixteen, and a permanent name only on the three the surrounding
- *   prose names.
- * - Detail on demand for the rest: pointer or keyboard on any mark opens one
- *   card carrying the whole row. It floats beside the mark, clamped to the
- *   plot, and drops below the plot on a screen too short to hold it without
- *   covering the mark it describes.
- */
 export function CostAgainstGateChart() {
   const [hovered, setHovered] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
@@ -276,11 +236,6 @@ export function CostAgainstGateChart() {
   const costs = scored.map((model) => model.totalCostUsd!);
   const logMin = Math.log10(Math.min(...costs));
   const logMax = Math.log10(Math.max(...costs));
-  // Cheap on the right: the axis is inverted so height and thrift both read as
-  // progress towards the top right.
-  // Coordinates round to hundredths of a viewBox unit. Math.log10 differs in
-  // its last bit between the server runtime and the browser, which is far below
-  // a rendered pixel and still enough to fail hydration on the raw value.
   const x = (cost: number) =>
     round2(
       padLeft +
@@ -298,9 +253,14 @@ export function CostAgainstGateChart() {
   const points: CostGatePoint[] = scored.map((model) => {
     const cost = model.totalCostUsd!;
     const gate = model.gateVerdictCorrectness!;
+    const scoredCases = model.casesRun - model.unscoredCases;
     const emphasis = HIGHLIGHTED.indexOf(model.id as (typeof HIGHLIGHTED)[number]);
     const metrics = [
-      { label: "Gate correct", value: percentLabel(gate) },
+      {
+        label: "Gate correct",
+        value: `${percentLabel(gate)} (${Math.round(gate * scoredCases)}/${scoredCases})`,
+      },
+      { label: "No envelope", value: `${model.unscoredCases}/${model.casesRun}` },
       { label: "Total cost", value: costLabel(cost) },
       ...(model.detectionRate === undefined
         ? []
@@ -321,28 +281,21 @@ export function CostAgainstGateChart() {
     };
   });
 
-  const winner = benchModel("openai/gpt-5.6-luna");
-  // Derived so the caption cannot outlive the report it describes.
-  const cheaperThanWinner = costs.filter((cost) => cost < winner.totalCostUsd!).length;
-  const winnerCostRank = ORDINALS[cheaperThanWinner] ?? `${cheaperThanWinner + 1}th-lowest`;
-
   const active = points.find((point) => point.model.id === activeId);
-  // A mark high in the plot takes its card below it, and the reverse, so the
-  // card never sits on the mark it describes or over the edge of the figure.
   const nearTop = active !== undefined && active.cy < height * 0.45;
-  // Tab order sweeps the plot the way it reads, most expensive to cheapest,
-  // which is left to right on the inverted axis.
   const hitOrder = [...points].sort((first, second) => second.cost - first.cost);
 
   return (
     <figure className="my-8">
-      <div className="relative" onPointerLeave={() => setHovered(null)}>
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Model cost and gate correctness, scroll horizontally on small screens">
+      <div className="relative min-w-[640px]" onPointerLeave={() => setHovered(null)}>
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="w-full"
           role="group"
-          aria-label={`Total cost against gate-verdict correctness for ${points.length} scored models. Cost runs from high on the left to low on the right.`}
+          aria-label={`Total run cost against gate-verdict correctness for ${points.length} scored models. Cost covers all ${FIXTURE_COUNT} attempted fixtures; gate correctness uses cases with valid output. Cost runs from high on the left to low on the right.`}
         >
+          <text x={padLeft} y={14} fontSize={12} fill={INK_SOFT}>Gate correctness (%)</text>
           {gateTicks.map((tick) => (
             <text
               key={tick}
@@ -384,12 +337,9 @@ export function CostAgainstGateChart() {
             fontSize={12}
             fill={INK_SOFT}
           >
-            Cost for all 70 fixtures, log scale, cheaper to the right
+            Total cost for {FIXTURE_COUNT} fixtures (USD, log scale), cheaper to the right
           </text>
 
-          {/* Marks paint context first so the three emphasised models sit on
-              top; the hit targets below carry the interaction and their own
-              order, which keeps paint order and tab order independent. */}
           {points
             .filter((point) => point.radius === 5)
             .map((point) => (
@@ -456,8 +406,6 @@ export function CostAgainstGateChart() {
               aria-label={`${point.model.id}. ${point.metrics
                 .map((metric) => `${metric.label} ${metric.value}`)
                 .join(". ")}.`}
-              // Touch drives the card through focus instead: a tap ends with a
-              // pointerleave, which would close the card the tap just opened.
               onPointerEnter={(event) => {
                 if (event.pointerType !== "touch") setHovered(point.model.id);
               }}
@@ -493,8 +441,6 @@ export function CostAgainstGateChart() {
               />
               {active.name}
             </p>
-            {/* Below the small breakpoint the rows join the card's own wrap
-                flow, which keeps it to a short band under the plot. */}
             <dl className="contents text-[11px] sm:mt-2 sm:block sm:space-y-1 sm:text-xs">
               {active.metrics.map((metric) => (
                 <div key={metric.label} className="flex gap-1.5 sm:justify-between sm:gap-3">
@@ -506,12 +452,13 @@ export function CostAgainstGateChart() {
           </div>
         ) : null}
       </div>
+      </div>
       <figcaption className="mt-2 text-sm text-charcoal/70">
-        Gate-verdict correctness against what the run cost, for all{" "}
-        {points.length} scored models. Up is better, right is cheaper. The model
-        we moved to sits top right: it decides the gate correctly more often
-        than anything else measured, for the {winnerCostRank} spend on the
-        chart. Point at a mark, or tab to it, for the rest of its row.
+        Gate-verdict correctness and total run cost for {points.length} scored
+        models. Higher is more correct; right is less expensive. Each point is
+        one screening run across {FIXTURE_COUNT} attempted fixtures. Gate
+        correctness excludes cases without a valid envelope; the results table on
+        the benchmark page lists those failures. Focus or hover a point to read its row.
       </figcaption>
     </figure>
   );

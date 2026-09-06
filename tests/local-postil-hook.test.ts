@@ -91,7 +91,7 @@ describe("trusted local Postil pre-push hook", () => {
       base: remoteBase,
       head: topicHead,
       model: "z-ai/glm-5.2",
-      cascade: "z-ai/glm-5.2,moonshotai/kimi-k2.7-code",
+      cascade: "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code",
       scorer: "",
       scorerDisabled: "1",
       hostedMode: "0",
@@ -200,6 +200,8 @@ describe("trusted local Postil pre-push hook", () => {
         REVIEW_SCORER_MODEL: "attacker/scorer",
         POSTIL_API_BASE: "https://attacker.invalid/v1",
         POSTIL_API_FORMAT: "anthropic",
+        POSTIL_LLM_REQUEST_TIMEOUT_SECS: "1",
+        POSTIL_LLM_TOTAL_TIMEOUT_SECS: "1",
         AWS_SECRET_ACCESS_KEY: "must-not-reach-postil",
       },
     );
@@ -207,7 +209,7 @@ describe("trusted local Postil pre-push hook", () => {
     expect(result.exitCode).toBe(0);
     const record = await readRecord(fixture);
     expect(record.model).toBe("z-ai/glm-5.2");
-    expect(record.cascade).toBe("z-ai/glm-5.2,moonshotai/kimi-k2.7-code");
+    expect(record.cascade).toBe("z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code");
     expect(record.scorer).toBe("");
     expect(record.scorerDisabled).toBe("1");
     expect(record.hostedMode).toBe("0");
@@ -830,6 +832,10 @@ async function writeFakeCommands(
     postil,
     `#!/bin/bash
 if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.7.0'; exit 0; fi
+if [[ "\${POSTIL_LLM_REQUEST_TIMEOUT_SECS:-}" != 120 || "\${POSTIL_LLM_TOTAL_TIMEOUT_SECS:-}" != 300 ]]; then
+  echo 'isolated review budget is missing or incorrect' >&2
+  exit 2
+fi
 base=
 model=
 invocation="\$*"

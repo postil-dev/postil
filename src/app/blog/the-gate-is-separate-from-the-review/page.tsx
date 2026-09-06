@@ -1,91 +1,54 @@
 import Link from "next/link";
-
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { GateOutcomes } from "@/components/blog-figures";
 import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
 const post = getBlogPost("the-gate-is-separate-from-the-review");
 export const metadata = blogPostMetadata(post);
-const articleJsonLd = blogPostJsonLd(post);
 
 export default function GateSeparateFromReviewArticle() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16 md:py-20">
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(blogPostJsonLd(post)) }} />
       <BlogArticleHeader post={post} />
-
       <div className="prose-postil blog-prose mt-10">
         <p>
-          A review and a gate sound similar until a branch protection rule has
-          to make a decision. The review is the explanatory surface: findings,
-          inline comments, summaries, and context for a human. The gate is the
-          control surface: one required status check that either lets the head
-          commit merge or blocks it. Postil exposes those as two GitHub
-          check-runs, <code>postil/review</code> and <code>postil/gate</code>,
-          because those jobs should not share one status.
+          <code>postil/review</code> publishes findings and inline comments. <code>postil/gate</code>{" "}
+          publishes the organization&apos;s gate conclusion. A warning can remain visible in the review
+          while the gate succeeds.
         </p>
-
-        <h2>One check cannot do both jobs cleanly</h2>
+        <GateOutcomes />
+        <h2>From advisory to required</h2>
         <p>
-          The <Link href="/docs/gate">gate documentation</Link> defines the
-          split directly. <code>postil/gate</code> is the blocking verdict and
-          the check teams require in branch protection. It fails when a finding
-          reaches the configured threshold, whose default is{" "}
-          <code>error</code>, or when the review cannot complete and the
-          repository uses the default fail-closed behavior.{" "}
-          <code>postil/review</code> carries advisory output and inline
-          comments. The docs say not to require it.
+          New hosted organizations publish <code>postil/gate</code> as advisory. An organization
+          admin enables blocking in settings. While the organization mode is advisory, the gate check
+          concludes neutral for normal reviews, operational failures, and finding-decision changes;
+          no finding blocks a merge through that check.
         </p>
         <p>
-          That separation matters because advisory output is allowed to be more
-          expressive than a merge rule. A warning can be useful without being a
-          blocker. A clean review can leave no visible comment while the passing
-          check-run remains the record. An operational error can be visible in
-          the advisory check without quietly turning an unreviewed head into a
-          passing gate.
-        </p>
-
-        <h2>The required check is the product behavior</h2>
-        <p>
-          GitHub branch protection works on named status checks. If a team wants
-          an AI reviewer to block merges, the enforceable artifact is the check
-          that branch protection requires, not the presence of a comment. In
-          Postil, that artifact is <code>postil/gate</code>. The homepage
-          describes the same split, and the setup path in the docs tells teams
-          to add <code>postil/gate</code> to required checks while leaving{" "}
-          <code>postil/review</code> advisory.
+          With blocking enabled, the default threshold is <code>gate.failOn: error</code>. A warning
+          below that threshold leaves <code>postil/gate</code> successful. A
+          {" "}<code>humanEscalation</code> finding with calibrated confidence of at least 0.30
+          blocks by default. These thresholds are separate from organization gate mode.
         </p>
         <p>
-          The <Link href="/evidence">evidence page</Link> shows the distinction
-          in public examples. Each case is labeled by what the gate did:
-          blocking, advising, or passing silently. The review content explains
-          the finding when there is one. The gate state is the merge verdict.
-          Those are related, but they are not the same artifact.
+          After blocking is enabled, a branch rule can require <code>postil/gate</code> and bind that
+          check to the Postil GitHub App. <code>postil/review</code> remains advisory. GitHub branch
+          protection and rulesets determine whether a failing gate blocks a merge, including any
+          configured bypass actors.
         </p>
-
-        <h2>Why public evidence has to show the split</h2>
+        <h2>Provider failure policy</h2>
+        <pre tabIndex={0} aria-label="Gate configuration example">
+          <code>{`gate:
+  failOn: error
+  onError: advisory`}</code>
+        </pre>
         <p>
-          A product claim like &quot;blocks merges&quot; is only meaningful when
-          the example shows which check carried the block and what source state
-          it reviewed. The evidence-truthfulness work merged in{" "}
-          <a
-            href="https://github.com/postil-dev/postil/pull/321"
-            rel="noopener"
-          >
-            postil-dev/postil#321
-          </a>{" "}
-          tightened the public examples around that rule: evidence cards now
-          link to the source repository and to the pull request files at the
-          reviewed commit. The evidence data also retains the reviewed head SHA
-          and the review and gate check-run URLs as verification records.
-        </p>
-        <p>
-          The standard is simple: advisory text can help a reviewer understand
-          the issue, but the merge decision must be visible as its own required
-          check. Postil keeps that boundary explicit so a team can require the
-          gate without turning every advisory note into a blocker.
+          With blocking enabled, <code>gate.onError: block</code> is the default: an incomplete review
+          fails closed. The configuration shown above changes provider failures to a neutral gate
+          conclusion. GitHub accepts neutral required checks. It does not convert invalid model output
+          or existing blocking findings into a passing outcome. The
+          {" "}<Link href="/docs/gate">gate documentation</Link> specifies these outcomes.
         </p>
       </div>
     </div>

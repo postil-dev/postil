@@ -4,6 +4,10 @@ import {
   hostedProviderApiKeyFromEnv,
   verifyHostedProvider,
 } from "../scripts/verify-hosted-provider";
+import {
+  buildManagedHostedChatCompletionRequest,
+  resolveManagedHostedProviderProfile,
+} from "@/lib/managed-hosted-provider-profile";
 
 const base = {
   apiBase: "https://provider.example/v1",
@@ -28,6 +32,117 @@ const validResponse = {
 };
 
 describe("hosted provider preflight", () => {
+  test("validates inherited scorer effort against the admitted profile", () => {
+    for (const effort of [undefined, "low", " LOW "]) {
+      expect(resolveManagedHostedProviderProfile({
+        POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+        REVIEW_SCORER_REASONING_EFFORT: effort,
+      }).reasoningEffort).toBe("low");
+    }
+    for (const effort of ["high", "none", "max", "turbo", ""]) {
+      expect(() => resolveManagedHostedProviderProfile({
+        POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+        REVIEW_REASONING_EFFORT: "low",
+        REVIEW_SCORER_REASONING_EFFORT: effort,
+      })).toThrow("REVIEW_SCORER_REASONING_EFFORT=low");
+    }
+    expect(() => resolveManagedHostedProviderProfile({
+      POSTIL_MANAGED_RELEASE: "1",
+      REVIEW_SCORER_REASONING_EFFORT: "low",
+    })).toThrow("managed hosted provider profile is not enabled");
+  });
+
+  test("uses the exact shared managed Luna and Azure request policy", async () => {
+    const profile = resolveManagedHostedProviderProfile({
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+    });
+    const requestBody = buildManagedHostedChatCompletionRequest(
+      {
+        messages: [{ role: "user", content: "Reply with exactly: ready" }],
+        max_tokens: 128,
+        temperature: 0,
+      },
+      profile,
+    );
+    let observedBody: unknown;
+    await verifyHostedProvider({
+      apiBase: profile.apiBase,
+      model: profile.model,
+      apiKey: "test-key",
+      providerName: profile.providerName,
+      maxPromptPrice: profile.maxPromptPrice,
+      maxCompletionPrice: profile.maxCompletionPrice,
+      requestBody,
+      fetchImpl: async (_input, init) => {
+        observedBody = JSON.parse(String(init?.body));
+        return Response.json({
+          model: "openai/gpt-5.6-luna",
+          provider: "Azure",
+          choices: [{ finish_reason: "stop", message: { content: "ready" } }],
+          usage: {
+            prompt_tokens: 8,
+            completion_tokens: 1,
+            total_tokens: 9,
+            cost: 0.000003,
+            cost_details: { upstream_inference_cost: 0.000003 },
+          },
+        });
+      },
+    });
+    expect(profile).toEqual({
+      apiBase: "https://openrouter.ai/api/v1",
+      apiFormat: "openai-compatible",
+      model: "openai/gpt-5.6-luna",
+      providerName: "Azure",
+      providerRoute: "azure/eu",
+      reasoningEffort: "low",
+      maxOutputTokens: 8_000,
+      temperature: 0.1,
+      maxPromptPrice: 0.22,
+      maxCompletionPrice: 1.32,
+    });
+    expect(observedBody).toEqual({
+      messages: [{ role: "user", content: "Reply with exactly: ready" }],
+      max_tokens: 128,
+      temperature: 0.1,
+      model: "openai/gpt-5.6-luna",
+      reasoning: { effort: "low" },
+      provider: {
+        data_collection: "deny",
+        zdr: true,
+        order: ["azure/eu"],
+        allow_fallbacks: false,
+        max_price: { prompt: 0.22, completion: 1.32 },
+      },
+    });
+    await expect(
+      verifyHostedProvider({
+        apiBase: profile.apiBase,
+        model: profile.model,
+        apiKey: "test-key",
+        providerName: profile.providerName,
+        maxPromptPrice: profile.maxPromptPrice,
+        maxCompletionPrice: profile.maxCompletionPrice,
+        requestBody,
+        fetchImpl: async () =>
+          Response.json({
+            model: "openai/gpt-5.6-luna",
+            provider: "OpenAI",
+            choices: [
+              { finish_reason: "stop", message: { content: "ready" } },
+            ],
+            usage: {
+              prompt_tokens: 8,
+              completion_tokens: 1,
+              total_tokens: 9,
+              cost: 0.000003,
+              cost_details: { upstream_inference_cost: 0.000003 },
+            },
+          }),
+      }),
+    ).rejects.toThrow("unexpected provider");
+  });
+
   test("uses the review worker's provider credential precedence", () => {
     const previous = {
       MODEL_API_KEY: process.env.MODEL_API_KEY,
