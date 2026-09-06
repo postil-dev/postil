@@ -115,22 +115,22 @@ export const BLOG_POSTS = [
     publishedOn: "2026-07-11",
     title: "Checking a review finding",
     description:
-      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
+      "A copied CLI commit reference shows how source code, finding text and a retained gate result support different claims.",
     socialDescription:
-      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
+      "A copied CLI commit reference shows how source code, finding text and a retained gate result support different claims.",
     excerpt:
-      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
+      "A copied CLI commit reference shows how source code, finding text and a retained gate result support different claims.",
   },
   {
     slug: "the-least-useful-number",
     publishedOn: "2026-08-19",
     title: "Choosing a code review model",
     description:
-      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
+      "Luna and GLM compared through benchmark gate errors, duplicate findings, clean-case results, recorded cost and output failures.",
     socialDescription:
-      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
+      "Luna and GLM compared through benchmark gate errors, duplicate findings, clean-case results, recorded cost and output failures.",
     excerpt:
-      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
+      "Luna and GLM compared through benchmark gate errors, duplicate findings, clean-case results, recorded cost and output failures.",
   },
 ] as const satisfies readonly BlogPost[];
 

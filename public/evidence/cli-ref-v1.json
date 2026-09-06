@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "swapped-shas",
+  "category": "Docs / CI",
+  "title": "Two repositories’ commit SHAs swapped in copied examples",
+  "blurb": "Two documentation snippets pin cli-ref to the action repository commit instead of the separate CLI repository commit. Both real annotations are preserved below.",
+  "diff": "diff --git a/src/app/docs/quickstart/page.tsx b/src/app/docs/quickstart/page.tsx\n--- a/src/app/docs/quickstart/page.tsx\n+++ b/src/app/docs/quickstart/page.tsx\n@@ -47,7 +47,9 @@ postil review --base main`}</code>\n       <h2>2. GitHub Actions</h2>\n       <p>\n         The composite action installs a CLI pinned to a full 40-character\n-        commit SHA and runs the same review in CI:\n+        commit SHA and runs the same review in CI. The action itself has no\n+        tagged releases yet, so pin it to a commit SHA too —{\" \"}\n+        <code>@v1</code> will resolve once the first tag ships:\n       </p>\n       <pre tabIndex={0} aria-label=\"Code sample\">\n         <code>{`name: review\n@@ -64,23 +66,31 @@ jobs:\n       checks: write\n     steps:\n       - uses: actions/checkout@v4\n-      - uses: postil-dev/postil-action@v1\n+      - uses: postil-dev/postil-action@0d92d604e753fd6831baeeff85e3f2ff4a84bd6c # main, @v1 resolves after the first tagged release\n         with:\n-          cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5\n+          cli-ref: 0d92d604e753fd6831baeeff85e3f2ff4a84bd6c\n         env:\n           GITHUB_TOKEN: \\${{ secrets.GITHUB_TOKEN }}\n           OPENROUTER_API_KEY: \\${{ secrets.OPENROUTER_API_KEY }}`}</code>\n       </pre>\n       <p>\n-        The <code>cli-ref</code> above is the current blessed CLI ref; check the{\" \"}\n+        Both SHAs above are the current heads of their respective{\" \"}\n+        <code>main</code> branches; check the{\" \"}\n+        <a\n+          href=\"https://github.com/postil-dev/postil-action\"\n+          rel=\"noopener\"\n+        >\n+          postil-action repository\n+        </a>{\" \"}\n+        and the{\" \"}\n         <a\n           href=\"https://github.com/postil-dev/postil-cli\"\n           rel=\"noopener\"\n         >\n           postil-cli repository\n         </a>{\" \"}\n         for the latest. The action refuses anything but a full 40-character\n-        commit SHA — tags move, SHAs do not.\n+        commit SHA for <code>cli-ref</code> — tags move, SHAs do not.\n       </p>\n \n       <h2>3. Hosted GitHub App</h2>\ndiff --git a/src/app/docs/page.tsx b/src/app/docs/page.tsx\n--- a/src/app/docs/page.tsx\n+++ b/src/app/docs/page.tsx\n@@ -38,6 +38,11 @@ const CARDS = [\n     title: \"Envelope schema\",\n     body: \"The JSON contract between the CLI and everything else: findings, counts, gate, usage.\",\n   },\n+  {\n+    href: \"/docs/content-policy\",\n+    title: \"Content policy\",\n+    body: \"Opt-in review of prose in the diff: fabricated claims, AI-authorship residue, and the built-in baseline.\",\n+  },\n   {\n     href: \"/docs/gitlab\",\n     title: \"GitLab\",\n@@ -82,9 +87,9 @@ postil doctor            # verify endpoint, key, and model\n postil review --staged\n \n # CI (GitHub Actions) — @v1 resolves after the first tagged release\n-- uses: postil-dev/postil-action@v1\n+- uses: postil-dev/postil-action@0d92d604e753fd6831baeeff85e3f2ff4a84bd6c\n   with:\n-    cli-ref: 87f4bf08b63712d3600030a7c458f0b790cfc0d5\n+    cli-ref: 0d92d604e753fd6831baeeff85e3f2ff4a84bd6c\n \n # hosted\n Install the GitHub App; reviews start on the next PR.`}</code>",
+  "diffIsExcerpt": true,
+  "sourceUrl": "https://github.com/postil-dev/postil/pull/280",
+  "reviewUrl": "https://github.com/postil-dev/postil/pull/280#pullrequestreview-4617737950",
+  "checkRunUrl": "https://github.com/postil-dev/postil/runs/84779432874",
+  "gateCheckRunUrl": "https://github.com/postil-dev/postil/runs/84779434442",
+  "commitSha": "e625962b8890569c3eed4b48f893f7a5de43b60b",
+  "envelope": {
+    "checkRunTitle": "2 error, 0 warn, 0 info",
+    "summary": "The quickstart and docs index snippets incorrectly change `cli-ref` from the CLI repository's SHA to the action repository's SHA; users who copy them will get a CLI resolution failure in CI.\n\n- <img src=\"https://postil.dev/status/error.svg\" width=\"14\" height=\"14\" alt=\"error\" align=\"text-bottom\"> **error** `src/app/docs/quickstart/page.tsx:71` — Fix cli-ref to use CLI repository SHA · confidence 0.90 · kind: risk\n- <img src=\"https://postil.dev/status/error.svg\" width=\"14\" height=\"14\" alt=\"error\" align=\"text-bottom\"> **error** `src/app/docs/page.tsx:92` — Fix cli-ref to use CLI repository SHA · confidence 0.90 · kind: risk\n\nModel: moonshotai/kimi-k2.6",
+    "silent": false,
+    "findings": [
+      {
+        "path": "src/app/docs/quickstart/page.tsx",
+        "line": 71,
+        "endLine": 71,
+        "severity": "error",
+        "kind": "risk",
+        "confidence": 0.9,
+        "title": "Fix cli-ref to use CLI repository SHA",
+        "body": "`cli-ref` was changed from the CLI commit `87f4bf08b63712d3600030a7c458f0b790cfc0d5` to the action commit `0d92d604e753fd6831baeeff85e3f2ff4a84bd6c`. Because `cli-ref` resolves against the `postil-cli` repository (per the surrounding docs), pinning it to the action repo's SHA will cause the composite action to fail when installing the CLI. Revert `cli-ref` to the current `postil-cli` HEAD or latest SHA, updating only the action `uses` pin."
+      },
+      {
+        "path": "src/app/docs/page.tsx",
+        "line": 92,
+        "endLine": 92,
+        "severity": "error",
+        "kind": "risk",
+        "confidence": 0.9,
+        "title": "Fix cli-ref to use CLI repository SHA",
+        "body": "`cli-ref` was changed from the CLI commit `87f4bf08b63712d3600030a7c458f0b790cfc0d5` to the action commit `0d92d604e753fd6831baeeff85e3f2ff4a84bd6c`. Because `cli-ref` resolves against the `postil-cli` repository (per the surrounding docs), pinning it to the action repo's SHA will cause the composite action to fail when installing the CLI. Revert `cli-ref` to the current `postil-cli` HEAD or latest SHA, updating only the action `uses` pin."
+      }
+    ],
+    "gate": {
+      "title": "2 error, 0 warn, 0 info",
+      "summary": "Gate failing at `error` on:\n- `src/app/docs/quickstart/page.tsx:71` Fix cli-ref to use CLI repository SHA\n- `src/app/docs/page.tsx:92` Fix cli-ref to use CLI repository SHA",
+      "failOn": "error",
+      "failing": true
+    },
+    "modelUsed": "moonshotai/kimi-k2.6"
+  }
+}
