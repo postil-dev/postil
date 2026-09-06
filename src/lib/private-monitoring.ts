@@ -1829,7 +1829,9 @@ async function probeWithRetry(input: {
       };
     }
     attemptFailures.push(detail);
-    await sleep(retryDelay);
+    // A delay that cannot be awaited must not turn one probe into a failed
+    // pass; the next attempt simply runs without the pause.
+    await sleep(retryDelay).catch(() => undefined);
   }
   throw new Error("probe retry loop exited without a result");
 }
