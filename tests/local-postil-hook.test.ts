@@ -200,6 +200,8 @@ describe("trusted local Postil pre-push hook", () => {
         REVIEW_SCORER_MODEL: "attacker/scorer",
         POSTIL_API_BASE: "https://attacker.invalid/v1",
         POSTIL_API_FORMAT: "anthropic",
+        POSTIL_LLM_REQUEST_TIMEOUT_SECS: "1",
+        POSTIL_LLM_TOTAL_TIMEOUT_SECS: "1",
         AWS_SECRET_ACCESS_KEY: "must-not-reach-postil",
       },
     );
@@ -830,6 +832,10 @@ async function writeFakeCommands(
     postil,
     `#!/bin/bash
 if [[ "\${1:-}" == "--version" ]]; then echo 'postil 0.7.0'; exit 0; fi
+if [[ "\${POSTIL_LLM_REQUEST_TIMEOUT_SECS:-}" != 120 || "\${POSTIL_LLM_TOTAL_TIMEOUT_SECS:-}" != 300 ]]; then
+  echo 'isolated review budget is missing or incorrect' >&2
+  exit 2
+fi
 base=
 model=
 invocation="\$*"

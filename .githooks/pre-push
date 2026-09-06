@@ -665,6 +665,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       POSTIL_API_BASE=https://openrouter.ai/api/v1 \
       POSTIL_API_FORMAT=openai-compatible \
       POSTIL_HOSTED_MODE=0 \
+      POSTIL_LLM_REQUEST_TIMEOUT_SECS=120 POSTIL_LLM_TOTAL_TIMEOUT_SECS=300 \
       REVIEW_MODEL_CASCADE="$local_cascade_override" \
       REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
       "$CREDENTIAL_WRAPPER" "$POSTIL_EXECUTABLE" review --base "$base_sha" --no-post \
@@ -682,6 +683,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       POSTIL_API_BASE=https://openrouter.ai/api/v1 \
       POSTIL_API_FORMAT=openai-compatible \
       POSTIL_HOSTED_MODE=0 \
+      POSTIL_LLM_REQUEST_TIMEOUT_SECS=120 POSTIL_LLM_TOTAL_TIMEOUT_SECS=300 \
       REVIEW_MODEL="$local_primary_model" \
       REVIEW_MODEL_CASCADE="$local_cascade_override" \
       REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
