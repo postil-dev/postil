@@ -340,14 +340,14 @@ console.log("fixture-key");
 
     await runLocalReview(repo, "0", 0, {
       env: {
-        REVIEW_MODEL_CASCADE: "z-ai/glm-5.2,google/gemini-3.8-flash,moonshotai/kimi-k2.7-code",
+        REVIEW_MODEL_CASCADE: "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code",
       },
     });
 
     const invocation = JSON.parse(await readFile(invocationMarker, "utf8"));
     expect(invocation.model).toBe("z-ai/glm-5.2");
     expect(invocation.cascade).toBe(
-      "google/gemini-3.8-flash,moonshotai/kimi-k2.7-code",
+      "openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code",
     );
   }, 120_000);
 

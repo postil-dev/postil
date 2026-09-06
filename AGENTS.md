@@ -9,13 +9,6 @@ migrate, and remove obsolete behavior in a separate verified change. Routine
 deployments do not pause hosted reviews. Redesign an incompatible rollout
 before deployment and explain any unavoidable interruption to the operator.
 
-Public articles and reference pages explain the product without requiring
-repository history. Keep implementation PRs, authoring decisions, removed
-fixtures, and old release comparisons out of explanatory prose. Quantitative
-claims cite public evidence and state the sample, units, and failed-case
-handling. Derive charts and repeated figures from the same data. Keep benchmark
-setup runnable from a public checkout and link it from results pages.
-
 After focused tests, coding agents run the full completed diff through the
 local hosted-review harness before handoff. Use the pull request's actual base:
 
@@ -23,14 +16,14 @@ local hosted-review harness before handoff. Use the pull request's actual base:
 POSTIL_API_BASE=https://openrouter.ai/api/v1 \
 POSTIL_API_FORMAT=openai-compatible \
 REVIEW_MODEL=z-ai/glm-5.2 \
-REVIEW_MODEL_CASCADE=z-ai/glm-5.2,google/gemini-3.8-flash,moonshotai/kimi-k2.7-code \
+REVIEW_MODEL_CASCADE=z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code \
 POSTIL_DISABLE_SCORER=1 \
 POSTIL_LLM_REQUEST_TIMEOUT_SECS=120 \
 POSTIL_LLM_TOTAL_TIMEOUT_SECS=300 \
-bun run review:local -- --base origin/main --head HEAD --require-clean --repo-path .
+bun run review:local -- --base origin/main --head HEAD --require-clean --keep-database --repo-path .
 ```
 
-The review tries Gemini 3.8 Flash, then Kimi, when GLM output fails
+The review tries Luna, then Kimi, when GLM output fails
 validation. GLM stays pinned as the primary model. Request and total provider
 budgets are bounded at 120 and 300 seconds.
 

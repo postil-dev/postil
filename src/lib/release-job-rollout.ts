@@ -33,6 +33,10 @@ export const COMPATIBLE_MANAGED_RELEASE_PROTOCOL =
   "additive-publication-hosted-v1";
 export const COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHA =
   "35dd695af19e817bd7b87be5be808b45cefaa7a7";
+export const COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS: readonly string[] = [
+  COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHA,
+  "2a36982828c85d1c700f8a60a0956596e2e9a178",
+];
 export const HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY =
   "hosted-inference-fleet-active";
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
@@ -466,7 +470,7 @@ export function compatibleManagedReleaseProtocolCapability(
   return `${MANAGED_RELEASE_PROTOCOL_PREFIX}${normalizedManagedReleaseSha(releaseSha)}:${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}`;
 }
 
-async function assertExactManagedReleaseMigrations(
+async function assertManagedReleaseMigrationsCurrent(
   client: PoolClient,
   expected: readonly ManagedReleaseMigrationIdentity[],
 ): Promise<void> {
@@ -514,18 +518,22 @@ async function assertExactManagedReleaseMigrations(
         `(database=${actual.rows.length}, checked_in=${expected.length})`,
     );
   }
-  if (actualByCreatedAt.size < expectedByCreatedAt.size) {
-    throw new Error(
-      "managed release migration journal has pending migrations " +
-        `(database=${actual.rows.length}, checked_in=${expected.length})`,
-    );
-  }
-  for (const [createdAt, wanted] of expectedByCreatedAt) {
-    if (actualByCreatedAt.get(createdAt) !== wanted.hash) {
+  for (const [createdAt, actualHash] of actualByCreatedAt) {
+    if (actualHash !== expectedByCreatedAt.get(createdAt)!.hash) {
       throw new Error(
         `managed release migration journal mismatch at ${createdAt}`,
       );
     }
+  }
+  // Drizzle applies migrations above its recorded timestamp watermark.
+  // Older journal gaps can coexist with later migrations that repair their schema.
+  const latestExpected = expected.reduce((latest, migration) =>
+    migration.folderMillis > latest.folderMillis ? migration : latest,
+  );
+  if (
+    actualByCreatedAt.get(String(latestExpected.folderMillis)) !== latestExpected.hash
+  ) {
+    throw new Error("managed release migration journal has pending migrations");
   }
 }
 
@@ -536,7 +544,7 @@ async function assertCompatibleManagedReleaseDatabaseState(
   migrations: readonly ManagedReleaseMigrationIdentity[],
   requirePreparedRelease: boolean,
 ): Promise<{ bootstrap: boolean }> {
-  await assertExactManagedReleaseMigrations(client, migrations);
+  await assertManagedReleaseMigrationsCurrent(client, migrations);
   const sourceCapability = hostedInferenceCapability(sourceReleaseSha);
   const targetCapability = hostedInferenceCapability(releaseSha);
   const sourceProtocolCapability =
@@ -625,7 +633,7 @@ async function assertCompatibleManagedReleaseDatabaseState(
     throw new Error("managed release database has an incompatible protocol capability");
   }
   const bootstrap = observed.protocols.length === 0;
-  if (bootstrap && sourceReleaseSha !== COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHA) {
+  if (bootstrap && !COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS.includes(sourceReleaseSha)) {
     throw new Error(
       "managed release protocol bootstrap requires the known live fleet release",
     );
