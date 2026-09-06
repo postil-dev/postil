@@ -1021,12 +1021,12 @@ export async function runDatabaseMonitoringChecks(
           }`,
     },
     thresholdCheck("review-operational-failures", "provider", "critical", "Reviews complete without operational sentinels", count("operational_failures"), 0),
-    // Model-quality incidents page only when they burst. One unrecovered
-    // scorer or output failure in a window is a flaky upstream completion;
-    // the sibling thresholds match the scheduled GitHub monitor.
-    thresholdCheck("scorer-failures", "provider", "critical", "Scoring completes", count("scorer_failures"), 2),
+    thresholdCheck("scorer-failures", "provider", "critical", "Scoring completes", count("scorer_failures"), 0),
     thresholdCheck("scorer-fallbacks", "provider", "warning", "Scoring avoids repeated fallback", count("scorer_fallbacks"), 2),
     thresholdCheck("model-fallbacks", "provider", "warning", "Review models avoid repeated fallback", count("model_fallbacks"), 5),
+    // Unrecovered invalid output pages only when it bursts: one occurrence in
+    // a window is a flaky upstream completion, and the scheduled GitHub
+    // monitor applies the same threshold to this category.
     thresholdCheck("invalid-model-output", "provider", "critical", "Model output validates", count("invalid_outputs"), 2),
     thresholdCheck("failed-jobs", "queue", "critical", "Queue jobs avoid terminal failure", count("failed_jobs"), 0),
   ];
