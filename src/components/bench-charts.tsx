@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type CSSProperties } from "react";
+import caseEvidence from "../../public/bench/screening-0.8.26-case-evidence.json";
 
 import {
   BENCH,
@@ -74,10 +75,8 @@ export function DetectionSpreadChart() {
           const y = padTop + row * rowHeight + rowHeight / 2 - 8;
           const degraded = new Set(model.degradedRunIndexes ?? []);
           const rates = model.detectionRates.map((rate) => rate * 100);
-          const scoredRates = rates.filter((_, index) => !degraded.has(index));
-          const bounded = scoredRates.length > 0 ? scoredRates : rates;
-          const lo = Math.min(...bounded);
-          const hi = Math.max(...bounded);
+          const lo = Math.min(...rates);
+          const hi = Math.max(...rates);
           const colour = SERIES[row % SERIES.length]!;
           const spread = `${(hi - lo).toFixed(1)} pt spread`;
           return (
@@ -109,19 +108,17 @@ export function DetectionSpreadChart() {
                   r={6}
                   tabIndex={0}
                   role="img"
-                  aria-label={`${model.id}, run ${index + 1}: ${rate.toFixed(1)}% seeded-region hits${degraded.has(index) ? ", degraded output" : ""}`}
+                  aria-label={`${model.id}, run ${index + 1}: ${rate.toFixed(1)}% seeded-region hits; ${caseEvidence.repeatedRuns.find(run => run.model === model.id && run.run === index + 1)!.unavailable}/${FIXTURE_COUNT} unavailable results${degraded.has(index) ? ", degraded output" : ""}`}
                   fill={degraded.has(index) ? "#f7f5f1" : colour}
                   stroke={degraded.has(index) ? colour : "#f7f5f1"}
                   strokeWidth={2}
                 >
                   <title>
-                    {degraded.has(index)
-                      ? `${model.id} run ${index + 1}: ${rate.toFixed(1)}%; degraded output`
-                      : `${model.id} run ${index + 1}: ${rate.toFixed(1)}% seeded-region hits`}
+                    {`${model.id} run ${index + 1}: ${rate.toFixed(1)}% seeded-region hits; ${caseEvidence.repeatedRuns.find(run => run.model === model.id && run.run === index + 1)!.unavailable}/${FIXTURE_COUNT} unavailable results`}
                   </title>
                 </circle>
               ))}
-              {scoredRates.length > 0 ? (
+              {rates.length > 0 ? (
                 <text
                   x={padLeft - 14}
                   y={y + 22}
@@ -140,9 +137,11 @@ export function DetectionSpreadChart() {
       </div>
       <figcaption className="mt-2 text-sm text-charcoal/70">
         Each dot is one screening run against the same {FIXTURE_COUNT} fixtures.
-        Filled dots define the displayed detection-rate spread. A hollow dot
-        marks a run with widespread invalid output; it remains visible but does
-        not define the spread.
+        Every dot contributes to the displayed range, including the hollow dot for
+        Luna&apos;s run with 16 unavailable results out of 70 attempts. Its full range is
+        21.1 percentage points; no failed run is excluded. The
+        {" "}<a href="/bench/screening-0.8.26-case-evidence.json">case evidence</a> lists
+        output availability for every repeated run. Percentages use all 57 defect cases.
       </figcaption>
     </figure>
   );

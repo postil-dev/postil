@@ -46,6 +46,9 @@ describe("cost against gate correctness", () => {
   });
 
   test("keeps repeated-run spread labels inside the SVG", () => {
+    expect(spreadMarkup).toContain("21.1 pt spread");
+    expect(spreadMarkup).not.toContain("5.3 pt spread");
+    expect(spreadMarkup).toContain("16 unavailable results");
     const labels = [
       ...spreadMarkup.matchAll(
         /<text x="([0-9.]+)" y="[0-9.]+" text-anchor="(start|end)"[^>]*>([0-9.]+ pt spread)<\/text>/g,
