@@ -414,6 +414,13 @@
       "when": 1787873286640,
       "tag": "0059_publication_lifecycle_nonblocking_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1788690574979,
+      "tag": "0060_monitor_check_evidence",
+      "breakpoints": true
     }
   ]
 }

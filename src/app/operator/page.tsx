@@ -106,7 +106,8 @@ function UsageSummary({ summary }: { summary: OperatorUsageSummary }) {
 
 function MonitoringStatus({ monitoring }: { monitoring: PrivateMonitoringDashboard }) {
   const open = monitoring.incidents.filter((incident) => incident.state === "open");
-  const resolved = monitoring.incidents.filter((incident) => incident.state === "resolved");
+  const resolved = monitoring.events.filter((event) => event.transition === "resolved");
+  const recoveredAttempts = monitoring.checkFailures.filter((failure) => failure.recovered);
   return (
     <section id="monitoring" className="mt-8 scroll-mt-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -128,6 +129,11 @@ function MonitoringStatus({ monitoring }: { monitoring: PrivateMonitoringDashboa
           {monitoring.state.lastError && (
             <p className="mt-2 break-words font-mono text-xs text-rust">
               {monitoring.state.lastError}
+            </p>
+          )}
+          {monitoring.state.heartbeatDeliveryError && (
+            <p className="mt-2 break-words font-mono text-xs text-rust">
+              heartbeat delivery: {monitoring.state.heartbeatDeliveryError}
             </p>
           )}
         </div>
@@ -169,6 +175,9 @@ function MonitoringStatus({ monitoring }: { monitoring: PrivateMonitoringDashboa
             </summary>
             <div className="mt-3 space-y-1 text-xs text-charcoal/70">
               <p>{incident.detail}</p>
+              {incident.openedDetail && incident.openedDetail !== incident.detail && (
+                <p className="text-charcoal/60">at open: {incident.openedDetail}</p>
+              )}
               <p className="font-mono">
                 first {formatTimestamp(incident.firstDetectedAt)} · last {formatTimestamp(incident.lastDetectedAt)}
               </p>
@@ -193,24 +202,49 @@ function MonitoringStatus({ monitoring }: { monitoring: PrivateMonitoringDashboa
           </span>
         </summary>
         <div className="border-t border-stone">
-          {resolved.map((incident) => (
-            <details key={incident.key} className="border-b border-stone/70 bg-ivory px-4 py-3 last:border-b-0">
+          {resolved.map((event) => (
+            <details key={event.id} className="border-b border-stone/70 bg-ivory px-4 py-3 last:border-b-0">
               <summary className="cursor-pointer list-none text-sm">
-                <span className="text-charcoal/70">✓ {incident.summary}</span>{" "}
+                <span className="text-charcoal/70">✓ {event.summary}</span>{" "}
                 <span className="font-mono text-[11px] text-charcoal/50">
-                  {incident.severity} · {incident.group} · resolved {formatTimestamp(incident.resolvedAt)}
+                  {event.severity} · {event.group} · resolved {formatTimestamp(event.occurredAt)}
                 </span>
               </summary>
               <div className="mt-3 space-y-1 text-xs text-charcoal/70">
-                <p>{incident.detail}</p>
+                <p>{event.detail}</p>
                 <p className="font-mono">
-                  first {formatTimestamp(incident.firstDetectedAt)} · last {formatTimestamp(incident.lastDetectedAt)}
+                  opened {formatTimestamp(event.firstDetectedAt)} · {event.occurrenceCount.toLocaleString()} observation(s)
                 </p>
               </div>
             </details>
           ))}
           {resolved.length === 0 && (
             <p className="px-4 py-8 text-center text-sm text-charcoal/50">No resolved alerts retained.</p>
+          )}
+        </div>
+      </details>
+
+      <details id="monitor-check-failures" className="card mt-4 overflow-hidden bg-paper">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-gate">
+          <span>Failed check attempts (24h)</span>
+          <span className="font-mono text-[11px] text-charcoal/50">
+            {monitoring.checkFailures.length.toLocaleString()} attempts · {recoveredAttempts.length.toLocaleString()} recovered by retry
+          </span>
+        </summary>
+        <div className="border-t border-stone">
+          {monitoring.checkFailures.map((failure) => (
+            <div key={failure.id} className="border-b border-stone/70 bg-ivory px-4 py-3 text-xs text-charcoal/70 last:border-b-0">
+              <p>
+                <span className="font-semibold text-charcoal">{failure.key}</span>{" "}
+                <span className="font-mono text-[11px] text-charcoal/50">
+                  attempt {failure.attempt} · {failure.recovered ? "recovered" : "unhealthy"} · {formatTimestamp(failure.observedAt)}
+                </span>
+              </p>
+              <p className="mt-1 break-words">{failure.detail}</p>
+            </div>
+          ))}
+          {monitoring.checkFailures.length === 0 && (
+            <p className="px-4 py-8 text-center text-sm text-charcoal/50">No failed check attempts in the last 24 hours.</p>
           )}
         </div>
       </details>
