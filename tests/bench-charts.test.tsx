@@ -5,7 +5,7 @@ import {
   CostAgainstGateChart,
   DetectionSpreadChart,
 } from "@/components/bench-charts";
-import { SCORED_MODELS } from "@/components/bench-table";
+import { BENCH, SCORED_MODELS } from "@/components/bench-table";
 
 const markup = renderToStaticMarkup(<CostAgainstGateChart />);
 const spreadMarkup = renderToStaticMarkup(<DetectionSpreadChart />);
@@ -70,6 +70,20 @@ describe("cost against gate correctness", () => {
     expect(lines).toHaveLength(1);
     const [y1, y2] = [/y1="([0-9.]+)"/.exec(lines[0]!)![1], /y2="([0-9.]+)"/.exec(lines[0]!)![1]];
     expect(y1).toBe(y2!);
+  });
+
+  test("shows every repeated run separately while preserving its exact metric position", () => {
+    for (const model of BENCH.repeatRuns!.models) {
+      const marks = [...spreadMarkup.matchAll(/<circle cx="([0-9.]+)" cy="([0-9.]+)"[^>]*aria-label="([^"]+)"/g)]
+        .filter(mark => mark[3]!.startsWith(`${model.id}, run `));
+      expect(marks).toHaveLength(4);
+      expect(new Set(marks.map(mark => `${mark[1]},${mark[2]}`)).size).toBe(4);
+      for (const [index, mark] of marks.entries()) {
+        const expectedX = 168 + ((model.detectionRates[index]! * 100 - 70) / 30) * (720 - 168 - 28);
+        expect(Number(mark[1])).toBeCloseTo(expectedX, 10);
+      }
+    }
+    expect(spreadMarkup).toContain("Runs with equal percentages stack vertically");
   });
 
   test("gives every mark a focus stop that names the figures it plots", () => {

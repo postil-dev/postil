@@ -100,11 +100,14 @@ export function DetectionSpreadChart() {
                 strokeWidth={2}
                 opacity={0.35}
               />
-              {rates.map((rate, index) => (
+              {rates.map((rate, index) => {
+                const coincident = rates.flatMap((other, otherIndex) => other === rate ? [otherIndex] : []);
+                const offset = (coincident.indexOf(index) - (coincident.length - 1) / 2) * 16;
+                return (
                 <circle
                   key={`${model.id}-${index}`}
                   cx={x(rate)}
-                  cy={y}
+                  cy={y + offset}
                   r={6}
                   tabIndex={0}
                   role="img"
@@ -117,7 +120,8 @@ export function DetectionSpreadChart() {
                     {`${model.id} run ${index + 1}: ${rate.toFixed(1)}% seeded-region hits; ${caseEvidence.repeatedRuns.find(run => run.model === model.id && run.run === index + 1)!.unavailable}/${FIXTURE_COUNT} unavailable results`}
                   </title>
                 </circle>
-              ))}
+                );
+              })}
               {rates.length > 0 ? (
                 <text
                   x={padLeft - 14}
@@ -137,6 +141,7 @@ export function DetectionSpreadChart() {
       </div>
       <figcaption className="mt-2 text-sm text-charcoal/70">
         Each dot is one screening run against the same {FIXTURE_COUNT} fixtures.
+        Runs with equal percentages stack vertically at the same horizontal position.
         Every dot contributes to the displayed range, including the hollow dot for
         Luna&apos;s run with 16 unavailable results out of 70 attempts. Its full range is
         21.1 percentage points; no failed run is excluded. The
@@ -286,8 +291,9 @@ export function CostAgainstGateChart() {
 
   return (
     <figure className="my-8">
+      <div className="relative" onPointerLeave={() => setHovered(null)}>
       <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Model cost and gate correctness, scroll horizontally on small screens">
-      <div className="relative min-w-[640px]" onPointerLeave={() => setHovered(null)}>
+      <div className="min-w-[640px]">
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="w-full"
@@ -419,6 +425,8 @@ export function CostAgainstGateChart() {
             />
           ))}
         </svg>
+      </div>
+      </div>
 
         {active ? (
           <div
@@ -450,7 +458,6 @@ export function CostAgainstGateChart() {
             </dl>
           </div>
         ) : null}
-      </div>
       </div>
       <figcaption className="mt-2 text-sm text-charcoal/70">
         Gate-verdict correctness and total run cost for {points.length} scored
