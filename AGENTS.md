@@ -16,15 +16,14 @@ local hosted-review harness before handoff. Use the pull request's actual base:
 POSTIL_API_BASE=https://openrouter.ai/api/v1 \
 POSTIL_API_FORMAT=openai-compatible \
 REVIEW_MODEL=z-ai/glm-5.2 \
-REVIEW_REASONING_EFFORT=low \
-REVIEW_MODEL_CASCADE=z-ai/glm-5.2,google/gemini-3.8-flash,moonshotai/kimi-k2.7-code \
+REVIEW_MODEL_CASCADE=z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code \
 POSTIL_DISABLE_SCORER=1 \
 POSTIL_LLM_REQUEST_TIMEOUT_SECS=120 \
 POSTIL_LLM_TOTAL_TIMEOUT_SECS=300 \
 bun run review:local -- --base origin/main --head HEAD --require-clean --keep-database --repo-path .
 ```
 
-The review tries Gemini 3.8 Flash, then Kimi, when GLM output fails
+The review tries Luna, then Kimi, when GLM output fails
 validation. GLM stays pinned as the primary model. Request and total provider
 budgets are bounded at 120 and 300 seconds.
 
