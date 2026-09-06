@@ -365,6 +365,13 @@ jobs:
               exit 1
             fi
           done
+          fly_secrets=$(flyctl secrets list --app postil-web --json)
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
+            (map({name, digest, status}) | sort_by(.name)) == $source[0]
+          ' <<<"${fly_secrets}" >/dev/null; then
+            echo "::error::Fly secret metadata changed during deployment; target verification failed."
+            exit 1
+          fi
           echo "Managed target fleet verified."
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

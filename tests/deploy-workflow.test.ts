@@ -53,6 +53,10 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
           "deploy --remote-only") printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
             if [[ -f "$RUNNER_TEMP/after-exec-secrets.json" ]]; then cp "$RUNNER_TEMP/after-exec-secrets.json" "$RUNNER_TEMP/secrets.json"; fi
+            if [[ "$4" == *'JSON.stringify(contract)'* ]]; then
+              jq -cn --arg target "$TARGET_RELEASE_SHA" --arg source "$SOURCE_RELEASE_SHA" '[$target, $source, "additive-publication-hosted-v1", "1"]'
+              return 0
+            fi
             jq -jr --arg id "$3" '.[] | select(.id == $id) | .release' "$RUNNER_TEMP/machines.json" ;;
           "machine status") jq --arg id "$3" '.[] | select(.id == $id)' "$RUNNER_TEMP/status-machines.json" ;;
           "machine update")
@@ -68,7 +72,7 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
       ${script}
     `], {
       env: { ...process.env, RUNNER_TEMP: directory, GITHUB_OUTPUT: join(directory, "output"),
-        TARGET_RELEASE_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.4" },
+        TARGET_RELEASE_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.4", MONITOR_VOLUME_ID: "vol_test" },
       stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
     const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
@@ -111,9 +115,11 @@ describe("managed deployment contract", () => {
     }
   });
 
-  test("checks secret names, digests, and deployment status before deploy or rollback", () => {
+  test("checks secret names, digests, and deployment status before deploy, successful verification, or rollback", () => {
     expect(runStep("deploy").updates).toBe("deploy");
-    for (const id of ["deploy", "rollback"]) {
+    const verified = runStep("verify");
+    expect(verified.code, verified.error).toBe(0);
+    for (const id of ["deploy", "verify", "rollback"]) {
       for (const secrets of [
         [{ ...secretMetadata[0]!, status: "Staged" }],
         [{ ...secretMetadata[0]!, digest: "changed-digest" }],
