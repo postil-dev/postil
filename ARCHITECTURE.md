@@ -89,10 +89,10 @@ organization can exceed it by up to the number of loops. A claim that finds only
 capped work reports it as deferred rather than as an empty queue, so the poll
 loop holds its interval instead of backing off toward the idle ceiling while a
 ready backlog waits.
-Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
-the deploy workflow confirms that every managed web and worker Machine is running
-one image. Activation and inserts share a transaction advisory lock, so no job can
-become claimable between the fleet check and capability activation.
+Release changes follow the same additive rollout rule as other runtime changes:
+old and new processes remain compatible while the fleet is replaced, and hosted
+reviews remain available. Schema retirement and incompatible transitions use
+separate reviewed maintenance operations.
 
 `humanEscalation` is a GitHub-native, kind-blocking maintainer decision. The PR review
 contains the grounded finding and directs the author to encode the intended behavior
@@ -142,9 +142,8 @@ verified. Link GET requests only render confirmation; a same-origin POST consume
 the token. Verification tokens are bound to the organization, purpose, and
 normalized address, stored as a digest plus sealed delivery material, and sent
 through durable, provider-idempotent jobs. Resends rotate the token after a
-cooldown. The post-deploy release activation queues verification for every migrated
-unverified contact without exposing addresses or tokens in output. Operator entitlement
-updates preserve the dashboard-managed billing contact.
+cooldown. Operator entitlement updates preserve the dashboard-managed billing
+contact.
 
 Customer notifications are immutable, organization-scoped events with a stable
 producer key, bounded copy, optional organization-local action, role visibility,
@@ -178,14 +177,11 @@ The organization GitHub ID is the trial identity, and the entitlement survives
 uninstall, so reinstalling cannot restart the trial. Alert delivery uses a
 provider idempotency key and contains account and installation metadata without
 repository content.
-Managed release activation durably queues one provider-key lifecycle job per
-eligible organization after the release becomes active. The dedicated worker
-binds each OpenRouter key to the exact entitlement period and spending limit,
-stores the create intent before provider access, seals the runtime credential,
-and periodically reconciles renewal, BYOK changes, suspension, expiration, and
-revocation. Provider access holds the same database lock as release activation,
-so no provider request crosses a release-dark transition. Web processes never
-claim provider-key lifecycle jobs.
+The dedicated provider-key worker binds each OpenRouter key to the exact
+entitlement period and spending limit, stores the create intent before provider
+access, seals the runtime credential, and periodically reconciles renewal, BYOK
+changes, suspension, expiration, and revocation. Web processes never claim
+provider-key lifecycle jobs.
 `src/lib/private-repository-entitlement.ts` is the single decision point used by
 webhook intake and workers. The webhook stores delivery and repository metadata,
 then skips review/respond queue, check, and conversational comment side effects
@@ -256,8 +252,8 @@ billing page reports plan and provider state. BYOK billing copy directs
 administrators to provider-side budgets because Postil cannot enforce external
 charges. Before
 a private review row can run, the worker resolves the pull request's author ID,
-login, head, and base from GitHub. A rollout-activated database trigger rejects
-anonymous active reviews and makes the recorded author identity immutable.
+login, head, and base from GitHub. A database trigger rejects anonymous active
+reviews and makes the recorded author identity immutable.
 Historical rows remain unknown rather than receiving a guessed identity.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.

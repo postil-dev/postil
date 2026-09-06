@@ -12,6 +12,9 @@
 ARG POSTIL_CLI_REV=unpinned
 ARG NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
 ARG POSTIL_RELEASE_SHA
+ARG POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA
+ARG POSTIL_RELEASE_PROTOCOL
+ARG POSTIL_MANAGED_RELEASE=0
 
 FROM oven/bun:1.3 AS deps
 WORKDIR /app
@@ -34,13 +37,29 @@ RUN bun run build
 FROM oven/bun:1.3 AS runtime
 ARG POSTIL_CLI_REV
 ARG POSTIL_RELEASE_SHA
+ARG POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA
+ARG POSTIL_RELEASE_PROTOCOL
+ARG POSTIL_MANAGED_RELEASE
 LABEL org.opencontainers.image.title="postil-control-plane" \
       org.opencontainers.image.source="https://github.com/postil-dev/postil" \
       dev.postil.cli-rev="${POSTIL_CLI_REV}"
 WORKDIR /app
 ENV NODE_ENV=production \
     POSTIL_RELEASE_SHA=${POSTIL_RELEASE_SHA} \
+    POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA=${POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA} \
+    POSTIL_RELEASE_PROTOCOL=${POSTIL_RELEASE_PROTOCOL} \
+    POSTIL_MANAGED_RELEASE=${POSTIL_MANAGED_RELEASE} \
     POSTIL_CACHE_DIR=/tmp/postil
+RUN set -eu; \
+    case "${POSTIL_MANAGED_RELEASE}" in \
+      0) ;; \
+      1) \
+        printf '%s' "${POSTIL_RELEASE_SHA}" | grep -Eq '^[0-9a-f]{40}$' || { echo "ERROR: managed images require an exact target release SHA." >&2; exit 1; }; \
+        printf '%s' "${POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA}" | grep -Eq '^[0-9a-f]{40}$' || { echo "ERROR: managed images require an exact compatible source release SHA." >&2; exit 1; }; \
+        test "${POSTIL_RELEASE_PROTOCOL}" = "additive-publication-hosted-v1" || { echo "ERROR: managed images require the additive publication and hosted protocol." >&2; exit 1; }; \
+        ;; \
+      *) echo "ERROR: POSTIL_MANAGED_RELEASE must be 0 or 1." >&2; exit 1 ;; \
+    esac
 # The baked postil CLI (Rust) makes outbound HTTPS calls to the forge and the
 # model endpoint; the slim bun image ships no root certificates, so without
 # ca-certificates every review fails with "No CA certificates were loaded from
@@ -51,6 +70,7 @@ RUN apt-get update \
 COPY --chown=bun:bun --from=deps /app/node_modules ./node_modules
 COPY --chown=bun:bun . .
 COPY --chown=bun:bun --from=build /app/.next ./.next
+RUN bun -e 'const names = ["POSTIL_MANAGED_RELEASE", "POSTIL_RELEASE_SHA", "POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA", "POSTIL_RELEASE_PROTOCOL"]; await Bun.write("/etc/postil-release.json", JSON.stringify(Object.fromEntries(names.map(name => [name, process.env[name] ?? ""]))))'
 RUN chown bun:bun /app
 # Bake the pinned postil CLI into the image. This stage only installs a
 # binary that is already present at vendor/postil; it does not fetch or

@@ -1,5 +1,14 @@
 # Postil repository rules
 
+Use additive, backward-compatible changes and minimize deployment downtime.
+Keep hosted reviews available while old and new processes coexist. Preserve
+active release capabilities and stored data during rollout and rollback;
+verify compatibility and health before shifting traffic. Introduce new schema,
+APIs, and configuration alongside existing behavior, deprecate after consumers
+migrate, and remove obsolete behavior in a separate verified change. Routine
+deployments do not pause hosted reviews. Redesign an incompatible rollout
+before deployment and explain any unavoidable interruption to the operator.
+
 Public articles and reference pages explain the product without requiring
 repository history. Keep implementation PRs, authoring decisions, removed
 fixtures, and old release comparisons out of explanatory prose. Quantitative

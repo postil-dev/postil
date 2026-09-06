@@ -18,11 +18,12 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      TARGET_RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     # Skips quietly until the FLY_DEPLOY_ENABLED repo variable is set to
     # 'true' (and the FLY_API_TOKEN secret is configured). Also skips a
     # workflow_run event whose ci run did not succeed; workflow_dispatch
@@ -47,6 +48,9 @@ jobs:
           bun-version: 1.3.14
       - name: Verify deploy source types
         run: |
+          set -euo pipefail
+          [[ "${TARGET_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "${TARGET_RELEASE_SHA}"
           bun install --frozen-lockfile
           bunx tsc --noEmit
       - name: Fetch pinned postil CLI
@@ -158,91 +162,108 @@ jobs:
           install -m 0755 "${tmp}/flyctl" "${RUNNER_TEMP}/flyctl"
           echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
           "${RUNNER_TEMP}/flyctl" version
-      - name: Load deployment secrets from Infisical
-        uses: Infisical/secrets-action@77ab1f4ccd183a543cb5b42435fbd181189f4995 # v1.0.16
-        with:
-          method: oidc
-          identity-id: ${{ secrets.INFISICAL_MACHINE_IDENTITY_ID }}
-          project-slug: ${{ secrets.INFISICAL_PROJECT_SLUG }}
-          env-slug: prod
-          domain: https://eu.infisical.com
-          secret-path: /postil
-      - name: Stage runtime secrets
+      - name: Verify compatible source fleet
+        id: source-fleet
+        timeout-minutes: 5
         run: |
           set -euo pipefail
-          # Secrets are piped straight to flyctl; they never touch disk.
-          if [[ -z "${DATABASE_URL:-}" ]]; then
-            echo "::error::Infisical did not provide DATABASE_URL."
+          if [[ ! "${TARGET_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The target release must be an exact lowercase commit SHA."
             exit 1
           fi
-          staged=""
-          token="${POSTHOG_PROJECT_TOKEN:-${NEXT_PUBLIC_POSTHOG_KEY:-}}"
-          if [[ -n "${token}" ]]; then
-            staged+="POSTHOG_PROJECT_TOKEN=${token}"$'\n'
+          umask 077
+          machines=$(flyctl machine list --app postil-web --json)
+          jq '[.[] | select(
+            .config.metadata.fly_process_group == "web" or
+            .config.metadata.fly_process_group == "worker" or
+            .config.metadata.fly_process_group == "monitor"
+          )]' <<<"${machines}" > "${RUNNER_TEMP}/postil-source-machines.json"
+          machines=$(cat "${RUNNER_TEMP}/postil-source-machines.json")
+          if ! jq -e 'length >= 4 and all(.[];
+            .state == "started" and .host_status == "ok" and
+            all(.checks[]?; .status == "passing")
+          )' <<<"${machines}" >/dev/null; then
+            echo "::error::Every source machine must be started on a healthy host with passing checks."
+            exit 1
           fi
-          staged+="DATABASE_URL=${DATABASE_URL}"$'\n'
-          if [[ -n "${BREVO_API_KEY:-}" ]]; then
-            staged+="BREVO_API_KEY=${BREVO_API_KEY}"$'\n'
+          if ! fleet_summary=$(jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}"); then
+            echo "::error::The source fleet is not healthy and homogeneous."
+            exit 1
           fi
-          operator_secret_names=(
-            POSTIL_ILERT_WEBHOOK_SECRET
-            POSTIL_OPERATOR_GITHUB_IDS
-          )
-          for name in "${operator_secret_names[@]}"; do
-            value="${!name:-}"
-            if [[ -n "${value}" ]]; then
-              staged+="${name}=${value}"$'\n'
+          source_image=$(jq -er '
+            [.[] | select(
+              .config.metadata.fly_platform_version == "v2" and
+              (.config.metadata.fly_process_group == "web" or
+               .config.metadata.fly_process_group == "worker" or
+               .config.metadata.fly_process_group == "monitor")
+            ) | (.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest)] | unique |
+            if length == 1 then .[0] else error("source image is not unique") end
+          ' <<<"${machines}")
+          if [[ ! "${source_image}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The source fleet image reference is invalid."
+            exit 1
+          fi
+          mapfile -t machine_ids < <(jq -r '.[] | select(
+            .config.metadata.fly_platform_version == "v2" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          ) | .id' <<<"${machines}")
+          managed_count=$(jq -r '.managed_count' <<<"${fleet_summary}")
+          if [[ "${#machine_ids[@]}" -ne "${managed_count}" ]]; then
+            echo "::error::Source fleet evidence is incomplete."
+            exit 1
+          fi
+          source_release=""
+          for id in "${machine_ids[@]}"; do
+            if [[ ! "${id}" =~ ^[0-9a-f]+$ ]]; then
+              echo "::error::A managed machine identifier is invalid."
+              exit 1
+            fi
+            if ! release=$(flyctl machine exec "${id}" \
+              "bun -e 'const release = process.env.POSTIL_RELEASE_SHA ?? \"\"; if (!/^[0-9a-f]{40}$/.test(release)) process.exit(64); process.stdout.write(release)'" \
+              --app postil-web --timeout 15 2>/dev/null); then
+              echo "::error::A managed machine did not report an exact release SHA."
+              exit 1
+            fi
+            if [[ -z "${source_release}" ]]; then
+              source_release="${release}"
+            elif [[ "${release}" != "${source_release}" ]]; then
+              echo "::error::The managed source fleet reports mixed releases."
+              exit 1
             fi
           done
-          monitor_secret_names=(
-            OPENROUTER_MANAGEMENT_API_KEY
-            POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME
-            POSTIL_OPENROUTER_PRODUCTION_KEY_NAME
-            POSTIL_OPENROUTER_EMERGENCY_KEY_NAME
-          )
-          for name in "${monitor_secret_names[@]}"; do
-            value="${!name:-}"
-            if [[ -n "${value}" ]]; then
-              staged+="${name}=${value}"$'\n'
-            fi
-          done
-          paddle_secret_names=(
-            PADDLE_API_KEY
-            PADDLE_CLIENT_TOKEN
-            PADDLE_WEBHOOK_SECRET
-            PADDLE_ZERO_BASE_PRICE_ID
-            PADDLE_ACTIVE_AUTHOR_PRICE_ID
-          )
-          for name in "${paddle_secret_names[@]}"; do
-            value="${!name:-}"
-            if [[ -n "${value}" ]]; then
-              staged+="${name}=${value}"$'\n'
-            fi
-          done
-          if [[ -n "${staged}" ]]; then
-            printf '%s' "${staged}" | flyctl secrets import --stage
+          if [[ ! "${source_release}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The managed source release is invalid."
+            exit 1
           fi
-          # The pinned CLI release owns the hosted roster. Remove legacy
-          # runtime overrides so a release promotion cannot be shadowed by
-          # stale repository variables or Fly secrets.
-          runtime_override_secrets=()
-          fly_secrets=$(flyctl secrets list --json)
-          secret_names=$(jq -r '[.[] | .Name // .name // empty] | .[]' <<<"${fly_secrets}")
-          while IFS= read -r name; do
-            case "${name}" in
-              POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE) runtime_override_secrets+=("${name}") ;;
-            esac
-          done <<<"${secret_names}"
-          if (( ${#runtime_override_secrets[@]} > 0 )); then
-            flyctl secrets unset --stage "${runtime_override_secrets[@]}"
-          fi
+          echo "release-sha=${source_release}" >> "${GITHUB_OUTPUT}"
+          echo "image=${source_image}" >> "${GITHUB_OUTPUT}"
+          echo "Compatible source fleet verified."
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
-          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
-          POSTIL_ILERT_WEBHOOK_SECRET: ${{ secrets.POSTIL_ILERT_WEBHOOK_SECRET }}
-          POSTIL_OPERATOR_GITHUB_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}
+      - name: Verify runtime secret contract
+        id: secret-contract
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          umask 077
+          fly_secrets=$(flyctl secrets list --app postil-web --json)
+          if ! jq -e '
+            [.[] | .name] as $names |
+            all(.[];
+              (.name | type == "string" and length > 0) and
+              (.digest | type == "string" and length > 0) and .status == "Deployed") and
+            ($names | index("DATABASE_URL") != null) and
+            all($names[];
+              test("^(POSTIL_RELEASE_SHA|POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA|POSTIL_RELEASE_PROTOCOL|POSTIL_MANAGED_RELEASE|POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE)$") | not)
+          ' <<<"${fly_secrets}" >/dev/null; then
+            echo "::error::Runtime secrets do not satisfy the managed release contract; separate configuration maintenance is required."
+            exit 1
+          fi
+          jq -cS 'map({name, digest, status}) | sort_by(.name)' <<<"${fly_secrets}" > "${RUNNER_TEMP}/postil-source-secrets.json"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Provision private monitor state volume
         id: monitor-volume
         timeout-minutes: 5
@@ -268,142 +289,45 @@ jobs:
         id: deploy
         timeout-minutes: 10
         run: |
+          set -euo pipefail
+          fly_secrets=$(flyctl secrets list --app postil-web --json)
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
+            (map({name, digest, status}) | sort_by(.name)) == $source[0]
+          ' <<<"${fly_secrets}" >/dev/null; then
+            echo "::error::Fly secret metadata changed after source capture; deployment requires separate configuration maintenance."
+            exit 1
+          fi
           flyctl deploy \
             --remote-only \
+            --strategy rolling \
             --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
-            --build-arg POSTIL_RELEASE_SHA="${GITHUB_SHA}" \
+            --build-arg POSTIL_RELEASE_SHA="${TARGET_RELEASE_SHA}" \
+            --build-arg POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA="${SOURCE_RELEASE_SHA}" \
+            --build-arg POSTIL_RELEASE_PROTOCOL=additive-publication-hosted-v1 \
+            --build-arg POSTIL_MANAGED_RELEASE=1 \
             --build-arg POSTIL_DEPLOY_SOURCE_TYPECHECKED=1 \
             --build-arg NEXT_PUBLIC_POSTHOG_HOST="${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
-      - name: Restart any machines left stopped by the deploy
-        id: recover
-        # Runtime diagnostics stay in private Fly logs and the operator
-        # dashboard. Deployment CI emits only generic release status.
-        # The worker and monitor process groups have no HTTP health check to
-        # auto-wake them. A deploy that leaves a managed machine stopped needs
-        # an explicit restart
-        # or the review queue/webhook receiver stays dark until someone
-        # notices and starts it by hand. Must run even when the flyctl deploy
-        # step itself fails (a partial rolling deploy that times out waiting
-        # for one machine's health check is exactly when this matters most;
-        # a plain dependent step would be skipped by default on that failure).
-        if: ${{ always() && steps.deploy.outcome != 'skipped' }}
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          stopped=$(flyctl machine list --app postil-web --json | jq -r '.[] | select(
-            .state == "stopped"
-            and (.config.metadata.fly_process_group == "web" or .config.metadata.fly_process_group == "worker" or .config.metadata.fly_process_group == "monitor")
-            and .config.metadata.fly_platform_version == "v2"
-          ) | .id')
-          if [ -z "$stopped" ]; then
-            echo "No stopped machines after deploy."
-          else
-            restart_failed=0
-            for id in $stopped; do
-              echo "Restarting one managed machine left stopped by deploy."
-              if ! flyctl machine start "$id" --app postil-web >/dev/null 2>&1; then
-                echo "::error::A managed machine could not be restarted."
-                restart_failed=1
-              fi
-            done
-            if [ "${restart_failed}" -ne 0 ]; then
-              exit 1
-            fi
-            sleep 15
-          fi
-          # fly.toml requires min_machines_running = 2 for the web group: a
-          # stopped machine the proxy has to cold-start drops/retries webhook
-          # deliveries. Surface the current count rather than assume the
-          # restart above (or the deploy itself) actually achieved it. A
-          # warning here because the release verifier below owns the hard
-          # capacity gate after all managed process groups are inspected.
-          web_running=$(flyctl machine list --app postil-web --json \
-            | jq -r '[.[] | select(.config.metadata.fly_process_group == "web" and .state == "started")] | length')
-          if [ "${web_running}" -lt 2 ]; then
-            echo "::warning::Managed web capacity is below the configured minimum; release activation verification follows."
-          fi
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Restore capabilities when release preparation failed before replacement
-        if: ${{ always() && steps.deploy.outcome == 'failure' && steps.recover.outcome == 'success' }}
+          SOURCE_RELEASE_SHA: ${{ steps.source-fleet.outputs.release-sha }}
+      - name: Verify managed fleet after rolling replacement
+        id: verify
+        # Existing reviews remain available throughout the rollout. This check
+        # verifies the deployed fleet and durable monitor state without changing
+        # release capabilities or retiring stored data.
         timeout-minutes: 5
         run: |
           set -euo pipefail
           machines=$(flyctl machine list --app postil-web --json)
-          if ! fleet_summary=$(jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}"); then
-            echo "Managed fleet topology is invalid; release capabilities remain dark."
+          if ! jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}" >/dev/null; then
+            echo "::error::Release verification failed: fleet image, process, or hosted-inference configuration is inconsistent."
             exit 1
           fi
-          managed_count=$(jq -r '.managed_count' <<<"${fleet_summary}")
-          started_count=$(jq -r '[.[] | select(
-            .state == "started" and
-            (.config.metadata.fly_process_group == "web" or
-             .config.metadata.fly_process_group == "worker" or
-             .config.metadata.fly_process_group == "monitor")
-          )] | length' <<<"${machines}")
-          if [[ "${managed_count}" -lt 4 || "${started_count}" -ne "${managed_count}" ]]; then
-            echo "Managed fleet state is incomplete; release capabilities remain dark."
-            exit 1
-          fi
-          target_seen=0
-          releases=()
-          while IFS= read -r id; do
-            release=$(flyctl machine exec "${id}" \
-              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
-              --app postil-web --timeout 15 2>/dev/null || true)
-            if [[ ! "${release}" =~ ^[0-9a-f]{7,40}$ ]]; then
-              echo "A managed machine did not report a valid release; capabilities remain dark."
-              exit 1
-            fi
-            releases+=("${release}")
-            if [[ "${release}" == "${GITHUB_SHA}" ]]; then
-              target_seen=1
-            fi
-          done < <(jq -r '.[] | select(
-            .config.metadata.fly_process_group == "web" or
-            .config.metadata.fly_process_group == "worker" or
-            .config.metadata.fly_process_group == "monitor"
-          ) | .id' <<<"${machines}")
-          if [[ "${#releases[@]}" -ne "${managed_count}" ]]; then
-            echo "Managed fleet evidence is incomplete; release capabilities remain dark."
-            exit 1
-          fi
-          unique_release_count=$(printf '%s\n' "${releases[@]}" | sort -u | wc -l)
-          if [[ "${unique_release_count}" -ne 1 ]]; then
-            # Re-enabling publication while any target machine remains would
-            # let an unverified mixed fleet publish against restored state.
-            echo "The managed fleet is mixed; release capabilities remain dark."
-            exit 1
-          fi
-          if [[ "${target_seen}" -ne 0 ]]; then
-            # The target code reached every managed machine. A failed deploy
-            # needs activation or rollback proof, not prior-state restoration.
-            echo "The target release reached the managed fleet; release capabilities remain dark."
-            exit 1
-          fi
-          bun scripts/run-release-migrations.ts --compensate
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          POSTIL_RELEASE_SHA: ${{ github.sha }}
-      - name: Verify and activate release capabilities after fleet replacement
-        id: activate
-        # Migration 0020 stages new job kinds with an infinite
-        # run_after. This runs only after flyctl deploy has replaced the managed
-        # fleet, so no pre-capability worker can claim them. It retires the
-        # quiesced escalation-email state, backfills billing contacts, then
-        # activates private-review author enforcement, then atomically releases
-        # every staged supported job. A failure leaves jobs safely staged and
-        # fails the workflow for a retry.
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          machines=$(flyctl machine list --app postil-web --json)
-          if ! fleet_summary=$(jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}"); then
-            echo "::error::Refusing to activate release capabilities: fleet image, process, or hosted-inference configuration is inconsistent."
+          if ! jq -e 'all(.[] | select(.config.metadata.fly_platform_version == "v2");
+            .state == "started" and .host_status == "ok" and all(.checks[]?; .status == "passing")
+          )' <<<"${machines}" >/dev/null; then
+            echo "::error::Every managed target machine must be healthy."
             exit 1
           fi
           if ! jq -e --arg volume "${MONITOR_VOLUME_ID}" '
@@ -419,9 +343,168 @@ jobs:
             echo "::error::Private monitor is not using the provisioned durable state volume."
             exit 1
           fi
-          echo "Managed fleet verified."
-          flyctl ssh console --app postil-web --command "bun run hosted:verify-provider"
-          flyctl ssh console --app postil-web --command "bun run jobs:activate-release"
+          mapfile -t machine_ids < <(jq -r '.[] | select(
+            .config.metadata.fly_platform_version == "v2" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          ) | .id' <<<"${machines}")
+          for id in "${machine_ids[@]}"; do
+            if ! release_contract=$(flyctl machine exec "${id}" \
+              "bun -e 'const contract = [process.env.POSTIL_RELEASE_SHA, process.env.POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA, process.env.POSTIL_RELEASE_PROTOCOL, process.env.POSTIL_MANAGED_RELEASE]; process.stdout.write(JSON.stringify(contract))'" \
+              --app postil-web --timeout 15 2>/dev/null); then
+              echo "::error::A managed machine did not report its release contract."
+              exit 1
+            fi
+            if ! jq -e \
+              --arg target "${TARGET_RELEASE_SHA}" \
+              --arg source "${SOURCE_RELEASE_SHA}" \
+              '. == [$target, $source, "additive-publication-hosted-v1", "1"]' \
+              <<<"${release_contract}" >/dev/null; then
+              echo "::error::A managed machine does not match the target release contract."
+              exit 1
+            fi
+          done
+          echo "Managed target fleet verified."
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           MONITOR_VOLUME_ID: ${{ steps.monitor-volume.outputs.volume-id }}
+          SOURCE_RELEASE_SHA: ${{ steps.source-fleet.outputs.release-sha }}
+      - name: Verify additive release preparation
+        id: activate
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          machine_id=$(flyctl machine list --app postil-web --json | jq -er '
+            [.[] | select(
+              .state == "started" and
+              .config.metadata.fly_platform_version == "v2" and
+              .config.metadata.fly_process_group == "worker"
+            ) | .id] | if length >= 1 then .[0] else error("no managed worker is available") end
+          ')
+          flyctl machine exec "${machine_id}" \
+            "bun run jobs:activate-release" \
+            --app postil-web --timeout 60
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Roll back an incomplete managed replacement
+        id: rollback
+        if: ${{ always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outcome != 'skipped' && (steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure' || steps.activate.outcome == 'failure') }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_IMAGE}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ]]
+          verify_source_secrets() {
+            local fly_secrets
+            fly_secrets=$(flyctl secrets list --app postil-web --json) || return 1
+            if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
+              (map({name, digest, status}) | sort_by(.name)) == $source[0]
+            ' <<<"${fly_secrets}" >/dev/null; then
+              echo "::error::Fly secret metadata changed; rollback cannot apply staged or changed secrets."
+              return 1
+            fi
+          }
+          verify_source_secrets
+          machines=$(flyctl machine list --app postil-web --json)
+          # flyctl generates release identity and client-version metadata.
+          # All runtime configuration, including environment and mounts, must
+          # retain the original source values throughout this content rollout.
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" '
+            def runtime_config: .config | del(.image,
+              .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+            [.[] | select(
+              .config.metadata.fly_process_group == "web" or
+              .config.metadata.fly_process_group == "worker" or
+              .config.metadata.fly_process_group == "monitor"
+            )] as $managed |
+            ([$managed[].id] | sort) == ([$source[0][].id] | sort) and
+            all($managed[]; . as $machine |
+              any($source[0][];
+                .id == $machine.id and .region == $machine.region and
+                runtime_config == ($machine | runtime_config)))
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::Rollback requires the captured machine identities and original source configuration."
+            exit 1
+          fi
+          mapfile -t machine_ids < <(jq -r 'sort_by(.config.metadata.fly_process_group)[] | .id' "${RUNNER_TEMP}/postil-source-machines.json")
+          umask 077
+          for id in "${machine_ids[@]}"; do
+            flyctl machine status "${id}" --app postil-web --json > "${RUNNER_TEMP}/postil-before-update.json"
+            if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg id "${id}" '
+              def runtime_config: .config | del(.image,
+                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+              . as $machine | .id == $id and any($source[0][];
+                .id == $machine.id and .region == $machine.region and
+                runtime_config == ($machine | runtime_config))
+            ' "${RUNNER_TEMP}/postil-before-update.json" >/dev/null; then
+              echo "::error::Machine configuration differs from the original source snapshot; rollback stopped."
+              exit 1
+            fi
+            current_image=$(jq -r '.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest' "${RUNNER_TEMP}/postil-before-update.json")
+            if [[ "${current_image}" == "${SOURCE_IMAGE}" ]]; then
+              continue
+            fi
+            release=$(flyctl machine exec "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
+              --app postil-web --timeout 15 2>/dev/null)
+            if [[ "${release}" != "${TARGET_RELEASE_SHA}" ]]; then
+              echo "::error::Rollback cannot replace a machine outside the captured source and attempted target releases."
+              exit 1
+            fi
+            verify_source_secrets
+            # Each update retains the machine configuration and attached volume.
+            if ! flyctl machine update "${id}" --app postil-web \
+              --image "${SOURCE_IMAGE}" --wait-timeout 120 --yes >/dev/null 2>&1; then
+              echo "::error::A captured machine could not return to the source image."
+              exit 1
+            fi
+            restored=$(flyctl machine status "${id}" --app postil-web --json)
+            if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg image "${SOURCE_IMAGE}" --arg id "${id}" '
+              def runtime_config: .config | del(.image,
+                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+              . as $machine | .id == $id and any($source[0][];
+                .id == $machine.id and .region == $machine.region and
+                runtime_config == ($machine | runtime_config)) and
+              (.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest) == $image and
+              .state == "started"
+            ' <<<"${restored}" >/dev/null; then
+              echo "::error::Rollback changed machine configuration or failed to restore the source image."
+              exit 1
+            fi
+          done
+          verify_source_secrets
+          machines=$(flyctl machine list --app postil-web --json)
+          machines=$(jq '[.[] | select(
+            .config.metadata.fly_process_group == "web" or
+            .config.metadata.fly_process_group == "worker" or
+            .config.metadata.fly_process_group == "monitor"
+          ) | .config.image = (.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest)]' <<<"${machines}")
+          if ! jq -e --arg image "${SOURCE_IMAGE}" 'all(.[];
+            .config.image == $image and .state == "started" and .host_status == "ok" and
+            all(.checks[]?; .status == "passing")
+          )' <<<"${machines}" >/dev/null || ! jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}" >/dev/null; then
+            echo "::error::The source fleet did not recover to a healthy homogeneous state."
+            exit 1
+          fi
+          while IFS= read -r id; do
+            if ! release=$(flyctl machine exec "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
+              --app postil-web --timeout 15 2>/dev/null); then
+              echo "::error::A restored machine did not report its release SHA."
+              exit 1
+            fi
+            if [[ "${release}" != "${SOURCE_RELEASE_SHA}" ]]; then
+              echo "::error::The rollback did not restore the exact source release."
+              exit 1
+            fi
+          done < <(jq -r '.[] | select(
+            .config.metadata.fly_platform_version == "v2" and
+            (.config.metadata.fly_process_group == "web" or
+             .config.metadata.fly_process_group == "worker" or
+             .config.metadata.fly_process_group == "monitor")
+          ) | .id' <<<"${machines}")
+          echo "Managed source fleet restored without changing release capabilities."
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          SOURCE_IMAGE: ${{ steps.source-fleet.outputs.image }}
+          SOURCE_RELEASE_SHA: ${{ steps.source-fleet.outputs.release-sha }}

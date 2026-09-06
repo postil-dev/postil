@@ -13,49 +13,37 @@ export default function EvidenceLinksArticle() {
       <BlogArticleHeader post={post} />
       <div className="prose-postil blog-prose mt-10">
         <p>
-          To assess an AI review finding, open the code it refers to. Check the cited line,
-          read the surrounding change, and decide whether the claimed failure follows.
-          Postil&apos;s <Link href="/evidence">public examples</Link> pair review output with
-          links to the source pull request so you can make that assessment yourself.
+          A review finding needs enough source material to test its claim. Postil&apos;s
+          {" "}<Link href="/evidence">public examples</Link> retain the pull request, reviewed
+          head commit, diff excerpt, finding text, and gate outcome together.
         </p>
         <EvidenceTrail />
-        <h2>Inspect the code the reviewer saw</h2>
+        <h2>A documentation and CI finding</h2>
         <p>
-          A pull request can contain several revisions. Its final diff may include a fix
-          that is absent from the reviewed revision. The revision link selects the
-          reviewed commit&apos;s changes. Compare those with the example&apos;s displayed diff:
-          a pull-request review can cover more than one commit. The conversation alone may
-          describe a different state of the code.
+          One published finding identifies <code>cli-ref</code> values that point to an action
+          repository commit although that setting resolves against the CLI repository. The setting
+          therefore resolves to a commit that does not exist in the target repository, which makes the
+          CI installation fail. The diff excerpt and finding text expose the two repository identities
+          behind that conclusion.
         </p>
         <p>
-          A finding should identify its location and explain a consequence. Ask whether
-          the surrounding control flow supports that explanation and whether relevant
-          checks exist elsewhere. A plausible comment is a claim to investigate, not proof
-          that a bug exists.
+          The commit link opens that commit&apos;s own change view, not the complete pull-request review
+          diff. A pull request can contain later commits, so its final diff can differ from the state
+          that the reviewer saw. The evidence record identifies that reviewed state explicitly.
         </p>
-        <h2>Read the verdict separately</h2>
+        <h2>Finding text and merge outcome</h2>
         <p>
-          Review text explains the issue. The gate result records whether it blocks under
-          the repository&apos;s rules. An advisory warning and a blocking error can both
-          be useful findings, but they have different effects on a merge. Inspect the
-          verdict for the same reviewed commit, using the <Link href="/docs/gate">gate rules</Link>{" "}
-          to interpret it.
+          Review text states the claimed defect. The retained gate record describes the conclusion
+          published under the repository&apos;s <Link href="/docs/gate">gate rules</Link>. These records
+          answer separate questions: whether the explanation fits the code, and what conclusion the
+          configured policy produced.
         </p>
         <p>
-          A silent example shows a review without visible findings. It does not establish
-          that the code is defect-free. Likewise, a published example demonstrates one
-          review outcome; it does not measure the reviewer&apos;s detection rate across a
-          codebase. The <Link href="/bench">benchmark</Link> addresses that separate question
-          on a defined test corpus.
-        </p>
-        <h2>Know what the record preserves</h2>
-        <p>
-          The evidence page includes diff excerpts, finding text, and gate outcomes.
-          Its <a href="https://github.com/postil-dev/postil/blob/main/src/data/evidence/index.ts">public source data</a>{" "}
-          retains the reviewed commit and check-run references. If an upstream check page
-          is unavailable, the retained text remains a published record, but the missing
-          page limits independent verification. A code link verifies the input; it cannot
-          by itself verify what a reviewer said about it.
+          GitHub check-run pages can become unavailable, so those links do not independently establish
+          an outcome. The <a href="https://github.com/postil-dev/postil/blob/main/src/data/evidence/index.ts">public source data</a>
+          {" "}retains the displayed finding, commit reference, and gate record. A silent example
+          records no visible finding; the <Link href="/bench">benchmark</Link> measures behaviour
+          across a defined corpus.
         </p>
       </div>
     </div>

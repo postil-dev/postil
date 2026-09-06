@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
+import { BENCH } from "@/components/bench-table";
 import { BenchmarkCorpusChart } from "@/components/blog-figures";
 import { blogPostJsonLd, blogPostMetadata, getBlogPost } from "@/lib/blog-posts";
 
@@ -13,12 +14,13 @@ export default function BenchmarksArticle() {
       <BlogArticleHeader post={post} />
       <div className="prose-postil blog-prose mt-10">
         <p>
-          A benchmark score answers a question about a particular dataset, configuration,
-          and scoring rule. Before comparing AI reviewers, check whether the tests ask the
-          same question. Finding a seeded bug, avoiding an unsupported comment, and making
-          the right merge decision require different measurements.
+          Benchmark percentages describe a dataset, configuration, and scoring rule. Postil&apos;s
+          screening corpus contains {BENCH.defectCases} seeded defect fixtures and
+          {" "}{BENCH.cleanCases} clean fixtures, {BENCH.defectCases + BENCH.cleanCases} cases in
+          total. Detection, clean-case silence, and gate correctness use different denominators and
+          answer different questions.
         </p>
-        <h2>Check what counts as success</h2>
+        <h2>Published benchmark designs</h2>
         <p>
           <a href="https://www.greptile.com/benchmarks">Greptile&apos;s published benchmark</a>{" "}
           tests detection of known bugs in 50 pull requests. Its catch rate excludes false
@@ -31,42 +33,33 @@ export default function BenchmarksArticle() {
           against structured ground truth. Differences in context, case selection, and
           scoring prevent a direct ranking from percentages reported by separate studies.
         </p>
-        <h2>Include changes that deserve no finding</h2>
+        <h2>Postil screening corpus</h2>
         <BenchmarkCorpusChart />
         <p>
-          Postil&apos;s screening corpus combines seeded defects with clean changes. Clean
-          cases reveal unsupported findings that a defect-only detection score can omit.
-          They are a small, curated sample, so silence on these cases does not establish
-          a real-world false-positive rate.
+          The {BENCH.cleanCases} clean changes expose unsupported findings that a defect-only score
+          omits. They are a small curated sample, so silence on them does not estimate a production
+          false-positive rate.
         </p>
         <dl>
           <dt><strong>Detection</strong></dt>
-          <dd>The share of defect fixtures with a finding that overlaps the seeded path and line range. This score does not check whether the diagnosis is correct.</dd>
+          <dd>The share of {BENCH.defectCases} defect fixtures with a finding that overlaps the seeded path and line range. This score does not check whether the diagnosis is correct.</dd>
           <dt><strong>Clean-case silence</strong></dt>
-          <dd>The share of clean fixtures without a reported finding. Read output failures separately.</dd>
+          <dd>The share of {BENCH.cleanCases} clean fixtures without a reported finding. Output failures remain separate.</dd>
           <dt><strong>Gate correctness</strong></dt>
-          <dd>The share of scored cases whose pass or fail result matches the expected verdict.</dd>
+          <dd>The share of scored cases whose pass or fail result matches the expected verdict. An unscored case is excluded from this denominator.</dd>
         </dl>
         <p>
-          Finding-level precision asks how many reported findings are valid; recall asks
-          how many known issues are found. Their counting unit is the finding, which can
-          differ from a fixture-level score. Always read the denominator and matching
-          rules, including how the evaluator treats partial or failed output.
-        </p>
-        <h2>Run the suite and inspect the failures</h2>
-        <p>
-          The public <a href="https://github.com/postil-dev/postil-cli/tree/main/bench#readme">benchmark suite</a>{" "}
-          contains the fixtures, evaluator, and setup instructions. The offline mock run
-          checks the harness without calling a model. Live runs call a configured provider
-          and incur usage charges. The <Link href="/bench#run-the-suite">benchmark page</Link>{" "}
-          links the run instructions and downloadable results.
+          Finding-level precision is the share of reported findings that are valid. Recall is the share
+          of known issues detected. Those units differ from a fixture-level score. The evaluator reports
+          partial and failed output separately from scored cases.
         </p>
         <p>
-          Keep unscored cases visible alongside quality scores. Record total cost, latency,
-          provider settings, and repeated runs on the same corpus. For a deployment with
-          a pinned provider or retention requirement, test those constraints explicitly.
-          Postil&apos;s screening results compare models inside its review harness; they
-          are not a head-to-head test of competing hosted products.
+          The public <a href="https://github.com/postil-dev/postil-cli/tree/main/bench#readme">benchmark suite</a>
+          {" "}contains the fixtures and evaluator. Its offline mock run tests the harness without a
+          model call; live runs call a configured provider and incur usage charges. The
+          {" "}<Link href="/bench">results table</Link> retains each row&apos;s cost, latency, provider
+          settings, and unscored cases. These are screening results inside one review harness, not a
+          production forecast or a ranking of hosted review products.
         </p>
       </div>
     </div>

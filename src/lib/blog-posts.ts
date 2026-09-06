@@ -56,13 +56,13 @@ export const BLOG_POSTS = [
   {
     slug: "ai-code-review-benchmarks",
     publishedOn: "2026-07-08",
-    title: "How to compare AI code review benchmarks",
+    title: "What code review benchmarks measure",
     description:
-      "Read the dataset, scoring rules, clean cases, and failed runs before comparing AI code review scores. Find and run the public Postil benchmark suite.",
+      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
     socialDescription:
-      "Read the dataset, scoring rules, clean cases, and failed runs before comparing AI code review scores. Find and run the public Postil benchmark suite.",
+      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
     excerpt:
-      "Read the dataset, scoring rules, clean cases, and failed runs before comparing AI code review scores. Find and run the public Postil benchmark suite.",
+      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
   },
   {
     slug: "why-copilot-cant-block-your-merge",
@@ -102,35 +102,35 @@ export const BLOG_POSTS = [
   {
     slug: "the-gate-is-separate-from-the-review",
     publishedOn: "2026-07-11",
-    title: "The gate is separate from the review",
+    title: "When a review blocks a merge",
     description:
-      "Use postil/gate for the required merge verdict and postil/review for advisory findings. Understand blocking rules and incomplete reviews.",
+      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
     socialDescription:
-      "Use postil/gate for the required merge verdict and postil/review for advisory findings. Understand blocking rules and incomplete reviews.",
+      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
     excerpt:
-      "Use postil/gate for the required merge verdict and postil/review for advisory findings. Understand blocking rules and incomplete reviews.",
+      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
   },
   {
     slug: "evidence-has-to-link-back",
     publishedOn: "2026-07-11",
-    title: "How to verify an AI code review finding",
+    title: "Checking a review finding",
     description:
-      "Trace a review finding to the code it describes, inspect the gate result, and understand what a public example can establish.",
+      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
     socialDescription:
-      "Trace a review finding to the code it describes, inspect the gate result, and understand what a public example can establish.",
+      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
     excerpt:
-      "Trace a review finding to the code it describes, inspect the gate result, and understand what a public example can establish.",
+      "Public review evidence connects a finding to its source pull request, reviewed commit, diff, and retained gate record.",
   },
   {
     slug: "the-least-useful-number",
     publishedOn: "2026-08-19",
-    title: "How to read a model benchmark beyond detection rate",
+    title: "Choosing a code review model",
     description:
-      "Compare detection, clean-case silence, gate correctness, latency, and measured review cost on the Postil benchmark corpus.",
+      "Postil screening results compare detection, gate correctness, clean-case silence, latency, and measured run cost across 70 fixtures.",
     socialDescription:
-      "Compare detection, clean-case silence, gate correctness, latency, and measured review cost on the Postil benchmark corpus.",
+      "Postil screening results compare detection, gate correctness, clean-case silence, latency, and measured run cost across 70 fixtures.",
     excerpt:
-      "Compare detection, clean-case silence, gate correctness, latency, and measured review cost on the Postil benchmark corpus.",
+      "Postil screening results compare detection, gate correctness, clean-case silence, latency, and measured run cost across 70 fixtures.",
   },
 ] as const satisfies readonly BlogPost[];
 
