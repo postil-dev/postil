@@ -3,14 +3,18 @@ import type { Pool } from "pg";
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import { bearerCliToken, resolveCliToken, touchCliTokenLastUsed } from "@/lib/cli-auth";
 import type { Database } from "@/lib/db";
-import release from "@/data/public-cli-release.json";
-import { hostedInferenceAvailable, optionalEnv } from "@/lib/env";
+import { hostedInferenceAvailable } from "@/lib/env";
 import {
   countCliGatewayReservationsLastHour,
   reconcileHostedCliGatewaySpend,
   releaseHostedCliGatewaySpend,
   reserveHostedCliGatewaySpend,
 } from "@/lib/hosted-usage-reservations";
+import {
+  buildManagedHostedChatCompletionRequest,
+  resolveManagedHostedProviderProfile,
+  type ManagedHostedProviderProfile,
+} from "@/lib/managed-hosted-provider-profile";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
 import { resolveLlmConfig } from "@/worker/review";
 import { readPositiveIntEnv } from "@/worker/runner";
@@ -20,7 +24,7 @@ import { readPositiveIntEnv } from "@/worker/runner";
  *
  * Every check below fails closed and runs in the fixed order the contract
  * specifies: an invalid token, an exhausted hourly cap, a denied entitlement,
- * an exhausted reservation, or an off-roster model all reject the request
+ * an exhausted reservation, or an invalid service policy all reject the request
  * before Postil's own upstream credential is ever used. Request-shape
  * validation (malformed JSON, `stream: true`) is folded in immediately after
  * the hourly cap and before the entitlement lookup: rejecting a request that
@@ -28,7 +32,6 @@ import { readPositiveIntEnv } from "@/worker/runner";
  */
 
 const GATEWAY_UPSTREAM_TIMEOUT_MS = 420_000; // mirrors HOSTED_LLM_REQUEST_TIMEOUT_SECS
-
 export interface CliGatewayResult {
   status: number;
   body: unknown;
@@ -48,29 +51,56 @@ function cliGatewayHourlyCap(): number {
   return readPositiveIntEnv("POSTIL_CLI_GATEWAY_HOURLY_CAP", 60);
 }
 
-/**
- * The hosted inference roster follows the deployment's configured default and
- * cascade. Managed provisional mode falls back to the exact default pinned for
- * the hosted CLI release when the deployment deliberately omits those values.
- */
-export function hostedModelRoster(
-  llm: { model?: string; modelCascade?: string },
-  provisionalRoster = optionalEnv("POSTIL_PROVISIONAL_HOSTED_ROSTER", "0") as string,
-): string[] {
-  const models = [llm.model, ...(llm.modelCascade ?? "").split(",")]
-    .map((model) => model?.trim())
-    .filter((model): model is string => Boolean(model));
-  if (models.length === 0 && provisionalRoster === "1") {
-    models.push(release.hostedCliDefaultModel);
-  }
-  return Array.from(new Set(models));
+interface GatewayPolicy {
+  model: string;
+  reasoningEffort: string;
+  managedProfile: ManagedHostedProviderProfile | null;
 }
 
-/** The model `postil login` reports as the gateway's default, shared with the roster above. */
+function resolveGatewayPolicy(llm: { model?: string; modelCascade?: string }): GatewayPolicy {
+  if (
+    process.env.POSTIL_MANAGED_RELEASE?.trim() === "1" ||
+    process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER?.trim() === "1"
+  ) {
+    const managedProfile = resolveManagedHostedProviderProfile();
+    return { ...managedProfile, managedProfile };
+  }
+  const model = [llm.model, ...(llm.modelCascade ?? "").split(",")]
+    .map((value) => value?.trim())
+    .find((value) => Boolean(value));
+  if (!model) throw new Error("the hosted gateway requires a configured model");
+  const reasoningEffort = (process.env.REVIEW_REASONING_EFFORT ?? "low").trim().toLowerCase();
+  if (!["max", "xhigh", "high", "medium", "low", "minimal", "none"].includes(reasoningEffort)) {
+    throw new Error("the hosted gateway reasoning effort is invalid");
+  }
+  return { model, reasoningEffort, managedProfile: null };
+}
+
+function buildGatewayRequest(input: Record<string, unknown>, policy: GatewayPolicy): Record<string, unknown> {
+  if (policy.managedProfile) {
+    return buildManagedHostedChatCompletionRequest(input, policy.managedProfile);
+  }
+  const requestedMaxTokens = input.max_tokens;
+  return {
+    ...(Object.hasOwn(input, "messages") ? { messages: input.messages } : {}),
+    model: policy.model,
+    reasoning: { effort: policy.reasoningEffort },
+    max_tokens: typeof requestedMaxTokens === "number" &&
+      Number.isSafeInteger(requestedMaxTokens) && requestedMaxTokens > 0
+      ? Math.min(requestedMaxTokens, 8_000)
+      : 8_000,
+    temperature: 0.1,
+  };
+}
+
+/** The service-selected default model advertised by `postil login`. */
 export async function resolveHostedGatewayDefaultModel(pool: Pool): Promise<string | null> {
   if (!(await hostedInferenceAvailable(pool))) return null;
-  const llm = await resolveLlmConfig(null);
-  return hostedModelRoster(llm)[0] ?? null;
+  try {
+    return resolveGatewayPolicy(await resolveLlmConfig(null)).model;
+  } catch {
+    return null;
+  }
 }
 
 interface UpstreamUsage {
@@ -99,6 +129,32 @@ function extractUpstreamUsage(upstreamJson: unknown): UpstreamUsage {
     completionTokens: typeof completionTokensRaw === "number" ? completionTokensRaw : 0,
     complete,
   };
+}
+
+interface UpstreamIdentity {
+  model: string | null;
+  provider: string | null;
+}
+
+function extractUpstreamIdentity(upstreamJson: unknown): UpstreamIdentity | null {
+  if (typeof upstreamJson !== "object" || upstreamJson === null) return null;
+  const response = upstreamJson as Record<string, unknown>;
+  const identifier = (key: "model" | "provider"): string | null => {
+    const value = response[key];
+    if (typeof value !== "string") return null;
+    const normalized = value.trim();
+    if (
+      normalized.length === 0 ||
+      normalized.length > 500 ||
+      Array.from(normalized).some((character) => /\p{Cc}/u.test(character))
+    ) {
+      return null;
+    }
+    return normalized;
+  };
+  const model = identifier("model");
+  const provider = identifier("provider");
+  return { model, provider };
 }
 
 export async function runCliGatewayChatCompletion(
@@ -162,6 +218,19 @@ export async function runCliGatewayChatCompletion(
     return errorResult(503, "hosted inference is unavailable", "unavailable");
   }
 
+  let policy: GatewayPolicy;
+  let llm: Awaited<ReturnType<typeof resolveLlmConfig>>;
+  try {
+    llm = await resolveLlmConfig(null);
+    policy = resolveGatewayPolicy(llm);
+  } catch {
+    return errorResult(
+      503,
+      "the hosted gateway provider policy is invalid",
+      "unavailable",
+    );
+  }
+
   // 6. Reserve spend under the same fail-closed reservation layer the worker uses.
   const reservation = await reserveHostedCliGatewaySpend(db, { orgId: resolved.orgId });
   if (!reservation.allowed || !reservation.reservationId) {
@@ -169,8 +238,7 @@ export async function runCliGatewayChatCompletion(
   }
   const reservationId = reservation.reservationId;
 
-  // 7. Restrict the requested model to the hosted roster.
-  const llm = await resolveLlmConfig(null);
+  // 7. Validate the service-owned upstream configuration.
   if (llm.apiFormat !== "openai-compatible") {
     await releaseHostedCliGatewaySpend(db, reservationId);
     return errorResult(
@@ -187,33 +255,23 @@ export async function runCliGatewayChatCompletion(
       "unavailable",
     );
   }
-  const roster = hostedModelRoster(llm);
-  if (roster.length === 0) {
+  if (
+    policy.managedProfile && (
+      llm.apiBase.replace(/\/+$/, "") !== policy.managedProfile.apiBase ||
+      llm.apiFormat !== policy.managedProfile.apiFormat
+    )
+  ) {
     await releaseHostedCliGatewaySpend(db, reservationId);
     return errorResult(
       503,
-      "the hosted gateway has no admitted model roster configured",
+      "the hosted gateway provider configuration does not match its managed profile",
       "unavailable",
     );
   }
-  const requestedModel = typeof parsed.model === "string" && parsed.model.trim().length > 0
-    ? parsed.model.trim()
-    : undefined;
-  const model = requestedModel ?? roster[0]!;
-  if (!roster.includes(model)) {
-    await releaseHostedCliGatewaySpend(db, reservationId);
-    return errorResult(
-      400,
-      `model "${model}" is not on the hosted gateway's admitted roster`,
-      "invalid_model",
-    );
-  }
-
   // 8. Proxy upstream with Postil's credential. The inbound Authorization
   // header (the caller's CLI token) is never forwarded; only the resolved
   // upstream credential is sent, and it is never echoed back to the caller.
-  const upstreamRequestBody: Record<string, unknown> = { ...parsed, model };
-  delete upstreamRequestBody.stream;
+  const upstreamRequestBody = buildGatewayRequest(parsed, policy);
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(`${llm.apiBase.replace(/\/+$/, "")}/chat/completions`, {
@@ -221,6 +279,9 @@ export async function runCliGatewayChatCompletion(
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${llm.apiKey}`,
+        ...(!policy.managedProfile && llm.apiAuthHeader && llm.apiAuthValue
+          ? { [llm.apiAuthHeader]: llm.apiAuthValue }
+          : {}),
       },
       body: JSON.stringify(upstreamRequestBody),
       signal: AbortSignal.timeout(GATEWAY_UPSTREAM_TIMEOUT_MS),
@@ -252,15 +313,21 @@ export async function runCliGatewayChatCompletion(
 
   // 8. Record usage and reconcile the reservation from the response's usage block.
   const usage = extractUpstreamUsage(upstreamJson);
+  const returnedIdentity = extractUpstreamIdentity(upstreamJson);
+  const accountingModel = returnedIdentity?.model ?? policy.model;
   const costMicros = usage.complete
-    ? calculateUsageCostMicrosForModel(model, usage.promptTokens, usage.completionTokens)
+    ? calculateUsageCostMicrosForModel(
+        accountingModel,
+        usage.promptTokens,
+        usage.completionTokens,
+      )
     : null;
   try {
     await reconcileHostedCliGatewaySpend(db, {
       reservationId,
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
-      modelUsed: model,
+      modelUsed: accountingModel,
       actualMicros: costMicros,
       usageAccountingComplete: usage.complete && costMicros !== null,
     });
@@ -269,6 +336,19 @@ export async function runCliGatewayChatCompletion(
     // an operator-visible accounting problem, not a reason to fail the
     // response the operator already paid an upstream provider to generate.
     console.error("cli gateway usage reconciliation failed", error);
+  }
+
+  if (
+    policy.managedProfile && (
+      returnedIdentity?.model !== policy.managedProfile.model ||
+      returnedIdentity?.provider !== policy.managedProfile.providerName
+    )
+  ) {
+    return errorResult(
+      502,
+      "the upstream response identity did not match the hosted provider policy",
+      "upstream_identity_mismatch",
+    );
   }
 
   return { status: 200, body: upstreamJson };
