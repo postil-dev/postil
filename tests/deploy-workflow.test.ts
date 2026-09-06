@@ -57,12 +57,15 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
               jq -cn --arg target "$TARGET_RELEASE_SHA" --arg source "$SOURCE_RELEASE_SHA" '[$target, $source, "additive-publication-hosted-v1", "1"]'
               return 0
             fi
-            jq -jr --arg id "$3" '.[] | select(.id == $id) | .release' "$RUNNER_TEMP/machines.json" ;;
+            if jq -e --arg id "$3" '.[] | select(.id == $id and (.state == "stopped" or .exec_unavailable == true))' "$RUNNER_TEMP/machines.json" >/dev/null; then
+              return 1
+            fi
+            jq -er --arg id "$3" '.[] | select(.id == $id and .state != "stopped") | .release' "$RUNNER_TEMP/machines.json" ;;
           "machine status") jq --arg id "$3" '.[] | select(.id == $id)' "$RUNNER_TEMP/status-machines.json" ;;
           "machine update")
             printf '%s\\n' "$*" >> "$RUNNER_TEMP/updates"
             jq --arg id "$3" --arg image "$SOURCE_IMAGE" --arg sha "$SOURCE_RELEASE_SHA" '
-              map(if .id == $id then .config.image = $image | .image_ref.digest = ($image | split("@")[1]) | .release = $sha else . end)
+              map(if .id == $id then .config.image = $image | .image_ref.digest = ($image | split("@")[1]) | .release = $sha | .state = "started" | .host_status = "ok" | (.checks[]?.status) = "passing" else . end)
             ' "$RUNNER_TEMP/machines.json" > "$RUNNER_TEMP/next.json"
             mv "$RUNNER_TEMP/next.json" "$RUNNER_TEMP/machines.json"
             cp "$RUNNER_TEMP/machines.json" "$RUNNER_TEMP/status-machines.json" ;;
@@ -139,14 +142,12 @@ describe("managed deployment contract", () => {
     expect(result.updates).toBe("");
   });
 
-  test("refuses original configuration drift and unproven images without starting machines", () => {
+  test("refuses original configuration drift without starting machines", () => {
     for (const change of [
       (machines: ReturnType<typeof fleet>) => { machines[2]!.config.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0"; },
       (machines: ReturnType<typeof fleet>) => { Object.assign(machines[2]!.config, { init: { cmd: ["unexpected"] } }); },
       (machines: ReturnType<typeof fleet>) => { Object.assign(machines[2]!.config.metadata, { custom: "unexpected" }); },
       (machines: ReturnType<typeof fleet>) => { machines[2]!.config.mounts.push({ volume: "unexpected", path: "/data" }); },
-      (machines: ReturnType<typeof fleet>) => { machines[2]!.image_ref.digest = `sha256:${"d".repeat(64)}`; },
-      (machines: ReturnType<typeof fleet>) => { machines[2]!.state = "stopped"; },
     ]) {
       const machines = fleet(); change(machines);
       const result = runStep("rollback", machines);
@@ -162,14 +163,14 @@ describe("managed deployment contract", () => {
 
   test("allows only image and Fly-generated release metadata differences", () => {
     const machines = fleet();
-    machines[2]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
-    machines[2]!.release = targetSha;
-    Object.assign(machines[2]!.config.metadata, {
+    machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    machines[1]!.release = targetSha;
+    Object.assign(machines[1]!.config.metadata, {
       fly_release_id: "generated-release", fly_release_version: "2", fly_flyctl_version: "0.4.71",
     });
     const result = runStep("rollback", machines);
     expect(result.code, result.error).toBe(0);
-    expect(result.updates).toContain("machine update a2");
+    expect(result.updates).toContain("machine update a1");
   });
 
   test("requires a healthy homogeneous exact predecessor and immutable image", () => {
@@ -193,22 +194,62 @@ describe("managed deployment contract", () => {
 
   test("rolls back only changed captured machines by digest and retains configuration and volumes", () => {
     const machines = fleet();
-    machines[2]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
-    machines[2]!.config.image = `registry.fly.io/postil-web@${machines[2]!.image_ref.digest}`;
-    machines[2]!.release = targetSha;
+    machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    machines[1]!.config.image = `registry.fly.io/postil-web@${machines[1]!.image_ref.digest}`;
+    machines[1]!.release = targetSha;
     const result = runStep("rollback", machines);
     expect(result.code, result.error).toBe(0);
-    expect(result.updates.trim()).toBe(`machine update a2 --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`);
+    expect(result.updates.trim()).toBe(`machine update a1 --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`);
     expect(result.machines).toEqual(fleet());
     const taggedSource = fleet();
     for (const machine of taggedSource) machine.config.image = "registry.fly.io/postil-web:source";
     const mixed = structuredClone(taggedSource);
-    mixed[2] = machines[2]!;
+    mixed[1] = machines[1]!;
     expect(runStep("rollback", mixed, taggedSource).code).toBe(0);
     const changedVolumes = fleet(); changedVolumes[3]!.config.mounts[0]!.volume = "vol_unexpected";
     const rejected = runStep("rollback", changedVolumes);
     expect(rejected.code).not.toBe(0);
     expect(rejected.updates).toBe("");
+  });
+
+  test("recovers stopped captured source and target machines through the sequential image update", () => {
+    const stoppedSource = fleet();
+    stoppedSource[1]!.state = "stopped";
+    const sourceResult = runStep("rollback", stoppedSource);
+    expect(sourceResult.code, sourceResult.error).toBe(0);
+    expect(sourceResult.updates.trim()).toBe(`machine update a1 --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`);
+    expect(sourceResult.machines).toEqual(fleet());
+
+    const stoppedTarget = fleet();
+    stoppedTarget[1]!.state = "stopped";
+    stoppedTarget[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    stoppedTarget[1]!.config.image = `registry.fly.io/postil-web@${stoppedTarget[1]!.image_ref.digest}`;
+    stoppedTarget[1]!.release = targetSha;
+    const targetResult = runStep("rollback", stoppedTarget);
+    expect(targetResult.code, targetResult.error).toBe(0);
+    expect(targetResult.updates.trim()).toBe(`machine update a1 --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`);
+    expect(targetResult.machines).toEqual(fleet());
+  });
+
+  test("refuses an unavailable runtime identity on a healthy machine", () => {
+    const machines = fleet();
+    machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    machines[1]!.config.image = `registry.fly.io/postil-web@${machines[1]!.image_ref.digest}`;
+    machines[1]!.release = targetSha;
+    Object.assign(machines[1]!, { exec_unavailable: true });
+    const result = runStep("rollback", machines);
+    expect(result.code).not.toBe(0);
+    expect(result.updates).toBe("");
+  });
+
+  test("rejects an observable release outside the captured source and attempted target", () => {
+    const machines = fleet();
+    machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    machines[1]!.config.image = `registry.fly.io/postil-web@${machines[1]!.image_ref.digest}`;
+    machines[1]!.release = "d".repeat(40);
+    const result = runStep("rollback", machines);
+    expect(result.code).not.toBe(0);
+    expect(result.updates).toBe("");
   });
 
   test("rejects managed runtime overrides and missing identities before startup", () => {

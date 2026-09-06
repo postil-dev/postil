@@ -214,6 +214,8 @@ jobs:
             echo "::error::Source fleet evidence is incomplete."
             exit 1
           fi
+          # The live source SHA supplies compatibility and rollback evidence;
+          # TARGET_RELEASE_SHA identifies the new-image checkout and normally differs during an upgrade.
           source_release=""
           for id in "${machine_ids[@]}"; do
             if [[ ! "${id}" =~ ^[0-9a-f]+$ ]]; then
@@ -448,14 +450,46 @@ jobs:
               exit 1
             fi
             current_image=$(jq -r '.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest' "${RUNNER_TEMP}/postil-before-update.json")
-            if [[ "${current_image}" == "${SOURCE_IMAGE}" ]]; then
+            if [[ "${current_image}" == "${SOURCE_IMAGE}" ]] && jq -e '
+              .state == "started" and .host_status == "ok" and
+              all(.checks[]?; .status == "passing")
+            ' "${RUNNER_TEMP}/postil-before-update.json" >/dev/null; then
               continue
             fi
-            release=$(flyctl machine exec "${id}" \
+            if ! release=$(flyctl machine exec "${id}" \
               "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
-              --app postil-web --timeout 15 2>/dev/null)
-            if [[ "${release}" != "${TARGET_RELEASE_SHA}" ]]; then
+              --app postil-web --timeout 15 2>/dev/null); then
+              if jq -e '
+                .state == "started" and .host_status == "ok" and
+                all(.checks[]?; .status == "passing")
+              ' "${RUNNER_TEMP}/postil-before-update.json" >/dev/null; then
+                echo "::error::A healthy managed machine did not report its release SHA."
+                exit 1
+              fi
+              release=""
+            elif [[ "${release}" != "${SOURCE_RELEASE_SHA}" && "${release}" != "${TARGET_RELEASE_SHA}" ]]; then
               echo "::error::Rollback cannot replace a machine outside the captured source and attempted target releases."
+              exit 1
+            fi
+            current_machines=$(flyctl machine list --app postil-web --json)
+            if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg id "${id}" '
+              def runtime_config: .config | del(.image,
+                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+              def healthy: .state == "started" and .host_status == "ok" and
+                all(.checks[]?; .status == "passing");
+              def managed_group: .config.metadata.fly_process_group;
+              [.[] | select(
+                managed_group == "web" or managed_group == "worker" or managed_group == "monitor"
+              )] as $managed |
+              ([$managed[].id] | sort) == ([$source[0][].id] | sort) and
+              all($managed[]; . as $machine |
+                any($source[0][];
+                  .id == $machine.id and .region == $machine.region and
+                  runtime_config == ($machine | runtime_config))) and
+              all(["web", "worker"][]; . as $group |
+                any($managed[]; .id != $id and managed_group == $group and healthy))
+            ' <<<"${current_machines}" >/dev/null; then
+              echo "::error::Rollback requires unchanged machine bindings and a healthy web and worker peer before each update."
               exit 1
             fi
             verify_source_secrets
@@ -473,11 +507,13 @@ jobs:
                 .id == $machine.id and .region == $machine.region and
                 runtime_config == ($machine | runtime_config)) and
               (.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest) == $image and
-              .state == "started"
+              .state == "started" and .host_status == "ok" and
+              all(.checks[]?; .status == "passing")
             ' <<<"${restored}" >/dev/null; then
               echo "::error::Rollback changed machine configuration or failed to restore the source image."
               exit 1
             fi
+            verify_source_secrets
           done
           verify_source_secrets
           machines=$(flyctl machine list --app postil-web --json)
