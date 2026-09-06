@@ -22,6 +22,7 @@
         "process startup and pre-review configuration",
         "forge/CI queue time and developer workflow"
       ],
+      "unavailableModel": "z-ai/glm-5.2",
       "unavailableCase": "near-duplicate-ttl-defect",
       "unavailableCategory": "review/invalidOutput",
       "unavailableRetryCause": "not established"
