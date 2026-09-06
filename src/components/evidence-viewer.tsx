@@ -124,7 +124,7 @@ function Reveal({
 
 interface BreadcrumbLinks {
   repo: string;
-  prFilesAtCommit: string;
+  reviewedCommit: string;
   reviewComment?: string;
 }
 
@@ -162,7 +162,7 @@ function parseGitHubPullRequestUrl(value: string, label: string) {
 }
 
 /**
- * Construct breadcrumb links to the repository, PR files at the specific commit,
+ * Construct breadcrumb links to the repository, the reviewed commit,
  * and the visible review comment when the evidence includes one.
  */
 export function extractBreadcrumbs(
@@ -187,7 +187,7 @@ export function extractBreadcrumbs(
 
   return {
     repo: `https://github.com/${source.owner}/${source.repo}`,
-    prFilesAtCommit: `https://github.com/${source.owner}/${source.repo}/pull/${source.prNumber}/files/${commitSha}`,
+    reviewedCommit: `https://github.com/${source.owner}/${source.repo}/commit/${commitSha}`,
     ...(reviewComment ? { reviewComment } : {}),
   };
 }
@@ -312,11 +312,11 @@ export function EvidenceViewer({ cases }: { cases: EvidenceCase[] }) {
               </a>
               <a
                 className="ev-source"
-                href={breadcrumbs.prFilesAtCommit}
+                href={breadcrumbs.reviewedCommit}
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                pull request at commit
+                reviewed commit
               </a>
               {breadcrumbs.reviewComment ? (
                 <a

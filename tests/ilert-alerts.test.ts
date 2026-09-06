@@ -178,22 +178,20 @@ describe("iLert webhook input", () => {
 });
 
 describe("iLert operator stream protocol", () => {
-  test("stages the receiver secret and operator allowlist in managed deployments", async () => {
+  test("preserves runtime secret metadata without credential staging", async () => {
     const deploy = await readFile(
       join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
       "utf8",
     );
-    const operatorSecrets = deploy.match(
-      /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
-    )?.[1];
-    expect(operatorSecrets).toContain("POSTIL_ILERT_WEBHOOK_SECRET");
-    expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
+    expect(deploy).toContain("Verify runtime secret contract");
     expect(deploy).toContain(
-      "POSTIL_ILERT_WEBHOOK_SECRET: ${{ secrets.POSTIL_ILERT_WEBHOOK_SECRET }}",
+      "map({name, digest, status}) | sort_by(.name)",
     );
     expect(deploy).toContain(
-      "POSTIL_OPERATOR_GITHUB_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}",
+      "(map({name, digest, status}) | sort_by(.name)) == $source[0]",
     );
+    expect(deploy).not.toContain("flyctl secrets set");
+    expect(deploy).not.toContain("flyctl secrets import");
   });
 
   test("uses a session endpoint for Supabase LISTEN connections", () => {
