@@ -175,6 +175,61 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       );
     });
 
+    test("accepts an older journal gap when the checked-in watermark is applied", async () => {
+      const older = migrations[7]!;
+      await pool.query(
+        `DELETE FROM drizzle.__drizzle_migrations WHERE created_at = $1`,
+        [older.folderMillis],
+      );
+      try {
+        await verifyCompatibleManagedRelease(
+          pool,
+          successorRelease,
+          rejectedRelease,
+          COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
+          migrations,
+        );
+        expect(await capabilityPresent(rejectedRelease)).toBe(false);
+      } finally {
+        await pool.query(
+          `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)`,
+          [older.hash, older.folderMillis],
+        );
+      }
+    });
+
+    test("rejects duplicate and malformed journal rows without granting the release", async () => {
+      const migration = migrations[0]!;
+      for (const row of [
+        { hash: migration.hash, createdAt: migration.folderMillis },
+        { hash: migration.hash, createdAt: null },
+        { hash: "invalid-hash", createdAt: migration.folderMillis + 1 },
+      ]) {
+        const inserted = await pool.query<{ id: number }>(
+          `INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
+           VALUES ($1, $2) RETURNING id`,
+          [row.hash, row.createdAt],
+        );
+        try {
+          await expect(
+            prepareCompatibleManagedRelease(
+              pool,
+              successorRelease,
+              rejectedRelease,
+              COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
+              migrations,
+            ),
+          ).rejects.toThrow("unknown migrations");
+          expect(await capabilityPresent(rejectedRelease)).toBe(false);
+        } finally {
+          await pool.query(
+            `DELETE FROM drizzle.__drizzle_migrations WHERE id = $1`,
+            [inserted.rows[0]!.id],
+          );
+        }
+      }
+    });
+
     test("rejects pending, unknown, mismatched, and incompatible state without granting the release", async () => {
       const last = migrations.at(-1)!;
       await pool.query(

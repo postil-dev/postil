@@ -470,7 +470,7 @@ export function compatibleManagedReleaseProtocolCapability(
   return `${MANAGED_RELEASE_PROTOCOL_PREFIX}${normalizedManagedReleaseSha(releaseSha)}:${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}`;
 }
 
-async function assertExactManagedReleaseMigrations(
+async function assertManagedReleaseMigrationsCurrent(
   client: PoolClient,
   expected: readonly ManagedReleaseMigrationIdentity[],
 ): Promise<void> {
@@ -518,18 +518,22 @@ async function assertExactManagedReleaseMigrations(
         `(database=${actual.rows.length}, checked_in=${expected.length})`,
     );
   }
-  if (actualByCreatedAt.size < expectedByCreatedAt.size) {
-    throw new Error(
-      "managed release migration journal has pending migrations " +
-        `(database=${actual.rows.length}, checked_in=${expected.length})`,
-    );
-  }
-  for (const [createdAt, wanted] of expectedByCreatedAt) {
-    if (actualByCreatedAt.get(createdAt) !== wanted.hash) {
+  for (const [createdAt, actualHash] of actualByCreatedAt) {
+    if (actualHash !== expectedByCreatedAt.get(createdAt)!.hash) {
       throw new Error(
         `managed release migration journal mismatch at ${createdAt}`,
       );
     }
+  }
+  // Drizzle applies migrations above its recorded timestamp watermark.
+  // Older journal gaps can coexist with later migrations that repair their schema.
+  const latestExpected = expected.reduce((latest, migration) =>
+    migration.folderMillis > latest.folderMillis ? migration : latest,
+  );
+  if (
+    actualByCreatedAt.get(String(latestExpected.folderMillis)) !== latestExpected.hash
+  ) {
+    throw new Error("managed release migration journal has pending migrations");
   }
 }
 
@@ -540,7 +544,7 @@ async function assertCompatibleManagedReleaseDatabaseState(
   migrations: readonly ManagedReleaseMigrationIdentity[],
   requirePreparedRelease: boolean,
 ): Promise<{ bootstrap: boolean }> {
-  await assertExactManagedReleaseMigrations(client, migrations);
+  await assertManagedReleaseMigrationsCurrent(client, migrations);
   const sourceCapability = hostedInferenceCapability(sourceReleaseSha);
   const targetCapability = hostedInferenceCapability(releaseSha);
   const sourceProtocolCapability =
