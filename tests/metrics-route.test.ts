@@ -211,6 +211,16 @@ function queryResponse(text: string): {
       ],
     };
   }
+  if (sql.includes("FROM private_monitor_check_failures")) {
+    expect(sql).toContain("observed_at >= now() - interval '24 hours'");
+    expect(sql).toContain("GROUP BY key, recovered");
+    return {
+      rows: [
+        { key: "public-favicon", recovered: true, count: "3" },
+        { key: "public-site", recovered: false, count: "1" },
+      ] as unknown as Array<Record<string, string | null>>,
+    };
+  }
   throw new Error(`unexpected metrics query: ${text}`);
 }
 
@@ -279,6 +289,9 @@ describe("/api/metrics", () => {
     expect(text).toContain("postil_private_monitor_consecutive_failed_passes 2");
     expect(text).toContain("postil_private_monitor_running_pass_age_seconds 75");
     expect(text).toContain("postil_ilert_alert_last_received_age_seconds 120");
+    expect(text).toContain(
+      '# TYPE postil_private_monitor_check_failures_24h gauge\npostil_private_monitor_check_failures_24h{key="public-favicon",recovered="true"} 3\npostil_private_monitor_check_failures_24h{key="public-site",recovered="false"} 1',
+    );
     expect(text).toContain("postil_queue_depth 7");
     expect(text).toContain('postil_installations_current{state="active"} 3');
     expect(text).toContain('postil_installations_current{state="suspended"} 1');
@@ -365,7 +378,7 @@ describe("/api/metrics", () => {
       'postil_review_incidents_30m{category="failed_job"} 6',
     );
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(12);
+    expect(queryCalls).toBe(13);
   });
 
   test("emits an explicit unhealthy sentinel when the private monitor heartbeat is absent", async () => {
@@ -404,6 +417,6 @@ describe("/api/metrics", () => {
     expect(text).not.toContain("postil_database_size_bytes");
     expect(text).not.toContain("postil_queue_depth");
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(12);
+    expect(queryCalls).toBe(13);
   });
 });

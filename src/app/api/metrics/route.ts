@@ -71,6 +71,11 @@ interface DatabaseMetrics {
     tokens: number;
   }>;
   reviewIncidents30m: Map<string, number>;
+  monitorCheckFailures24h: Array<{
+    key: string;
+    recovered: boolean;
+    count: number;
+  }>;
 }
 
 /** Prometheus text exposition, protected by a bearer token. */
@@ -293,6 +298,14 @@ export async function GET(request: Request): Promise<NextResponse> {
             dbMetrics.reviewIncidents30m.get(category) ?? 0
           }`,
       ),
+      "# HELP postil_private_monitor_check_failures_24h Failed private monitor check attempts in the last 24 hours; recovered attempts succeeded on retry within the same pass.",
+      "# TYPE postil_private_monitor_check_failures_24h gauge",
+      ...dbMetrics.monitorCheckFailures24h.map(
+        (row) =>
+          `postil_private_monitor_check_failures_24h{key="${escapeLabelValue(
+            row.key,
+          )}",recovered="${row.recovered ? "true" : "false"}"} ${row.count}`,
+      ),
     );
   }
 
@@ -334,6 +347,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     oldestRunningReview,
     usageByModel,
     reviewIncidents30m,
+    monitorCheckFailures24h,
   ] = await Promise.all([
     pool.query<{
       database_size_bytes: string;
@@ -596,6 +610,13 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
            -- time because failed jobs no longer use it for scheduling.
            AND run_after >= now() - interval '30 minutes') AS failed_job
     `),
+    pool.query<{ key: string; recovered: boolean; count: string }>(`
+      SELECT key, recovered, count(*)::text AS count
+        FROM private_monitor_check_failures
+       WHERE observed_at >= now() - interval '24 hours'
+       GROUP BY key, recovered
+       ORDER BY key, recovered
+    `),
   ]);
 
   const row = overview.rows[0];
@@ -725,6 +746,11 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         toNumber(incidentRow?.[category]),
       ]),
     ),
+    monitorCheckFailures24h: monitorCheckFailures24h.rows.map((failureRow) => ({
+      key: failureRow.key,
+      recovered: failureRow.recovered === true,
+      count: toNumber(failureRow.count),
+    })),
   };
 }
 

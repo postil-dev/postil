@@ -436,6 +436,24 @@ suppressing an alert. Monitoring state and target details are visible only on
 the operator dashboard. Active incidents and retained resolved alerts use separate
 operator-only views. Alert messages identify the affected capability, state, first
 and last observation, bounded evidence, and the recommended operator action.
+
+Public probes retry transport failures and transient statuses (408, 425, 429,
+and 5xx) twice within a pass before a check is unhealthy; a deterministic
+mismatch such as a wrong redirect target or a missing header fails without
+retry. Serving probes (site, liveness, dependencies) are critical; hygiene
+probes (sitemap, favicon, robots, redirects, noindex headers) are warnings.
+Every failed attempt, including one a retry recovered, is retained for 30 days
+with its evidence, is exposed as a labeled metric, and is listed on the
+dashboard. More than two retry-recovered attempts in 24 hours open a warning
+incident so a flapping probe is reported without paging. Incident rows keep
+the evidence captured at open separately from the latest observation, and an
+append-only transition history retained for 90 days backs the resolved-alert
+view, so a resolved incident still shows what failed. Each pass also logs
+unhealthy checks and retry recoveries to the process log. The external
+dead-man heartbeat is itself a critical check: a configured heartbeat URL that
+has not accepted a ping within 15 minutes opens an incident that carries the
+provider's last rejection, and monitoring alerts fall back to the operator
+email path when the alerting service rejects an event.
 The monitor uses a non-inference OpenRouter management credential to read
 account credits and paginated key metadata. Account-wide credit depletion and
 each review key's daily-cap depletion are separate incidents. The configured
@@ -454,9 +472,9 @@ aggregate operational metrics without receiving private monitor targets.
 Alert delivery for monitoring is owned by ilert, an external alerting service:
 the platform and the GitHub monitor report events to an alert source
 (`ILERT_INTEGRATION_KEY`), and ilert owns paging, escalation, deduplication by
-incident key, and auto-close on resolve events. The platform never pages the
-operator by its own email path for monitoring; operator email remains for
-business lifecycle and billing notifications only. After each completed pass
+incident key, and auto-close on resolve events. Operator email carries a
+monitoring alert only when ilert rejects the event, so a lapsed or
+misconfigured alerting account cannot silence paging. After each completed pass
 the monitor pings an ilert heartbeat (`POSTIL_MONITOR_HEARTBEAT_URL`), so a
 dead monitor process or persistently failing pass raises a missed-heartbeat
 alert outside the platform's failure domain. Without a configured integration
