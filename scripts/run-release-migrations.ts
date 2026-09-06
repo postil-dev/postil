@@ -1,10 +1,14 @@
+import { fileURLToPath } from "node:url";
+
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { Pool } from "pg";
 
 import {
-  type ManagedReleaseCapabilitySnapshot,
-  prepareManagedReleaseCapabilities,
+  COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
+  type ManagedReleaseMigrationIdentity,
+  prepareCompatibleManagedRelease,
   restoreAllManagedReleasePreparations,
-  restoreManagedReleaseCapabilities,
+  verifyCompatibleManagedRelease,
 } from "@/lib/release-job-rollout";
 import { resolveDirectDatabaseUrl } from "./resolve-direct-database-url";
 
@@ -17,13 +21,12 @@ type SpawnReleaseDatabaseCommand = (
   command: readonly string[],
   environment: Environment,
 ) => MigrationProcess;
-type PrepareReleaseCapabilities = (
+type VerifyCompatibleRelease = (
   environment: Environment,
-) => Promise<ManagedReleaseCapabilitySnapshot | undefined>;
-type RestoreReleaseCapabilities = (
-  environment: Environment,
-  snapshot: ManagedReleaseCapabilitySnapshot,
 ) => Promise<void>;
+type PrepareCompatibleRelease = (
+  environment: Environment,
+) => Promise<boolean>;
 
 class ReleaseCommandStateUncertainError extends Error {
   override name = "ReleaseCommandStateUncertainError";
@@ -43,46 +46,117 @@ export function releaseMigrationEnvironment(environment: Environment): Environme
 export async function runReleaseMigrations(
   environment: Environment = process.env,
   spawnCommand: SpawnReleaseDatabaseCommand = defaultSpawnReleaseDatabaseCommand,
-  prepareCapabilities: PrepareReleaseCapabilities = defaultPrepareReleaseCapabilities,
-  restoreCapabilities: RestoreReleaseCapabilities = defaultRestoreReleaseCapabilities,
+  verifyCompatibleRelease: VerifyCompatibleRelease = defaultVerifyCompatibleRelease,
+  prepareCompatibleRelease: PrepareCompatibleRelease = defaultPrepareCompatibleRelease,
   signal?: AbortSignal,
 ): Promise<void> {
   const databaseEnvironment = releaseMigrationEnvironment(environment);
-  const snapshot = await prepareCapabilities(databaseEnvironment);
+  const managedRelease = databaseEnvironment.POSTIL_MANAGED_RELEASE;
+  if (managedRelease !== undefined && managedRelease !== "0" && managedRelease !== "1") {
+    throw new Error("POSTIL_MANAGED_RELEASE must be 0 or 1");
+  }
+  const releaseSha = databaseEnvironment.POSTIL_RELEASE_SHA;
+  if (managedRelease !== "1") {
+    await runUnmanagedReleaseMigrations(
+      databaseEnvironment,
+      spawnCommand,
+      signal,
+    );
+    return;
+  }
+  if (!releaseSha) {
+    throw new Error("managed release requires a non-empty POSTIL_RELEASE_SHA");
+  }
+
+  requireCompatibleReleaseProtocol(databaseEnvironment);
+  await verifyCompatibleRelease(databaseEnvironment);
+  await runReleaseDatabaseCommand(
+    ["bun", "run", "hosted:verify-provider"],
+    "hosted provider preflight",
+    databaseEnvironment,
+    spawnCommand,
+    signal,
+  );
+  await prepareCompatibleRelease(databaseEnvironment);
+}
+
+async function runUnmanagedReleaseMigrations(
+  environment: Environment,
+  spawnCommand: SpawnReleaseDatabaseCommand,
+  signal?: AbortSignal,
+): Promise<void> {
+  for (const [command, label] of [
+    [["bun", "run", "db:migrate"], "release database migration"],
+    [["bun", "run", "operational:indexes"], "release operational indexes"],
+    [["bun", "run", "notifications:quiesce"], "release notification quiescence"],
+  ] as const) {
+    await runReleaseDatabaseCommand(
+      command,
+      label,
+      environment,
+      spawnCommand,
+      signal,
+    );
+  }
+}
+
+function requireCompatibleReleaseProtocol(environment: Environment): string {
+  const protocol = environment.POSTIL_RELEASE_PROTOCOL;
+  if (protocol !== COMPATIBLE_MANAGED_RELEASE_PROTOCOL) {
+    throw new Error(
+      `POSTIL_RELEASE_PROTOCOL must be ${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}`,
+    );
+  }
+  return protocol;
+}
+
+function compatibleSourceReleaseSha(environment: Environment): string {
+  const releaseSha = environment.POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA;
+  if (!releaseSha) {
+    throw new Error(
+      "POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA must identify the verified live fleet",
+    );
+  }
+  return releaseSha;
+}
+
+export function checkedInReleaseMigrations(): ManagedReleaseMigrationIdentity[] {
+  return readMigrationFiles({
+    migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)),
+  }).map(({ folderMillis, hash }) => ({ folderMillis, hash }));
+}
+
+async function defaultVerifyCompatibleRelease(
+  environment: Environment,
+): Promise<void> {
+  const pool = new Pool({ connectionString: environment.DATABASE_URL });
   try {
-    await runReleaseDatabaseCommand(
-      ["bun", "run", "db:migrate"],
-      "release database migration",
-      databaseEnvironment,
-      spawnCommand,
-      signal,
+    await verifyCompatibleManagedRelease(
+      pool,
+      compatibleSourceReleaseSha(environment),
+      environment.POSTIL_RELEASE_SHA!,
+      requireCompatibleReleaseProtocol(environment),
+      checkedInReleaseMigrations(),
     );
-    await runReleaseDatabaseCommand(
-      ["bun", "run", "operational:indexes"],
-      "release operational indexes",
-      databaseEnvironment,
-      spawnCommand,
-      signal,
+  } finally {
+    await pool.end();
+  }
+}
+
+async function defaultPrepareCompatibleRelease(
+  environment: Environment,
+): Promise<boolean> {
+  const pool = new Pool({ connectionString: environment.DATABASE_URL });
+  try {
+    return await prepareCompatibleManagedRelease(
+      pool,
+      compatibleSourceReleaseSha(environment),
+      environment.POSTIL_RELEASE_SHA!,
+      requireCompatibleReleaseProtocol(environment),
+      checkedInReleaseMigrations(),
     );
-    await runReleaseDatabaseCommand(
-      ["bun", "run", "notifications:quiesce"],
-      "release notification quiescence",
-      databaseEnvironment,
-      spawnCommand,
-      signal,
-    );
-  } catch (error) {
-    if (snapshot && !(error instanceof ReleaseCommandStateUncertainError)) {
-      try {
-        await restoreCapabilities(databaseEnvironment, snapshot);
-      } catch (restoreError) {
-        throw new AggregateError(
-          [error, restoreError],
-          "release database preparation and capability compensation failed",
-        );
-      }
-    }
-    throw error;
+  } finally {
+    await pool.end();
   }
 }
 
@@ -110,37 +184,6 @@ async function releaseSchemaState(pool: Pool): Promise<{
     hostedReady: false,
     publicationLifecycleReady: false,
   };
-}
-
-async function defaultPrepareReleaseCapabilities(
-  environment: Environment,
-): Promise<ManagedReleaseCapabilitySnapshot | undefined> {
-  const releaseSha = environment.POSTIL_RELEASE_SHA?.trim();
-  if (!releaseSha) return undefined;
-  const pool = new Pool({ connectionString: environment.DATABASE_URL });
-  try {
-    const schema = await releaseSchemaState(pool);
-    if (!schema.hostedReady) return undefined;
-    return await prepareManagedReleaseCapabilities(
-      pool,
-      releaseSha,
-      schema.publicationLifecycleReady,
-    );
-  } finally {
-    await pool.end();
-  }
-}
-
-async function defaultRestoreReleaseCapabilities(
-  environment: Environment,
-  snapshot: ManagedReleaseCapabilitySnapshot,
-): Promise<void> {
-  const pool = new Pool({ connectionString: environment.DATABASE_URL });
-  try {
-    await restoreManagedReleaseCapabilities(pool, snapshot);
-  } finally {
-    await pool.end();
-  }
 }
 
 export async function compensateReleasePreparation(
@@ -259,7 +302,7 @@ async function runReleaseDatabaseCommand(
     exitCode = await process.exited;
   } catch (cause) {
     throw new ReleaseCommandStateUncertainError(
-      `${label} termination could not be observed; durable compensation remains pending`,
+      `${label} termination could not be observed`,
       { cause },
     );
   } finally {
@@ -316,8 +359,8 @@ if (import.meta.main) {
     await runReleaseMigrations(
       process.env,
       defaultSpawnReleaseDatabaseCommand,
-      defaultPrepareReleaseCapabilities,
-      defaultRestoreReleaseCapabilities,
+      defaultVerifyCompatibleRelease,
+      defaultPrepareCompatibleRelease,
       controller.signal,
     );
   } finally {

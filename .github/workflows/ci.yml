@@ -42,7 +42,7 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP TABLE release_steps'
           bun run operational:indexes
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM release_steps WHERE name = 'operational-indexes-v6'" | grep -qx 1
-          bun run jobs:activate-release
+          bun run jobs:activate-release --maintenance
         env:
           PGHOST: localhost
           PGUSER: postgres

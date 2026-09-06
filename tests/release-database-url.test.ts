@@ -5,12 +5,24 @@ import { join } from "node:path";
 import { parse } from "yaml";
 
 import { resolveDirectDatabaseUrl } from "../scripts/resolve-direct-database-url";
+import { releaseActivationMode } from "../scripts/activate-release-jobs";
 import {
   releaseMigrationEnvironment,
   runReleaseMigrations,
 } from "../scripts/run-release-migrations";
 
 describe("release database connection", () => {
+  test("defaults activation to read-only rolling verification", () => {
+    expect(releaseActivationMode(undefined, { POSTIL_MANAGED_RELEASE: "1" })).toBe("rolling");
+    expect(releaseActivationMode(undefined, {})).toBe("maintenance");
+    expect(releaseActivationMode(undefined, { POSTIL_MANAGED_RELEASE: "0", POSTIL_RELEASE_SHA: "telemetry" })).toBe("maintenance");
+    expect(releaseActivationMode("--rolling")).toBe("rolling");
+    expect(releaseActivationMode("--maintenance")).toBe("maintenance");
+    expect(() => releaseActivationMode("--unknown")).toThrow(
+      "accepts only --rolling or --maintenance",
+    );
+  });
+
   test("derives the Supabase session-pool endpoint without exposing a separate secret", () => {
     const resolved = new URL(
       resolveDirectDatabaseUrl({
@@ -142,121 +154,104 @@ describe("release database connection", () => {
     ).rejects.toThrow("release database migration termination could not be observed");
   });
 
-  test("restores the captured capability state when any database preparation step fails", async () => {
-    const environment = {
-      DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
-      POSTIL_RELEASE_SHA: "a".repeat(40),
-    };
-    const snapshot = {
-      releaseSha: "a".repeat(40),
-      generation: "00000000-0000-4000-8000-000000000001",
-      publicationLifecycleReady: true,
-      capabilities: [
-        "publication-lifecycle-fleet-active",
-        "hosted-inference-fleet-active",
-      ],
-    };
-    const commands: string[][] = [];
-    const restored: unknown[] = [];
-
-    await expect(
-      runReleaseMigrations(
-        environment,
-        (command) => {
-          commands.push([...command]);
-          return {
-            exited: Promise.resolve(
-              command.includes("operational:indexes") ? 17 : 0,
-            ),
-          };
-        },
-        async () => snapshot,
-        async (_databaseEnvironment, captured) => {
-          restored.push(captured);
-        },
-      ),
-    ).rejects.toThrow("release operational indexes failed with status 17");
-    expect(commands).toEqual([
-      ["bun", "run", "db:migrate"],
-      ["bun", "run", "operational:indexes"],
-    ]);
-    expect(restored).toEqual([snapshot]);
-  });
-
-  test("aborts the active migration child and compensates on termination", async () => {
-    const environment = {
-      DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
-      POSTIL_RELEASE_SHA: "b".repeat(40),
-    };
-    const snapshot = {
-      releaseSha: "b".repeat(40),
-      generation: "00000000-0000-4000-8000-000000000002",
-      publicationLifecycleReady: true,
-      capabilities: ["publication-lifecycle-fleet-active"],
-    };
-    const controller = new AbortController();
-    let childStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      childStarted = resolve;
-    });
-    const kills: Array<number | NodeJS.Signals | undefined> = [];
-    const restored: unknown[] = [];
-    const events: string[] = [];
-    let childExited!: (exitCode: number) => void;
-    const exited = new Promise<number>((resolve) => {
-      childExited = resolve;
-    });
-    const run = runReleaseMigrations(
-      environment,
-      () => {
-        childStarted();
-        return {
-          exited,
-          kill: (signal) => {
-            events.push("child terminated");
-            kills.push(signal);
-            childExited(143);
-          },
-        };
-      },
-      async () => snapshot,
-      async (_databaseEnvironment, captured) => {
-        events.push("capabilities restored");
-        restored.push(captured);
-      },
-      controller.signal,
-    );
-    await started;
-    controller.abort();
-
-    await expect(run).rejects.toThrow("release database migration interrupted");
-    expect(kills).toEqual(["SIGTERM"]);
-    expect(restored).toEqual([snapshot]);
-    expect(events).toEqual(["child terminated", "capabilities restored"]);
-  });
-
-  test("leaves durable compensation pending when child termination is unobservable", async () => {
-    const snapshot = {
-      releaseSha: "c".repeat(40),
-      generation: "00000000-0000-4000-8000-000000000003",
-      publicationLifecycleReady: true,
-      capabilities: ["publication-lifecycle-fleet-active"],
-    };
-    const restored: unknown[] = [];
+  test("rejects a managed release without its image SHA before spawning", async () => {
+    let spawned = false;
     await expect(
       runReleaseMigrations(
         {
           DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
-          POSTIL_RELEASE_SHA: snapshot.releaseSha,
+          POSTIL_MANAGED_RELEASE: "1",
         },
-        () => ({ exited: Promise.reject(new Error("lost child")) }),
-        async () => snapshot,
-        async (_databaseEnvironment, captured) => {
-          restored.push(captured);
+        () => {
+          spawned = true;
+          return { exited: Promise.resolve(0) };
         },
       ),
-    ).rejects.toThrow("durable compensation remains pending");
-    expect(restored).toEqual([]);
+    ).rejects.toThrow("managed release requires a non-empty POSTIL_RELEASE_SHA");
+    await expect(
+      runReleaseMigrations({
+        DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
+        POSTIL_MANAGED_RELEASE: "true",
+      }),
+    ).rejects.toThrow("POSTIL_MANAGED_RELEASE must be 0 or 1");
+    expect(spawned).toBe(false);
+  });
+
+  test("verifies compatibility, preflights the provider, then prepares additively", async () => {
+    const environment = {
+      POSTIL_MANAGED_RELEASE: "1",
+      DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
+      POSTIL_RELEASE_SHA: "a".repeat(40),
+      POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA: "b".repeat(40),
+      POSTIL_RELEASE_PROTOCOL: "additive-publication-hosted-v1",
+    };
+    const events: string[] = [];
+    const commands: string[][] = [];
+
+    await runReleaseMigrations(
+      environment,
+      (command) => {
+        events.push("provider preflight");
+        commands.push([...command]);
+        return { exited: Promise.resolve(0) };
+      },
+      async () => {
+        events.push("compatibility verified");
+      },
+      async () => {
+        events.push("release prepared");
+        return true;
+      },
+    );
+    expect(commands).toEqual([["bun", "run", "hosted:verify-provider"]]);
+    expect(events).toEqual([
+      "compatibility verified",
+      "provider preflight",
+      "release prepared",
+    ]);
+  });
+
+  test("rejects incompatibility and provider failure before preparation", async () => {
+    const environment = {
+      POSTIL_MANAGED_RELEASE: "1",
+      DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
+      POSTIL_RELEASE_SHA: "c".repeat(40),
+      POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA: "b".repeat(40),
+      POSTIL_RELEASE_PROTOCOL: "additive-publication-hosted-v1",
+    };
+    let spawned = false;
+    let prepared = false;
+    await expect(
+      runReleaseMigrations(
+        environment,
+        () => {
+          spawned = true;
+          return { exited: Promise.resolve(0) };
+        },
+        async () => {
+          throw new Error("migration mismatch");
+        },
+        async () => {
+          prepared = true;
+          return true;
+        },
+      ),
+    ).rejects.toThrow("migration mismatch");
+    expect(spawned).toBe(false);
+    expect(prepared).toBe(false);
+
+    await expect(
+      runReleaseMigrations(
+        environment,
+        () => ({ exited: Promise.resolve(23) }),
+        async () => undefined,
+        async () => {
+          prepared = true;
+          return true;
+        },
+      ),
+    ).rejects.toThrow("hosted provider preflight failed with status 23");
+    expect(prepared).toBe(false);
   });
 
   test("keeps the checked-in release and deploy contracts aligned", async () => {
@@ -265,6 +260,10 @@ describe("release database connection", () => {
       scripts: Record<string, string>;
     };
     const deployWorkflow = await readFile(join(root, ".github", "workflows", "deploy.yml"), "utf8");
+    const ciWorkflow = await readFile(
+      join(root, ".github", "workflows", "ci.yml"),
+      "utf8",
+    );
     const productionMonitorWorkflow = await readFile(
       join(root, ".github", "workflows", "production-monitor.yml"),
       "utf8",
@@ -295,15 +294,25 @@ describe("release database connection", () => {
     expect(packageJson.scripts["db:migrate:release"]).toBe(
       "bun run scripts/run-release-migrations.ts",
     );
-    expect(deployWorkflow).toContain('staged+="DATABASE_URL=${DATABASE_URL}"');
+    expect(deployWorkflow).toContain("Verify runtime secret contract");
+    expect(deployWorkflow).not.toContain("flyctl secrets import");
+    expect(deployWorkflow).not.toContain("flyctl secrets unset");
     expect(deployWorkflow).not.toContain("POSTIL_DIRECT_DATABASE_URL");
-    expect(deployWorkflow).toContain(
+    expect(deployWorkflow).not.toContain(
       "Restore capabilities when release preparation failed before replacement",
     );
     expect(
       deployWorkflow.split("jq -ce -f scripts/verify-managed-fleet.jq").length - 1,
     ).toBeGreaterThanOrEqual(2);
-    expect(deployWorkflow).toContain("bun scripts/run-release-migrations.ts --compensate");
+    expect(deployWorkflow).not.toContain("bun scripts/run-release-migrations.ts --compensate");
+    expect(deployWorkflow).toContain("POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA");
+    expect(deployWorkflow).toContain("additive-publication-hosted-v1");
+    expect(deployWorkflow).toContain("Verify compatible source fleet");
+    expect(deployWorkflow).not.toContain("--skip-release-command");
+    expect(deployWorkflow).toContain('flyctl machine update "${id}"');
+    expect(deployWorkflow).toContain("bun run jobs:activate-release");
+    expect(deployWorkflow).not.toContain("jobs:activate-release --maintenance");
+    expect(ciWorkflow).toContain("bun run jobs:activate-release --maintenance");
     expect(productionMonitorWorkflow).toContain('workflows: ["deploy"]');
     expect(deployWorkflowConfig.concurrency).toEqual({
       group: "fly-deploy",

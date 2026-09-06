@@ -17,10 +17,9 @@ TRUSTED_HOME='__TRUSTED_HOME__'
 
 zero_sha=0000000000000000000000000000000000000000
 local_primary_model=z-ai/glm-5.2
-# The fallback model recovers a review whose primary output repeatedly fails
-# validation on a difficult diff; a one-model chain fails every local review
-# of such a diff closed. The primary model stays pinned.
-local_cascade_override=z-ai/glm-5.2,moonshotai/kimi-k2.7-code
+# Gemini, then Kimi, recover reviews whose primary output fails validation.
+# GLM stays pinned as the primary model.
+local_cascade_override=z-ai/glm-5.2,google/gemini-3.8-flash,moonshotai/kimi-k2.7-code
 remote_name=${1:-origin}
 cached_openrouter_api_key=${OPENROUTER_API_KEY:-}
 dispositions_source=${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE:-}
@@ -665,6 +664,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       POSTIL_API_BASE=https://openrouter.ai/api/v1 \
       POSTIL_API_FORMAT=openai-compatible \
       POSTIL_HOSTED_MODE=0 \
+      POSTIL_LLM_REQUEST_TIMEOUT_SECS=120 POSTIL_LLM_TOTAL_TIMEOUT_SECS=300 \
       REVIEW_MODEL_CASCADE="$local_cascade_override" \
       REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
       "$CREDENTIAL_WRAPPER" "$POSTIL_EXECUTABLE" review --base "$base_sha" --no-post \
@@ -682,6 +682,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       POSTIL_API_BASE=https://openrouter.ai/api/v1 \
       POSTIL_API_FORMAT=openai-compatible \
       POSTIL_HOSTED_MODE=0 \
+      POSTIL_LLM_REQUEST_TIMEOUT_SECS=120 POSTIL_LLM_TOTAL_TIMEOUT_SECS=300 \
       REVIEW_MODEL="$local_primary_model" \
       REVIEW_MODEL_CASCADE="$local_cascade_override" \
       REVIEW_SCORER_MODEL= POSTIL_DISABLE_SCORER=1 \
