@@ -126,11 +126,11 @@ export const BLOG_POSTS = [
     publishedOn: "2026-08-19",
     title: "Choosing a code review model",
     description:
-      "Postil screening results compare detection, gate correctness, clean-case silence, latency, and measured run cost across 70 fixtures.",
+      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
     socialDescription:
-      "Postil screening results compare detection, gate correctness, clean-case silence, latency, and measured run cost across 70 fixtures.",
+      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
     excerpt:
-      "Postil screening results compare detection, gate correctness, clean-case silence, latency, and measured run cost across 70 fixtures.",
+      "Luna and GLM flag nearly the same bug locations, but differ in cost, wait time, and merge decisions. What the benchmark tells you, and what requires reading the findings.",
   },
 ] as const satisfies readonly BlogPost[];
 

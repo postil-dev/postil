@@ -46,7 +46,7 @@ export default function BenchmarksArticle() {
           <dt><strong>Clean-case silence</strong></dt>
           <dd>The share of {BENCH.cleanCases} clean fixtures without a reported finding. Output failures remain separate.</dd>
           <dt><strong>Gate correctness</strong></dt>
-          <dd>The share of scored cases whose pass or fail result matches the expected verdict. An unscored case is excluded from this denominator.</dd>
+          <dd>The share of scored cases whose gate conclusion matches the expected verdict. An unscored case is excluded from this denominator.</dd>
         </dl>
         <p>
           Finding-level precision is the share of reported findings that are valid. Recall is the share

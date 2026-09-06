@@ -9,13 +9,6 @@ const post = getBlogPost("the-least-useful-number");
 export const metadata = blogPostMetadata(post);
 const luna = benchModel("openai/gpt-5.6-luna");
 const glm = benchModel("z-ai/glm-5.2");
-const lunaRepeatRuns = BENCH.repeatRuns?.models.find((model) => model.id === luna.id);
-
-if (!lunaRepeatRuns) throw new Error(`repeat runs missing for ${luna.id}`);
-const validLunaRepeatRates = lunaRepeatRuns.detectionRates.filter(
-  (_, index) => !lunaRepeatRuns.degradedRunIndexes?.includes(index),
-);
-
 function count(rate: number | undefined, denominator: number): number {
   return Math.round((rate ?? 0) * denominator);
 }
@@ -27,57 +20,61 @@ export default function LeastUsefulNumberArticle() {
       <BlogArticleHeader post={post} />
       <div className="prose-postil blog-prose mt-10">
         <p>
-          In the <Link href="/bench">model benchmark</Link>, GPT-5.6 Luna is cheaper and faster than
-          {" "}GLM-5.2, with comparable seeded-location matches: {count(luna.detectionRate, BENCH.defectCases)} of
-          {" "}{BENCH.defectCases} for Luna and {count(glm.detectionRate, BENCH.defectCases)} for GLM.
+          GPT-5.6 Luna flags {count(luna.detectionRate, BENCH.defectCases)} of the
+          {" "}{BENCH.defectCases} planted bug locations in the <Link href="/bench">Postil benchmark</Link>.
+          GLM-5.2 flags {count(glm.detectionRate, BENCH.defectCases)}. That looks like a close result
+          until you compare the bills: ${luna.totalCostUsd!.toFixed(4)} for Luna&apos;s run and
+          {" "}${glm.totalCostUsd!.toFixed(4)} for GLM&apos;s. On this test set, GLM costs about ten
+          times as much without matching more bug locations.
+        </p>
+        <h2>What counts as finding a bug?</h2>
+        <p>
+          The detection score has a narrow definition. A finding counts when it points to the
+          file and line range containing a planted bug. A comment on the right lines can still
+          give the wrong explanation. The score does not check that, so it cannot tell you how
+          many findings a developer can use to fix the code. You have to read the findings to judge that.
         </p>
         <p>
-          Luna returns the expected gate verdict in {count(luna.gateVerdictCorrectness, luna.casesRun)}
-          {" "}of {luna.casesRun} cases. GLM returns it in
+          A reviewer that blocks merges also needs to make the right pass or fail decision.
+          Luna agrees with the expected decision in {count(luna.gateVerdictCorrectness, luna.casesRun)} of
+          {" "}{luna.casesRun} cases; GLM agrees in
           {" "}{count(glm.gateVerdictCorrectness, glm.casesRun - glm.unscoredCases)} of
-          {" "}{glm.casesRun - glm.unscoredCases} scored cases, with {glm.unscoredCases} case
-          unscored. Both are silent on {BENCH.cleanCases} clean fixtures. GLM also produces
-          {" "}{glm.falsePositives} unmatched findings on defect fixtures. Gate correctness matters
-          when a review can block a merge. Unmatched findings need human triage to distinguish other
-          defects from false alarms.
+          {" "}{glm.casesRun - glm.unscoredCases} scored cases, with {glm.unscoredCases} unscored.
+          The similar detection scores hide a larger difference in merge decisions.
         </p>
+        <CostAgainstGateChart />
+        <h2>How much work does the review create?</h2>
         <p>
-          Luna&apos;s run costs ${luna.totalCostUsd!.toFixed(4)} and its p95 latency is
-          {" "}{secondsLabel(luna.latencyMsP95)}. GLM&apos;s costs ${glm.totalCostUsd!.toFixed(4)} and
-          its p95 latency is {secondsLabel(glm.latencyMsP95)}.
-        </p>
-        <p>
-          Detection records whether a finding overlaps the seeded path and line range. Location overlap
-          does not establish that the finding diagnoses the defect correctly.
-        </p>
-        <h2>Repeated runs and routing</h2>
-        <p>
-          Luna&apos;s valid repeated runs find
-          {" "}{validLunaRepeatRates.map((rate) => count(rate, BENCH.defectCases)).join(", ")}
-          {" "}of the {BENCH.defectCases} seeded locations. The same chart includes one run with
-          widespread output failures.
-        </p>
-        <DetectionSpreadChart />
-        <p>
-          Luna&apos;s unconstrained row permits provider-route variation and has
-          {" "}{count(luna.detectionRate, BENCH.defectCases)} seeded-location matches and
-          {" "}{secondsLabel(luna.latencyMsP95)} p95 latency. Its pinned-provider summary fixes a
-          route across {luna.pinnedProviderContract?.runs} runs and reports
-          {" "}{(luna.pinnedProviderContract?.detectionRate! * 100).toFixed(1)}% detection and
-          {" "}{secondsLabel(luna.pinnedProviderContract?.latencyMsP95)} p95 latency. For production,
-          use the same provider route you evaluate; the model identifier alone does not specify it.
+          Both models leave all {BENCH.cleanCases} clean test cases alone. That is useful evidence
+          if you want a reviewer that can approve a change without inventing something to say,
+          though {BENCH.cleanCases} cases cover little of the code it can encounter in a real repository.
         </p>
         <CleanReviewChart />
         <p>
-          Silence counts clean fixtures with no reported finding. Gate correctness counts scored cases
-          whose pass or fail verdict matches the fixture expectation. Detection, silence, and gate
-          correctness measure different review outcomes.
+          GLM also reports {glm.falsePositives} findings outside the planted bug locations in the
+          defective cases. These need inspection: they can be false alarms or other bugs the test
+          does not label. Either way, someone has to check them. A detection percentage does not
+          account for that work.
         </p>
-        <CostAgainstGateChart />
+        <h2>Check the wait, and run it again</h2>
         <p>
-          The <a href="/bench/postil-model-bench.json">report data</a> and
-          {" "}<Link href="/bench#run-the-suite">public suite</Link> retain the fixtures,
-          evaluator, routes, costs, and output failures behind these rows.
+          Luna&apos;s p95 response time is {secondsLabel(luna.latencyMsP95)};
+          GLM&apos;s is {secondsLabel(glm.latencyMsP95)}. At the 95th percentile, a developer waits
+          nearly three times as long for GLM. This matters even when the model bill is small.
+        </p>
+        <p>
+          Repeated runs show how much the results vary. The chart also includes a Luna run with
+          widespread output failures. A review that produces no usable answer still delays a merge,
+          even if the model scores well when it responds.
+        </p>
+        <DetectionSpreadChart />
+        <p>
+          Choose the provider along with the model. OpenRouter can send requests for the same
+          model to different providers; the report includes separate results with a fixed provider.
+          To evaluate the setup you intend to use, keep that choice fixed and
+          {" "}<Link href="/bench#run-the-suite">run the public suite</Link>. Read the findings
+          alongside the <a href="/bench/postil-model-bench.json">scores and request data</a>, then
+          try it on changes from your own repository before letting it block merges.
         </p>
       </div>
     </div>

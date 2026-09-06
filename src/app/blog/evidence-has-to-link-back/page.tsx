@@ -31,7 +31,7 @@ export default function EvidenceLinksArticle() {
           diff. A pull request can contain later commits, so its final diff can differ from the state
           that the reviewer saw. The evidence record identifies that reviewed state explicitly.
         </p>
-        <h2>Finding text and merge outcome</h2>
+        <h2>Finding text and gate outcome</h2>
         <p>
           Review text states the claimed defect. The retained gate record describes the conclusion
           published under the repository&apos;s <Link href="/docs/gate">gate rules</Link>. These records
