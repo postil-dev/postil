@@ -300,7 +300,7 @@
   ],
   "note": "Rows are screening runs on unconstrained provider routing. Where a model carries pinnedProviderContract, that block is the median of runs made under the hosted contract: one pinned upstream provider, zero-retention required, price ceiling applied.",
   "repeatRuns": {
-    "note": "Detection rate from repeated screening runs of one unchanged model against one unchanged corpus, on unconstrained provider routing. A run listed in degradedRunIndexes produced no valid envelope on a large share of its cases, so it records an operational failure rather than the model's judgement; it is retained because dropping bad runs is how a benchmark flatters itself, and excluded from the spread, which is a claim about judgement.",
+    "note": "Detection rates from repeated screening runs on the same model and corpus with unconstrained provider routing. The spread includes every reported run, including runs marked in degradedRunIndexes for invalid output. Luna's full observed range is 21.1 percentage points; its degraded run has 16 unavailable results among 70 attempts. Unavailable defect cases receive no detection credit.",
     "models": [
       {
         "id": "openai/gpt-5.6-luna",
