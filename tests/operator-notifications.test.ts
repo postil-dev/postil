@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   configuredMonitoringAlertTransport,
   ilertEventTransport,
+  withFallbackTransport,
   type OperatorNotification,
+  type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 
 function notification(
@@ -124,6 +126,68 @@ describe("ilert event transport", () => {
 
     await expect(transport.send(notification())).rejects.toThrow(
       "ilert event delivery failed with HTTP 400",
+    );
+  });
+});
+
+describe("fallback transport", () => {
+  const recording = (
+    log: string[],
+    label: string,
+    failure?: string,
+  ): OperatorNotificationTransport => ({
+    async send(message) {
+      log.push(`${label}:${message.idempotencyKey}`);
+      if (failure) throw new Error(failure);
+      return { messageId: `${label}-message` };
+    },
+  });
+
+  test("uses only the primary transport when it succeeds", async () => {
+    const log: string[] = [];
+    const transport = withFallbackTransport(
+      recording(log, "primary"),
+      recording(log, "fallback"),
+      () => log.push("fallback-invoked"),
+    );
+
+    expect(await transport.send(notification())).toEqual({
+      messageId: "primary-message",
+    });
+    expect(log).toEqual(["primary:notification-key-1"]);
+  });
+
+  test("delivers through the fallback when the primary rejects the event", async () => {
+    const log: string[] = [];
+    const reasons: string[] = [];
+    const transport = withFallbackTransport(
+      recording(log, "primary", "ilert event delivery failed with HTTP 402: no access"),
+      recording(log, "fallback"),
+      (error) => reasons.push(String(error)),
+    );
+
+    expect(await transport.send(notification())).toEqual({
+      messageId: "fallback-message",
+    });
+    expect(log).toEqual([
+      "primary:notification-key-1",
+      "fallback:notification-key-1",
+    ]);
+    expect(reasons).toEqual([
+      "Error: ilert event delivery failed with HTTP 402: no access",
+    ]);
+  });
+
+  test("surfaces both failures when the fallback also fails", async () => {
+    const log: string[] = [];
+    const transport = withFallbackTransport(
+      recording(log, "primary", "primary down"),
+      recording(log, "fallback", "email down"),
+      () => undefined,
+    );
+
+    await expect(transport.send(notification())).rejects.toThrow(
+      "primary alert delivery failed (primary down); fallback delivery failed (email down)",
     );
   });
 });

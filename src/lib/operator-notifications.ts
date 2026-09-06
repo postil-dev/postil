@@ -61,10 +61,13 @@ const ILERT_EVENT_TIMEOUT_MS = 10_000;
 const ILERT_DETAIL_LIMIT = 4_000;
 
 /**
- * Monitoring alerts are delivered to the external alerting service, never by
- * the platform's own email path: the platform detects, the external system
- * pages. Missing delivery configuration fails closed so the durable outbox
- * retains the incident and retries after configuration is restored.
+ * Monitoring alerts are delivered to the external alerting service: the
+ * platform detects, the external system pages. When that service rejects an
+ * event, the operator email path carries the same notification so a broken
+ * or lapsed alerting account cannot silence production paging; the outbox
+ * still records the primary failure. Missing primary configuration fails
+ * closed so the durable outbox retains the incident and retries after
+ * configuration is restored.
  */
 export function configuredMonitoringAlertTransport(): OperatorNotificationTransport {
   const integrationKey = optionalEnv("ILERT_INTEGRATION_KEY")?.trim();
@@ -79,7 +82,42 @@ export function configuredMonitoringAlertTransport(): OperatorNotificationTransp
       },
     };
   }
-  return ilertEventTransport(integrationKey);
+  const primary = ilertEventTransport(integrationKey);
+  return optionalEnv("BREVO_API_KEY")?.trim()
+    ? withFallbackTransport(primary, configuredOperatorNotificationTransport())
+    : primary;
+}
+
+/**
+ * Sends through the primary transport and, when it throws, through the
+ * fallback. A fallback success counts as delivery so the outbox does not
+ * re-page; both failures surface together so neither is masked.
+ */
+export function withFallbackTransport(
+  primary: OperatorNotificationTransport,
+  fallback: OperatorNotificationTransport,
+  onFallback: (primaryError: unknown) => void = (primaryError) => {
+    console.error(
+      `[notifications] primary alert delivery failed; using fallback: ${redactSecrets(primaryError)}`,
+    );
+  },
+): OperatorNotificationTransport {
+  return {
+    async send(notification) {
+      try {
+        return await primary.send(notification);
+      } catch (primaryError) {
+        onFallback(primaryError);
+        try {
+          return await fallback.send(notification);
+        } catch (fallbackError) {
+          throw new Error(
+            `primary alert delivery failed (${redactSecrets(primaryError)}); fallback delivery failed (${redactSecrets(fallbackError)})`,
+          );
+        }
+      }
+    },
+  };
 }
 
 export function ilertEventTransport(

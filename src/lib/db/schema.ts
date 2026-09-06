@@ -1889,6 +1889,8 @@ export const privateMonitorState = pgTable(
     lastStartedAt: timestamp("last_started_at", { withTimezone: true }),
     lastCompletedAt: timestamp("last_completed_at", { withTimezone: true }),
     lastError: text("last_error"),
+    /** Bounded reason the latest external dead-man heartbeat ping was rejected, or null after an accepted ping. */
+    heartbeatDeliveryError: text("heartbeat_delivery_error"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1939,6 +1941,8 @@ export const privateMonitorIncidents = pgTable(
     severity: text("severity").notNull(),
     summary: text("summary").notNull(),
     detail: text("detail").notNull(),
+    /** Evidence captured when the incident last opened; resolution never overwrites it. */
+    openedDetail: text("opened_detail"),
     state: text("state").notNull().default("open"),
     occurrenceCount: integer("occurrence_count").notNull().default(1),
     firstDetectedAt: timestamp("first_detected_at", {
@@ -1995,6 +1999,75 @@ export const privateMonitorIncidents = pgTable(
     check(
       "private_monitor_incidents_text_nonempty",
       sql`length(btrim(${t.key})) > 0 AND length(btrim(${t.group})) > 0 AND length(btrim(${t.summary})) > 0`,
+    ),
+  ],
+);
+
+/**
+ * Append-only incident transitions. The current-state row above loses its
+ * failing evidence when a check recovers, so past alerts read from here.
+ */
+export const privateMonitorIncidentEvents = pgTable(
+  "private_monitor_incident_events",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    key: text("key").notNull(),
+    group: text("group").notNull(),
+    severity: text("severity").notNull(),
+    transition: text("transition").notNull(),
+    summary: text("summary").notNull(),
+    detail: text("detail").notNull(),
+    occurrenceCount: integer("occurrence_count").notNull(),
+    firstDetectedAt: timestamp("first_detected_at", {
+      withTimezone: true,
+    }).notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("private_monitor_incident_events_occurred_idx").on(t.occurredAt),
+    check(
+      "private_monitor_incident_events_transition_check",
+      sql`${t.transition} IN ('opened', 'resolved')`,
+    ),
+    check(
+      "private_monitor_incident_events_severity_check",
+      sql`${t.severity} IN ('warning', 'critical')`,
+    ),
+    check(
+      "private_monitor_incident_events_text_nonempty",
+      sql`length(btrim(${t.key})) > 0 AND length(btrim(${t.group})) > 0 AND length(btrim(${t.summary})) > 0 AND ${t.occurrenceCount} > 0`,
+    ),
+  ],
+);
+
+/**
+ * Every failed check attempt within a monitoring pass, including attempts a
+ * retry recovered, so flapping probes are visible without opening an incident.
+ */
+export const privateMonitorCheckFailures = pgTable(
+  "private_monitor_check_failures",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    runId: bigint("run_id", { mode: "number" }).notNull(),
+    key: text("key").notNull(),
+    attempt: integer("attempt").notNull(),
+    recovered: boolean("recovered").notNull(),
+    detail: text("detail").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("private_monitor_check_failures_observed_idx").on(t.observedAt),
+    check(
+      "private_monitor_check_failures_attempt_check",
+      sql`${t.attempt} > 0`,
+    ),
+    check(
+      "private_monitor_check_failures_key_nonempty",
+      sql`length(btrim(${t.key})) > 0`,
     ),
   ],
 );
