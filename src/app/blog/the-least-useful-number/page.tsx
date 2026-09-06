@@ -27,10 +27,9 @@ export default function LeastUsefulNumberArticle() {
       <BlogArticleHeader post={post} />
       <div className="prose-postil blog-prose mt-10">
         <p>
-          In Postil&apos;s <Link href="/bench">model benchmark</Link>, GPT-5.6 Luna finds
-          {" "}{count(luna.detectionRate, BENCH.defectCases)} of {BENCH.defectCases} seeded defect
-          locations. GLM-5.2 finds {count(glm.detectionRate, BENCH.defectCases)}. Gate outcomes,
-          unmatched findings, cost, and latency distinguish the two runs.
+          In the <Link href="/bench">model benchmark</Link>, GPT-5.6 Luna is cheaper and faster than
+          {" "}GLM-5.2, with comparable seeded-location matches: {count(luna.detectionRate, BENCH.defectCases)} of
+          {" "}{BENCH.defectCases} for Luna and {count(glm.detectionRate, BENCH.defectCases)} for GLM.
         </p>
         <p>
           Luna returns the expected gate verdict in {count(luna.gateVerdictCorrectness, luna.casesRun)}
@@ -38,7 +37,9 @@ export default function LeastUsefulNumberArticle() {
           {" "}{count(glm.gateVerdictCorrectness, glm.casesRun - glm.unscoredCases)} of
           {" "}{glm.casesRun - glm.unscoredCases} scored cases, with {glm.unscoredCases} case
           unscored. Both are silent on {BENCH.cleanCases} clean fixtures. GLM also produces
-          {" "}{glm.falsePositives} unmatched findings on defect fixtures.
+          {" "}{glm.falsePositives} unmatched findings on defect fixtures. Gate correctness matters
+          when a review can block a merge. Unmatched findings need human triage to distinguish other
+          defects from false alarms.
         </p>
         <p>
           Luna&apos;s run costs ${luna.totalCostUsd!.toFixed(4)} and its p95 latency is
@@ -46,8 +47,8 @@ export default function LeastUsefulNumberArticle() {
           its p95 latency is {secondsLabel(glm.latencyMsP95)}.
         </p>
         <p>
-          Detection records whether a finding overlaps the seeded path and line range. It does not
-          establish that the finding explains the defect correctly.
+          Detection records whether a finding overlaps the seeded path and line range. Location overlap
+          does not establish that the finding diagnoses the defect correctly.
         </p>
         <h2>Repeated runs and routing</h2>
         <p>
@@ -58,18 +59,19 @@ export default function LeastUsefulNumberArticle() {
         </p>
         <DetectionSpreadChart />
         <p>
-          Luna&apos;s unconstrained row has {count(luna.detectionRate, BENCH.defectCases)} seeded-location
-          matches and {secondsLabel(luna.latencyMsP95)} p95 latency. Its pinned-provider summary,
-          across {luna.pinnedProviderContract?.runs} runs, reports
+          Luna&apos;s unconstrained row permits provider-route variation and has
+          {" "}{count(luna.detectionRate, BENCH.defectCases)} seeded-location matches and
+          {" "}{secondsLabel(luna.latencyMsP95)} p95 latency. Its pinned-provider summary fixes a
+          route across {luna.pinnedProviderContract?.runs} runs and reports
           {" "}{(luna.pinnedProviderContract?.detectionRate! * 100).toFixed(1)}% detection and
-          {" "}{secondsLabel(luna.pinnedProviderContract?.latencyMsP95)} p95 latency. The model
-          identifier alone does not specify the route that produces a benchmark row.
+          {" "}{secondsLabel(luna.pinnedProviderContract?.latencyMsP95)} p95 latency. For production,
+          use the same provider route you evaluate; the model identifier alone does not specify it.
         </p>
         <CleanReviewChart />
         <p>
           Silence counts clean fixtures with no reported finding. Gate correctness counts scored cases
-          whose pass or fail verdict matches the fixture expectation. The charts make those different
-          units visible beside the detection results.
+          whose pass or fail verdict matches the fixture expectation. Detection, silence, and gate
+          correctness measure different review outcomes.
         </p>
         <CostAgainstGateChart />
         <p>
