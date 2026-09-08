@@ -43,28 +43,6 @@ export const BLOG_POSTS = [
       "AI reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class audit of retention, training, and inference location.",
   },
   {
-    slug: "self-hosted-ai-code-review",
-    publishedOn: "2026-07-08",
-    title: "Self-hosted AI code review without the 500-seat enterprise gate",
-    description:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama, with no seat fees or license cost.",
-    socialDescription:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama.",
-    excerpt:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 reviewer locally with Ollama, with no seat fees or license cost.",
-  },
-  {
-    slug: "ai-code-review-benchmarks",
-    publishedOn: "2026-07-08",
-    title: "What code review benchmarks measure",
-    description:
-      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
-    socialDescription:
-      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
-    excerpt:
-      "Detection, clean-case silence, and gate correctness use different denominators in the Postil AI code review screening corpus.",
-  },
-  {
     slug: "why-copilot-cant-block-your-merge",
     publishedOn: "2026-07-08",
     title: "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
@@ -98,28 +76,6 @@ export const BLOG_POSTS = [
       "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim sourced.",
     excerpt:
       "CodeRabbit, Qodo, Macroscope, Greptile, Copilot, Bugbot, and Postil, compared on noise, merge gating, self-hosting, data handling, and a pricing landscape that changed four times in ninety days. Every claim sourced.",
-  },
-  {
-    slug: "the-gate-is-separate-from-the-review",
-    publishedOn: "2026-07-11",
-    title: "When a review blocks a merge",
-    description:
-      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
-    socialDescription:
-      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
-    excerpt:
-      "postil/gate publishes the organization gate conclusion while postil/review publishes findings and inline comments.",
-  },
-  {
-    slug: "evidence-has-to-link-back",
-    publishedOn: "2026-07-11",
-    title: "Checking a review finding",
-    description:
-      "A copied CLI commit reference shows how source code, finding text and a retained gate result support different claims.",
-    socialDescription:
-      "A copied CLI commit reference shows how source code, finding text and a retained gate result support different claims.",
-    excerpt:
-      "A copied CLI commit reference shows how source code, finding text and a retained gate result support different claims.",
   },
   {
     slug: "the-least-useful-number",

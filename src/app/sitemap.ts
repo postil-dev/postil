@@ -39,19 +39,7 @@ const ROUTES: {
     lastModified: "2026-07-08",
   },
   {
-    path: "/blog/self-hosted-ai-code-review",
-    priority: 0.7,
-    changeFrequency: "monthly",
-    lastModified: "2026-07-08",
-  },
-  {
     path: "/blog/best-ai-code-review-tools-2026",
-    priority: 0.7,
-    changeFrequency: "monthly",
-    lastModified: "2026-07-08",
-  },
-  {
-    path: "/blog/ai-code-review-benchmarks",
     priority: 0.7,
     changeFrequency: "monthly",
     lastModified: "2026-07-08",
