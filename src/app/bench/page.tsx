@@ -158,7 +158,7 @@ export default function BenchPage() {
         </p>
         <p>
           The fixture corpus is maintained with the reviewed system. Read the{" "}
-          <Link href="/blog/ai-code-review-benchmarks" className="text-rust underline">
+          <Link href="/blog/the-least-useful-number" className="text-rust underline">
             guide to comparing benchmarks
           </Link>{" "}
           when evaluating this report or another benchmark.

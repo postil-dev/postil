@@ -114,6 +114,36 @@ const nextConfig: NextConfig = {
         destination: "/",
         permanent: true,
       },
+      {
+        // Retired blog post; its content lives at the destination.
+        source: "/blog/the-gate-is-separate-from-the-review",
+        destination: "/docs/gate",
+        permanent: true,
+      },
+      {
+        // Retired blog post; its content lives at the destination.
+        source: "/blog/evidence-has-to-link-back",
+        destination: "/evidence",
+        permanent: true,
+      },
+      {
+        // Retired blog post; its content lives at the destination.
+        source: "/blog/ai-code-review-benchmarks",
+        destination: "/blog/the-least-useful-number",
+        permanent: true,
+      },
+      {
+        // Retired blog post; its content lives at the destination.
+        source: "/blog/self-hosted-ai-code-review",
+        destination: "/docs/self-hosted",
+        permanent: true,
+      },
+      {
+        // Retired blog post; its content lives at the destination.
+        source: "/blog/ai-code-review-pricing-2026",
+        destination: "/blog/best-ai-code-review-tools-2026",
+        permanent: true,
+      },
     ];
   },
 };

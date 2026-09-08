@@ -6,9 +6,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { BlogArticleHeader } from "@/app/blog/blog-article-header";
 import BlogIndexPage from "@/app/blog/page";
 import LeastUsefulNumberArticle from "@/app/blog/the-least-useful-number/page";
-import EvidenceLinksArticle from "@/app/blog/evidence-has-to-link-back/page";
-import GateSeparateFromReviewArticle from "@/app/blog/the-gate-is-separate-from-the-review/page";
-import BenchmarksArticle from "@/app/blog/ai-code-review-benchmarks/page";
 import evidence from "../public/bench/screening-0.8.26-case-evidence.json";
 import cleanBank from "../public/bench/screening-0.9.7-clean-bank-v2.json";
 import { BENCH } from "@/components/bench-table";
@@ -25,12 +22,7 @@ describe("blog publication metadata", () => {
   test("orders newest articles first with a deterministic slug tie-break", () => {
     expect(orderedBlogPosts().map((post) => post.slug)).toEqual([
       "the-least-useful-number",
-      "evidence-has-to-link-back",
-      "the-gate-is-separate-from-the-review",
-      "ai-code-review-benchmarks",
-      "ai-code-review-pricing-2026",
       "best-ai-code-review-tools-2026",
-      "self-hosted-ai-code-review",
       "why-copilot-cant-block-your-merge",
       "where-does-your-code-go",
       "silence-rate",
@@ -84,9 +76,9 @@ describe("blog publication metadata", () => {
 
   test("preserves distinct page, social, and structured descriptions", () => {
     const post: BlogPost | undefined = BLOG_POSTS.find(
-      (candidate) => candidate.slug === "ai-code-review-pricing-2026",
+      (candidate) => candidate.slug === "best-ai-code-review-tools-2026",
     );
-    if (!post) throw new Error("pricing article is missing from the blog registry");
+    if (!post) throw new Error("comparison article is missing from the blog registry");
 
     const metadata = blogPostMetadata(post);
     expect(metadata.description).toBe(post.description);
@@ -205,7 +197,7 @@ describe("published blog evidence", () => {
   });
 
   test("renders all revised articles and resolves their public evidence files", async () => {
-    for (const Page of [LeastUsefulNumberArticle, EvidenceLinksArticle, GateSeparateFromReviewArticle, BenchmarksArticle]) {
+    for (const Page of [LeastUsefulNumberArticle]) {
       const html = renderToStaticMarkup(<Page />);
       expect(html).toContain("<h1");
       expect(html).not.toMatch(/These need inspection|someone has to check them|findings outside the planted bug locations/);
