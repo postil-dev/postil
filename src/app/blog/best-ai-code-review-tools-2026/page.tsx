@@ -9,6 +9,7 @@ import {
 const TEAM_SIZE = 20;
 const HOSTED_TEAM_MONTHLY_USD = TEAM_SIZE * HOSTED_ACTIVE_AUTHOR_MONTHLY_USD;
 const BYOK_TEAM_MONTHLY_USD = TEAM_SIZE * BYOK_ACTIVE_AUTHOR_MONTHLY_USD;
+const usd = (amount: number): string => `$${amount}`;
 const post = getBlogPost("best-ai-code-review-tools-2026");
 export const metadata = blogPostMetadata(post);
 const articleJsonLd = blogPostJsonLd(post);
@@ -249,7 +250,7 @@ export default function BestAiCodeReviewToolsArticle() {
         </p>
         <p>
           Private plans are priced by active author. The hosted plan starts with a 30-day trial and costs
-          ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} per active author per month; BYOK costs ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author per month, with provider usage
+          {usd(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD)} per active author per month; BYOK costs {usd(BYOK_ACTIVE_AUTHOR_MONTHLY_USD)} per active author per month, with provider usage
           billed directly. Public-repository App reviews are free with your model provider. We make no
           peer-run benchmark claim for Postil; you can <a href="/evidence">see it run</a> across public
           evidence cases and judge the output yourself.
@@ -315,8 +316,8 @@ export default function BestAiCodeReviewToolsArticle() {
           asterisk since there is no published rate card behind that average.
         </p>
         <p>
-          Postil, hosted at ${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} per active author across {TEAM_SIZE} developers, is ${HOSTED_TEAM_MONTHLY_USD} per month. BYOK at ${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per
-          active author is ${BYOK_TEAM_MONTHLY_USD} per month, with provider usage billed separately to your own account.
+          Postil, hosted at {usd(HOSTED_ACTIVE_AUTHOR_MONTHLY_USD)} per active author across {TEAM_SIZE} developers, is {usd(HOSTED_TEAM_MONTHLY_USD)} per month. BYOK at {usd(BYOK_ACTIVE_AUTHOR_MONTHLY_USD)} per
+          active author is {usd(BYOK_TEAM_MONTHLY_USD)} per month, with provider usage billed separately to your own account.
         </p>
         <div className="overflow-x-auto">
           <table>
@@ -329,7 +330,7 @@ export default function BestAiCodeReviewToolsArticle() {
               <tr><th scope="row">Macroscope</th><td>Per KB of diff</td><td>~$80-$240 (~$300-$900 agent-heavy)</td><td>Diff volume</td></tr>
               <tr><th scope="row">Copilot code review</th><td>Plan + usage</td><td>$380 + credits (not computable)</td><td>AI Credits, Actions minutes</td></tr>
               <tr><th scope="row">Cursor Bugbot</th><td>Per run</td><td>~$400-$600 (~$1,800-$2,700 agent-heavy)</td><td>Review runs, incl. re-reviews</td></tr>
-              <tr><th scope="row">Postil</th><td>Active private-PR author</td><td>${HOSTED_TEAM_MONTHLY_USD} Hosted / ${BYOK_TEAM_MONTHLY_USD} BYOK</td><td>Review volume is not a Postil billing unit</td></tr>
+              <tr><th scope="row">Postil</th><td>Active private-PR author</td><td>{usd(HOSTED_TEAM_MONTHLY_USD)} Hosted / {usd(BYOK_TEAM_MONTHLY_USD)} BYOK</td><td>Review volume is not a Postil billing unit</td></tr>
             </tbody>
           </table>
         </div>
