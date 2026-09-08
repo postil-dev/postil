@@ -111,7 +111,6 @@ describe("pricing policy", () => {
       "src/app/vs/greptile/page.tsx",
       "src/app/vs/macroscope/page.tsx",
       "src/app/vs/qodo/page.tsx",
-      "src/app/blog/ai-code-review-pricing-2026/page.tsx",
       "src/app/blog/best-ai-code-review-tools-2026/page.tsx",
     ];
     const combined = files.map(source).join("\n");

@@ -43,7 +43,6 @@ const PUBLIC_EXACT_PATHS = new Set([
   "/",
   "/bench",
   "/blog",
-  "/blog/ai-code-review-pricing-2026",
   "/blog/best-ai-code-review-tools-2026",
   "/blog/silence-rate",
   "/blog/the-least-useful-number",

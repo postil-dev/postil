@@ -22,7 +22,6 @@ describe("blog publication metadata", () => {
   test("orders newest articles first with a deterministic slug tie-break", () => {
     expect(orderedBlogPosts().map((post) => post.slug)).toEqual([
       "the-least-useful-number",
-      "ai-code-review-pricing-2026",
       "best-ai-code-review-tools-2026",
       "why-copilot-cant-block-your-merge",
       "where-does-your-code-go",
@@ -77,9 +76,9 @@ describe("blog publication metadata", () => {
 
   test("preserves distinct page, social, and structured descriptions", () => {
     const post: BlogPost | undefined = BLOG_POSTS.find(
-      (candidate) => candidate.slug === "ai-code-review-pricing-2026",
+      (candidate) => candidate.slug === "best-ai-code-review-tools-2026",
     );
-    if (!post) throw new Error("pricing article is missing from the blog registry");
+    if (!post) throw new Error("comparison article is missing from the blog registry");
 
     const metadata = blogPostMetadata(post);
     expect(metadata.description).toBe(post.description);

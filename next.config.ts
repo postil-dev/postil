@@ -138,6 +138,12 @@ const nextConfig: NextConfig = {
         destination: "/docs/self-hosted",
         permanent: true,
       },
+      {
+        // Retired blog post; its content lives at the destination.
+        source: "/blog/ai-code-review-pricing-2026",
+        destination: "/blog/best-ai-code-review-tools-2026",
+        permanent: true,
+      },
     ];
   },
 };

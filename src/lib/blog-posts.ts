@@ -54,26 +54,15 @@ export const BLOG_POSTS = [
       "Branch protection blocks on required status checks that conclude failure, not on review comments or neutral checks. Copilot posts a Comment, Claude Code review concludes neutral, and Macroscope defaults neutral unless configured to fail.",
   },
   {
-    slug: "ai-code-review-pricing-2026",
-    publishedOn: "2026-07-08",
-    title: "AI code review pricing in 2026: what a 20-developer team actually pays",
-    description:
-      "Four AI code review vendors changed pricing models in roughly ninety days. We run the same 20-developer team through CodeRabbit, Qodo, Greptile, Macroscope, Copilot, Bugbot, and Postil, with every assumption stated and every price sourced.",
-    socialDescription:
-      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
-    structuredDescription:
-      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
-    excerpt:
-      "Four vendors changed pricing models in ninety days. We run the same 20-developer team through seven tools, assumptions stated, arithmetic shown, every price sourced.",
-  },
-  {
     slug: "best-ai-code-review-tools-2026",
     publishedOn: "2026-07-08",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
     description:
-      "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing.",
+      "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing, with a worked monthly cost for a 20-developer team.",
     socialDescription:
-      "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim sourced.",
+      "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing, with a worked 20-developer bill. Every claim sourced.",
+    structuredDescription:
+      "An evidence-first comparison of seven AI code review tools on noise, merge gating, self-hosting, data handling, and pricing, including the 2026 repricing timeline and a worked monthly cost for a 20-developer team under stated assumptions.",
     excerpt:
       "CodeRabbit, Qodo, Macroscope, Greptile, Copilot, Bugbot, and Postil, compared on noise, merge gating, self-hosting, data handling, and a pricing landscape that changed four times in ninety days. Every claim sourced.",
   },
