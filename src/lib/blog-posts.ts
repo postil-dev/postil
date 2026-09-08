@@ -126,11 +126,11 @@ export const BLOG_POSTS = [
     publishedOn: "2026-08-19",
     title: "Choosing a code review model",
     description:
-      "Luna and GLM compared through benchmark gate errors, duplicate findings, clean-case results, recorded cost and output failures.",
+      "A one-point detection gap between GPT-5.6 Luna and GLM-5.2 hides larger differences in gate decisions, output failures, cost and run-to-run variance. What each benchmark number measures, and which one to weight least.",
     socialDescription:
-      "Luna and GLM compared through benchmark gate errors, duplicate findings, clean-case results, recorded cost and output failures.",
+      "A one-point detection gap between GPT-5.6 Luna and GLM-5.2 hides larger differences in gate decisions, output failures, cost and run-to-run variance. What each benchmark number measures, and which one to weight least.",
     excerpt:
-      "Luna and GLM compared through benchmark gate errors, duplicate findings, clean-case results, recorded cost and output failures.",
+      "A one-point detection gap between GPT-5.6 Luna and GLM-5.2 hides larger differences in gate decisions, output failures, cost and run-to-run variance. What each benchmark number measures, and which one to weight least.",
   },
 ] as const satisfies readonly BlogPost[];
 
