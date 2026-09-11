@@ -20,6 +20,7 @@ import {
   type PublicationThreadObservation,
 } from "@/lib/publication-receipt";
 import {
+  completeReviewPublicationLifecycle,
   finalizeStagedReviewCompletionWithGateMode,
   persistReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
@@ -534,6 +535,14 @@ describeDb("publication receipt migration and lifecycle", () => {
           inlineRejected: false, commentId,
         }],
       });
+      const prior = await pool.query<{ public_id: string }>(
+        "SELECT public_id FROM reviews WHERE id = $1",
+        [priorId],
+      );
+      await completeReviewPublicationLifecycle(db, {
+        reviewId: priorId,
+        reviewPublicId: prior.rows[0]!.public_id,
+      });
       const reviewEnvelope = envelope({
         head: "c".repeat(40),
         resolved: [finding(findingId)],
@@ -549,8 +558,18 @@ describeDb("publication receipt migration and lifecycle", () => {
         [repositoryId, prNumber, reviewEnvelope.headSha!, reviewEnvelope.baseSha!, orgId, installationId],
       );
       const reviewId = Number(review.rows[0]!.id);
+      const recoveryPayload = {
+        installationId: 1002, sourceInstallationId: installationId,
+        sourceOrgId: orgId, githubRepoId: 1003, repoFullName: "publication/repo",
+        prNumber, headSha: reviewEnvelope.headSha!, baseSha: reviewEnvelope.baseSha!,
+        recoveryReviewId: reviewId,
+      };
+      const [recoveryJob] = await db.insert(schema.jobs).values({
+        kind: "review", payload: recoveryPayload,
+      }).returning({ id: schema.jobs.id });
       await stageReviewCompletionCandidate(db, {
-        reviewId, envelope: reviewEnvelope, configFiles: [], silent: true,
+        reviewId, reviewJobId: recoveryJob!.id,
+        envelope: reviewEnvelope, configFiles: [], silent: true,
         gateFailing: false,
         publicationReceipt: {
           version: 1,
@@ -579,17 +598,13 @@ describeDb("publication receipt migration and lifecycle", () => {
           await import("@/worker/review");
         const recovery = resumeStagedReviewCompletion({
           db, pool,
-          payload: {
-            installationId: 1002, sourceInstallationId: installationId,
-            sourceOrgId: orgId, githubRepoId: 1003, repoFullName: "publication/repo",
-            prNumber, headSha: reviewEnvelope.headSha!, baseSha: reviewEnvelope.baseSha!,
-            recoveryReviewId: reviewId,
-          },
+          payload: recoveryPayload,
           installation: { id: installationId, orgId, orgSlug: "publication" },
           repository: { id: repositoryId, githubRepoId: 1003, fullName: "publication/repo" },
         });
         if (completes) {
           await expect(recovery).resolves.toBe(true);
+          await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [recoveryJob!.id]);
         } else {
           await expect(recovery).rejects.toBeInstanceOf(ReviewPublicationReconciliationError);
           await expect(recovery).rejects.toThrow(viewerCanResolve === undefined
@@ -610,7 +625,7 @@ describeDb("publication receipt migration and lifecycle", () => {
         });
         const publications = await pool.query(
           `SELECT review_id::text, current_state FROM finding_publications
-            WHERE review_id=ANY($1::bigint[]) ORDER BY review_id`,
+            WHERE review_id=ANY($1::bigint[]) ORDER BY finding_publications.review_id`,
           [[priorId, reviewId]],
         );
         expect(publications.rows).toEqual([
