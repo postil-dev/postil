@@ -255,9 +255,9 @@ export async function resolveGitHubReviewThreads(
         observation.viewerCanResolve === false &&
         observation.state === "outdated"
       ) {
-        throw new Error(
-          "GitHub cannot resolve an outdated Postil review thread",
-        );
+        // The finding is already terminal in Postil. Preserve the forge's
+        // outdated state when this viewer cannot resolve its old thread.
+        continue;
       }
       if (observation.viewerCanResolve !== true) {
         throw new Error(
