@@ -609,7 +609,7 @@ describe("GitHub publication thread observations", () => {
         githubCommentId: "12",
         githubThreadId: "thread-12",
         state: "inline",
-        viewerCanResolve: true,
+        viewerCanResolve: false,
       },
       {
         githubCommentId: "13",
@@ -644,7 +644,7 @@ describe("GitHub publication thread observations", () => {
         githubCommentId: "12",
         githubThreadId: "thread-12",
         state: "inline",
-        viewerCanResolve: true,
+        viewerCanResolve: false,
       },
       {
         githubCommentId: "13",
