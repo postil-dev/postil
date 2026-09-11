@@ -847,6 +847,7 @@ describeDb("publication receipt migration and lifecycle", () => {
   test("trigger producers park without waiting behind queued deactivation", async () => {
     const transitionPool = new Pool({ connectionString: TEST_URL, max: 3 });
     const reviewId = await createRunningReview("6".repeat(40), null, 74, false);
+    let holderBackendId = 0;
     let releaseHolder!: () => void;
     const holderReleased = new Promise<void>((resolve) => {
       releaseHolder = resolve;
@@ -857,7 +858,10 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
     const holder = withPublicationLifecycleReleaseActive(
       transitionPool,
-      async () => {
+      async (_lockedDb, lockedClient) => {
+        holderBackendId = (await lockedClient.query<{ id: number }>(
+          "SELECT pg_backend_pid() AS id",
+        )).rows[0]!.id;
         holderAcquired();
         await holderReleased;
       },
@@ -865,7 +869,22 @@ describeDb("publication receipt migration and lifecycle", () => {
     await acquired;
     const deactivation = deactivatePublicationLifecycleRelease(transitionPool);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      let deactivationQueued = false;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const waiting = await pool.query<{ queued: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND wait_event = 'advisory'
+                AND $1::int = ANY(pg_blocking_pids(pid))
+           ) AS queued`,
+          [holderBackendId],
+        );
+        deactivationQueued = waiting.rows[0]?.queued === true;
+        if (deactivationQueued) break;
+        await Bun.sleep(25);
+      }
+      expect(deactivationQueued).toBe(true);
       const client = await transitionPool.connect();
       try {
         await client.query("BEGIN");
@@ -1894,7 +1913,11 @@ describeDb("publication receipt migration and lifecycle", () => {
     const counts = await getReviewPublicationCounts(db, reviewIds);
     expect(counts.get(legacyId)?.unknown).toBe(1);
 
-    const dashboardRows = await getOrgReviewRows(db, orgId, 20);
+    const fixtureCount = await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM reviews WHERE repository_id = $1",
+      [repositoryId],
+    );
+    const dashboardRows = await getOrgReviewRows(db, orgId, fixtureCount.rows[0]!.count);
     expect(dashboardRows.find((row) => row.id === legacyId)).toMatchObject({
       findingsCount: null,
     });
