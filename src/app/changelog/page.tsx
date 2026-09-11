@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.8",
+    date: "September 11, 2026",
+    summary:
+      "Hosted reviews cover more changed source within their review limits and recover from unsupported dismissals through independent scoring.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Large hosted reviews use the available review budget to cover more changed source. When required source remains unreviewed, the review reports incomplete coverage and keeps the gate blocked.",
+      },
+      {
+        label: "Fixed",
+        text: "Reviews can recover from unsupported dismissals of new findings after a complete independent scoring check. Those findings are suppressed only when scored below the reporting threshold. An unavailable or incomplete check preserves findings and prior review state and keeps the gate blocked.",
+      },
+    ],
+  },
+  {
     version: "0.9.4",
     date: "August 27, 2026",
     summary:

@@ -1,9 +1,9 @@
 {
   "cliRelease": "v0.7.2",
   "cliCommit": "dcf4e34c4804d4bf64705ab6367c883cea23b33a",
-  "hostedCliRelease": "v0.9.4",
-  "hostedCliCommit": "e48d2940442a1936281a62c0871d74185caa2747",
-  "hostedCliLinuxX86_64Sha256": "7a37296793be6b82753c447d23a85af6e8744fb119a9e4f0ae8ca97898ffe023",
+  "hostedCliRelease": "v0.9.8",
+  "hostedCliCommit": "e63f80d64d770213c7f37626c715dd1ea296fa24",
+  "hostedCliLinuxX86_64Sha256": "474ab1a6c24722cbc229378c35c96a86aee78852c2aa8ce41db47e4ff238a5a9",
   "hostedCliDefaultModel": "openai/gpt-5.6-luna",
   "hostedCliManagedProfile": {
     "apiBase": "https://openrouter.ai/api/v1",
