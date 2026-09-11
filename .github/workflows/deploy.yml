@@ -415,12 +415,13 @@ jobs:
           }
           verify_source_secrets
           machines=$(flyctl machine list --app postil-web --json)
-          # flyctl generates release identity and client-version metadata.
+          # flyctl generates release identity, client-version, and builder metadata.
           # All runtime configuration, including environment and mounts, must
           # retain the original source values throughout this content rollout.
           if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" '
             def runtime_config: .config | del(.image,
-              .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+              .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version,
+              .metadata.fly_builder_id);
             [.[] | select(
               .config.metadata.fly_process_group == "web" or
               .config.metadata.fly_process_group == "worker" or
@@ -441,7 +442,8 @@ jobs:
             flyctl machine status "${id}" --app postil-web --json > "${RUNNER_TEMP}/postil-before-update.json"
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg id "${id}" '
               def runtime_config: .config | del(.image,
-                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version,
+                .metadata.fly_builder_id);
               . as $machine | .id == $id and any($source[0][];
                 .id == $machine.id and .region == $machine.region and
                 runtime_config == ($machine | runtime_config))
@@ -474,7 +476,8 @@ jobs:
             current_machines=$(flyctl machine list --app postil-web --json)
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg id "${id}" '
               def runtime_config: .config | del(.image,
-                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version,
+                .metadata.fly_builder_id);
               def healthy: .state == "started" and .host_status == "ok" and
                 all(.checks[]?; .status == "passing");
               def managed_group: .config.metadata.fly_process_group;
@@ -502,7 +505,8 @@ jobs:
             restored=$(flyctl machine status "${id}" --app postil-web --json)
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg image "${SOURCE_IMAGE}" --arg id "${id}" '
               def runtime_config: .config | del(.image,
-                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version);
+                .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version,
+                .metadata.fly_builder_id);
               . as $machine | .id == $id and any($source[0][];
                 .id == $machine.id and .region == $machine.region and
                 runtime_config == ($machine | runtime_config)) and
