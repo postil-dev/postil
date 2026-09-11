@@ -161,16 +161,33 @@ describe("managed deployment contract", () => {
     expect(result.updates).toBe("");
   });
 
-  test("allows only image and Fly-generated release metadata differences", () => {
+  test.each(["added", "changed", "removed"])("allows generated builder metadata to be %s during rollback", (builderChange) => {
+    const snapshot = fleet();
     const machines = fleet();
     machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
     machines[1]!.release = targetSha;
     Object.assign(machines[1]!.config.metadata, {
       fly_release_id: "generated-release", fly_release_version: "2", fly_flyctl_version: "0.4.71",
     });
-    const result = runStep("rollback", machines);
+    if (builderChange !== "added") {
+      Object.assign(snapshot[1]!.config.metadata, { fly_builder_id: "source-builder" });
+    }
+    if (builderChange !== "removed") {
+      Object.assign(machines[1]!.config.metadata, { fly_builder_id: "target-builder" });
+    }
+    const result = runStep("rollback", machines, snapshot);
     expect(result.code, result.error).toBe(0);
-    expect(result.updates).toContain("machine update a1");
+    expect(result.updates.trim()).toBe(`machine update a1 --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`);
+    expect(result.machines[1].release).toBe(sourceSha);
+    expect(result.machines[1].image_ref.digest).toBe(digest);
+    expect(result.machines[1].config.metadata).toEqual(machines[1]!.config.metadata);
+    expect(result.machines[1].config.env).toEqual(snapshot[1]!.config.env);
+    expect(result.machines[3].config.mounts).toEqual(snapshot[3]!.config.mounts);
+
+    Object.assign(machines[1]!.config.metadata, { application_mode: "unexpected" });
+    const rejected = runStep("rollback", machines, snapshot);
+    expect(rejected.code).not.toBe(0);
+    expect(rejected.updates).toBe("");
   });
 
   test("requires a healthy homogeneous exact predecessor and immutable image", () => {

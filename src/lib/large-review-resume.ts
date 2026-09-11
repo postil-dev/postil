@@ -13,6 +13,10 @@ import { isPrivateIpLiteral } from "@/lib/api-base";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import { HOSTED_REVIEW_RESERVATION_TTL_MS } from "@/lib/hosted-usage-reservations";
+import {
+  providerResponseErrorDiagnostic,
+  type ProviderResponseErrorDiagnostic,
+} from "@/lib/provider-response-diagnostics";
 
 const RUN_TTL_MS = 24 * 60 * 60 * 1_000;
 const ATTEMPT_LEASE_MS = 8 * 60 * 1_000;
@@ -67,6 +71,13 @@ export interface OpenRouterFailureInspection {
 }
 
 export type LargeReviewProviderDiagnostic =
+  | ({
+      event: "postil.large_review.provider_failure";
+      source: "upstream";
+      review_id: number;
+      request_sha256: string;
+      upstream_status: number;
+    } & ProviderResponseErrorDiagnostic)
   | {
       event: "postil.large_review.provider_failure";
       source: "upstream";
@@ -630,7 +641,7 @@ export function inspectOpenRouterFailure(input: {
   status: number;
   body: string;
 }): OpenRouterFailureInspection {
-  if (!input.isCanonicalOpenRouter || !OPENROUTER_FAILURE_STATUSES.has(input.status)) {
+  if (!input.isCanonicalOpenRouter) {
     return { body: input.body, attempts: [] };
   }
 
@@ -642,6 +653,9 @@ export function inspectOpenRouterFailure(input: {
   }
   const envelope = recordValue(parsed);
   if (!envelope) return { body: input.body, attempts: [] };
+  if (!OPENROUTER_FAILURE_STATUSES.has(input.status) && !providerResponseErrorDiagnostic(envelope)) {
+    return { body: input.body, attempts: [] };
+  }
 
   const metadata = recordValue(envelope.openrouter_metadata);
   const attempts: OpenRouterProviderAttempt[] = [];
@@ -666,7 +680,12 @@ export function inspectOpenRouterFailure(input: {
 
   const sanitizedEnvelope = { ...envelope };
   delete sanitizedEnvelope.openrouter_metadata;
-  return { body: JSON.stringify(sanitizedEnvelope), attempts };
+  return {
+    body: OPENROUTER_FAILURE_STATUSES.has(input.status)
+      ? JSON.stringify(sanitizedEnvelope)
+      : input.body,
+    attempts,
+  };
 }
 
 export function openRouterFailureDiagnostics(input: {
@@ -677,9 +696,25 @@ export function openRouterFailureDiagnostics(input: {
   requestSha256: string;
 }): OpenRouterFailureInspection & { diagnostics: LargeReviewProviderDiagnostic[] } {
   const inspection = inspectOpenRouterFailure(input);
+  let providerError: ProviderResponseErrorDiagnostic | null = null;
+  if (input.isCanonicalOpenRouter) {
+    try {
+      providerError = providerResponseErrorDiagnostic(JSON.parse(input.body));
+    } catch {
+      // Malformed bodies carry no structured error classification.
+    }
+  }
+  const diagnostics: LargeReviewProviderDiagnostic[] = providerError ? [{
+    event: "postil.large_review.provider_failure",
+    source: "upstream",
+    review_id: input.reviewId,
+    request_sha256: input.requestSha256,
+    upstream_status: input.status,
+    ...providerError,
+  }] : [];
   return {
     ...inspection,
-    diagnostics: inspection.attempts.map((attempt) => ({
+    diagnostics: [...diagnostics, ...inspection.attempts.map((attempt) => ({
       event: "postil.large_review.provider_failure",
       source: "upstream",
       review_id: input.reviewId,
@@ -688,7 +723,7 @@ export function openRouterFailureDiagnostics(input: {
       attempt_ordinal: attempt.ordinal,
       provider: attempt.provider,
       attempted_status: attempt.status,
-    })),
+    } as const))],
   };
 }
 
