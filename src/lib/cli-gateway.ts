@@ -16,6 +16,7 @@ import {
   type ManagedHostedProviderProfile,
 } from "@/lib/managed-hosted-provider-profile";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
+import { providerResponseErrorDiagnostic } from "@/lib/provider-response-diagnostics";
 import { resolveLlmConfig } from "@/worker/review";
 import { readPositiveIntEnv } from "@/worker/runner";
 
@@ -298,6 +299,16 @@ export async function runCliGatewayChatCompletion(
     upstreamJson = upstreamText ? JSON.parse(upstreamText) : null;
   } catch {
     upstreamJson = null;
+  }
+
+  const providerError = providerResponseErrorDiagnostic(upstreamJson);
+  if (providerError) {
+    console.warn(JSON.stringify({
+      event: "postil.cli_gateway.provider_failure",
+      source: "upstream",
+      upstream_status: upstreamResponse.status,
+      ...providerError,
+    }));
   }
 
   if (!upstreamResponse.ok || upstreamJson === null) {
