@@ -17,6 +17,7 @@ import {
   getPullRequestPublicationThreadPlan,
   getReviewPublicationCounts,
   type PublicationReceipt,
+  type PublicationThreadObservation,
 } from "@/lib/publication-receipt";
 import {
   finalizeStagedReviewCompletionWithGateMode,
@@ -43,7 +44,10 @@ const realAppAuth = await import("@/lib/github/app-auth");
 const realChecks = await import("@/lib/github/checks");
 const realInstallationSync = await import("@/lib/github/installation-sync");
 const realPublicationThreads = await import("@/lib/github/publication-threads");
+const resolvePublicationThreads = realPublicationThreads.resolveGitHubReviewThreads;
 let recoveryThreadObservationCount = 0;
+let recoveryThreadObservations: PublicationThreadObservation[] = [];
+let recoveryThreadResolver: typeof resolvePublicationThreads = async () => [];
 
 mock.module("@/lib/github/app-auth", () => ({
   ...realAppAuth,
@@ -64,9 +68,10 @@ mock.module("@/lib/github/publication-threads", () => ({
   ...realPublicationThreads,
   observeGitHubReviewThreads: async () => {
     recoveryThreadObservationCount += 1;
-    return [];
+    return recoveryThreadObservations;
   },
-  resolveGitHubReviewThreads: async () => [],
+  resolveGitHubReviewThreads: (...args: Parameters<typeof resolvePublicationThreads>) =>
+    recoveryThreadResolver(...args),
 }));
 mock.module("@/worker/runner", () => ({
   triggerQueueDrain: () => undefined,
@@ -504,6 +509,121 @@ describeDb("publication receipt migration and lifecycle", () => {
         sync_jobs: "1",
       });
       expect(recoveryThreadObservationCount).toBe(observationCountBefore + 1);
+    },
+  );
+
+  test.each([
+    { state: "outdated", viewerCanResolve: false, completes: true, prNumber: 171 },
+    { state: "inline", viewerCanResolve: false, completes: false, prNumber: 172 },
+    { state: "outdated", viewerCanResolve: undefined, completes: false, prNumber: 173 },
+    { state: "inline", viewerCanResolve: undefined, completes: false, prNumber: 174 },
+  ] as const)(
+    "worker recovery with real resolver preserves $state thread with capability $viewerCanResolve",
+    async ({ state, viewerCanResolve, completes, prNumber }) => {
+      const findingId = `terminal-finding-${prNumber}`;
+      const commentId = String(9200 + prNumber);
+      const priorId = await createRunningReview("b".repeat(40), null, prNumber, false);
+      await complete(priorId, envelope({
+        head: "b".repeat(40),
+        findings: [finding(findingId)],
+      }), {
+        version: 1,
+        receiptId: `github-review-v1:historical-${prNumber}`,
+        findings: [{
+          findingId, stableIdentity: true, initialOutcome: "inline",
+          inlineRejected: false, commentId,
+        }],
+      });
+      const reviewEnvelope = envelope({
+        head: "c".repeat(40),
+        resolved: [finding(findingId)],
+      });
+      const review = await pool.query<{ id: string }>(
+        `INSERT INTO reviews
+          (repository_id, pr_number, head_sha, base_sha, status,
+           source_org_id, source_installation_id, source_github_installation_id,
+           source_github_repo_id, source_repo_full_name,
+           advisory_check_run_id, gate_check_run_id, started_at)
+         VALUES ($1, $2, $3, $4, 'running', $5, $6, 1002, 1003,
+                 'publication/repo', 9101, 9102, now()) RETURNING id`,
+        [repositoryId, prNumber, reviewEnvelope.headSha!, reviewEnvelope.baseSha!, orgId, installationId],
+      );
+      const reviewId = Number(review.rows[0]!.id);
+      await stageReviewCompletionCandidate(db, {
+        reviewId, envelope: reviewEnvelope, configFiles: [], silent: true,
+        gateFailing: false,
+        publicationReceipt: {
+          version: 1,
+          receiptId: `github-review-v1:terminal-${prNumber}`,
+          findings: [{
+            findingId, stableIdentity: true, initialOutcome: "resolved",
+            inlineRejected: false,
+          }],
+        },
+      }, orgId);
+
+      const previousResolver = recoveryThreadResolver;
+      const previousObservations = recoveryThreadObservations;
+      const previousFetch = globalThis.fetch;
+      const forgeMutation = mock(async () => {
+        throw new Error("unexpected forge mutation during recovery");
+      });
+      recoveryThreadResolver = resolvePublicationThreads;
+      recoveryThreadObservations = [{
+        githubCommentId: commentId, githubThreadId: `thread-${prNumber}`,
+        state, viewerCanResolve,
+      }];
+      globalThis.fetch = forgeMutation as unknown as typeof fetch;
+      try {
+        const { resumeStagedReviewCompletion, ReviewPublicationReconciliationError } =
+          await import("@/worker/review");
+        const recovery = resumeStagedReviewCompletion({
+          db, pool,
+          payload: {
+            installationId: 1002, sourceInstallationId: installationId,
+            sourceOrgId: orgId, githubRepoId: 1003, repoFullName: "publication/repo",
+            prNumber, headSha: reviewEnvelope.headSha!, baseSha: reviewEnvelope.baseSha!,
+            recoveryReviewId: reviewId,
+          },
+          installation: { id: installationId, orgId, orgSlug: "publication" },
+          repository: { id: repositoryId, githubRepoId: 1003, fullName: "publication/repo" },
+        });
+        if (completes) {
+          await expect(recovery).resolves.toBe(true);
+        } else {
+          await expect(recovery).rejects.toBeInstanceOf(ReviewPublicationReconciliationError);
+          await expect(recovery).rejects.toThrow(viewerCanResolve === undefined
+            ? "resolution capability is unknown"
+            : "cannot resolve an active Postil review thread");
+        }
+        expect(forgeMutation).not.toHaveBeenCalled();
+        const terminal = await pool.query(
+          `SELECT review.status,
+                  review.publication_lifecycle_reconciled_at IS NOT NULL AS reconciled,
+                  (SELECT count(*)::int FROM jobs sync WHERE sync.kind='gate-state-sync'
+                    AND (sync.payload->>'reviewId')::bigint=review.id) AS sync_jobs
+             FROM reviews review WHERE review.id=$1`,
+          [reviewId],
+        );
+        expect(terminal.rows[0]).toEqual({
+          status: "completed", reconciled: completes, sync_jobs: completes ? 1 : 0,
+        });
+        const publications = await pool.query(
+          `SELECT review_id::text, current_state FROM finding_publications
+            WHERE review_id=ANY($1::bigint[]) ORDER BY review_id`,
+          [[priorId, reviewId]],
+        );
+        expect(publications.rows).toEqual([
+          { review_id: String(priorId), current_state: completes ? "outdated" : "resolved" },
+          { review_id: String(reviewId), current_state: "resolved" },
+        ]);
+        expect(await getPullRequestPublicationThreadPlan(db, repositoryId, prNumber))
+          .toEqual({ commentIds: [commentId], resolveCommentIds: [commentId] });
+      } finally {
+        recoveryThreadResolver = previousResolver;
+        recoveryThreadObservations = previousObservations;
+        globalThis.fetch = previousFetch;
+      }
     },
   );
 
