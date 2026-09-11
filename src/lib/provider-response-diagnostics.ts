@@ -23,8 +23,17 @@ function record(value: unknown): Record<string, unknown> | null {
 /** Content-free classification; provider messages and identifiers never enter logs. */
 export function providerResponseErrorDiagnostic(value: unknown) {
   const envelope = record(value);
-  const error = record(envelope?.error);
-  if (!envelope || !error) {
+  if (!envelope) return null;
+  let error = record(envelope.error);
+  if (!error && Array.isArray(envelope.choices)) {
+    for (const candidate of envelope.choices) {
+      const choice = record(candidate);
+      if (choice?.finish_reason !== "error") continue;
+      error = record(choice.error);
+      if (error) break;
+    }
+  }
+  if (!error) {
     return null;
   }
   const metadata = record(error.metadata);

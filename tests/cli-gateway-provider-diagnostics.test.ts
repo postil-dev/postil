@@ -125,3 +125,52 @@ test("preserves non-2xx provider errors and reservation release", async () => {
   expect(reconciled).toEqual([]);
   expect(released).toEqual(["fixture-reservation"]);
 });
+
+test("diagnoses partial generation errors while preserving valid identity, usage, and response", async () => {
+  const sensitive = "private-partial-output-and-provider-credential";
+  const body = {
+    model: profile.model,
+    provider: profile.providerName,
+    usage: { prompt_tokens: 20, completion_tokens: 8 },
+    choices: [
+      { finish_reason: "stop", message: { content: "completed choice" } },
+      {
+        finish_reason: "error", message: { content: sensitive },
+        error: { code: 502, message: sensitive, metadata: {
+          error_type: "provider_unavailable", provider_code: sensitive, raw: sensitive,
+        } },
+      },
+    ],
+  };
+  expect(await respond(body)).toEqual({ status: 200, body });
+  expect(warning).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toEqual({
+    event: "postil.cli_gateway.provider_failure", source: "upstream", upstream_status: 200,
+    error_category: "upstream_error", error_type: "provider_unavailable", error_code: 502,
+    model_present: true, provider_present: true, usage_present: true,
+  });
+  expect(JSON.stringify(warning.mock.calls)).not.toContain(sensitive);
+  expect(reconciled).toEqual([{
+    reservationId: "fixture-reservation", promptTokens: 20, completionTokens: 8,
+    modelUsed: profile.model, actualMicros: 17, usageAccountingComplete: true,
+  }]);
+  expect(released).toEqual([]);
+});
+
+test("does not diagnose non-structured choice errors or errors without the error finish reason", async () => {
+  for (const choice of [
+    ...[false, "", null, [], "arbitrary provider content"].map((error) => ({
+      finish_reason: "error", error,
+    })),
+    { finish_reason: "stop", error: { type: "provider_error" } },
+  ]) {
+    const body = { model: profile.model, provider: profile.providerName,
+      usage: { prompt_tokens: 20, completion_tokens: 8 },
+      choices: [{ ...choice, message: { content: "content" } }] };
+    expect(await respond(body)).toEqual({ status: 200, body });
+  }
+  expect(warning).not.toHaveBeenCalled();
+  expect(reconciled).toHaveLength(6);
+  expect(reconciled.every((usage) => usage.usageAccountingComplete === true)).toBe(true);
+  expect(released).toEqual([]);
+});

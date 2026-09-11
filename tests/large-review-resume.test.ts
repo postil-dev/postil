@@ -317,6 +317,60 @@ describe("durable large-review provider proxy", () => {
     })).toEqual({ body, attempts: [], diagnostics: [] });
   });
 
+  test("diagnoses partial generation choice errors without logging partial output or provider details", () => {
+    const sensitive = "private-partial-output-and-provider-credential";
+    const body = JSON.stringify({
+      model: "openai/test-model", provider: "Azure",
+      usage: { prompt_tokens: 20, completion_tokens: 8 },
+      choices: [
+        { finish_reason: "stop", message: { content: "completed choice" } },
+        { finish_reason: "error", message: { content: sensitive }, error: {
+          code: 502, message: sensitive, metadata: {
+            error_type: "provider_unavailable", provider_code: sensitive, raw: sensitive,
+          },
+        } },
+      ],
+    });
+    const result = openRouterFailureDiagnostics({
+      isCanonicalOpenRouter: true, status: 200, body, reviewId: 42,
+      requestSha256: "f".repeat(64),
+    });
+    expect(result.body).toBe(body);
+    expect(result.attempts).toEqual([]);
+    expect(result.diagnostics).toEqual([{
+      event: "postil.large_review.provider_failure", source: "upstream",
+      review_id: 42, request_sha256: "f".repeat(64), upstream_status: 200,
+      error_category: "upstream_error", error_type: "provider_unavailable", error_code: 502,
+      model_present: true, provider_present: true, usage_present: true,
+    }]);
+    expect(JSON.stringify(result.diagnostics)).not.toContain(sensitive);
+  });
+
+  test("ignores false choice error markers and suppresses arbitrary nested error types", () => {
+    for (const error of [false, "", null, [], "arbitrary provider content"]) {
+      const body = JSON.stringify({ choices: [{
+        finish_reason: "error", message: { content: "partial content" }, error,
+      }] });
+      expect(openRouterFailureDiagnostics({
+        isCanonicalOpenRouter: true, status: 200, body, reviewId: 42,
+        requestSha256: "f".repeat(64),
+      })).toEqual({ body, attempts: [], diagnostics: [] });
+    }
+    const sensitive = "arbitrary-private-error-type-and-message";
+    const body = JSON.stringify({ choices: [{
+      finish_reason: "error", message: { content: sensitive },
+      error: { type: sensitive, message: sensitive, code: sensitive },
+    }] });
+    const result = openRouterFailureDiagnostics({
+      isCanonicalOpenRouter: true, status: 200, body, reviewId: 42,
+      requestSha256: "f".repeat(64),
+    });
+    expect(result.body).toBe(body);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toMatchObject({ error_type: "reported", error_code: null });
+    expect(JSON.stringify(result.diagnostics)).not.toContain(sensitive);
+  });
+
   test("filters malformed attempts and provider labels without forwarding metadata", () => {
     const body = JSON.stringify({
       error: { type: "provider_error" },
