@@ -120,7 +120,7 @@ export interface LargeReviewAttemptStore {
     response: StoredProviderResponse;
   }): Promise<void>;
   abandonAttempt(attemptKey: string, leaseId: string): Promise<void>;
-  deleteRun(runKey: string): Promise<void>;
+  deleteRun(runKey: string, context?: LargeReviewRunContext): Promise<void>;
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -296,6 +296,60 @@ export class PostgresLargeReviewAttemptStore implements LargeReviewAttemptStore 
       ) {
         throw new Error("large-review run identity collision");
       }
+      if (
+        !context.expectedRunKey &&
+        stored.currentReviewId !== context.currentReviewId &&
+        context.hostedReservationId !== null
+      ) {
+        // A failure before provider access can release its hold but leave an
+        // empty plan. A same-head retry may claim that plan with a fresh hold;
+        // provider attempts and unsettled accounting prohibit this transfer.
+        await tx.execute(sql`
+          UPDATE large_review_runs AS run
+             SET current_review_id = ${context.currentReviewId},
+                 hosted_reservation_id = ${context.hostedReservationId}
+           WHERE run.run_key = ${runKey}
+             AND run.current_review_id = ${stored.currentReviewId}
+             AND run.billing_state = 'active'
+             AND NOT EXISTS (
+               SELECT 1 FROM large_review_attempts attempt
+                WHERE attempt.run_key = run.run_key
+             )
+             AND EXISTS (
+               SELECT 1
+                 FROM reviews source
+                 JOIN reviews target ON target.id = ${context.currentReviewId}
+                 JOIN repositories repository ON repository.id = run.repository_id
+                 JOIN installations installation ON installation.id = repository.installation_id
+                 JOIN hosted_usage_reservations previous
+                   ON previous.id = run.hosted_reservation_id
+                 JOIN hosted_usage_reservations replacement
+                   ON replacement.id = ${context.hostedReservationId}
+                WHERE source.id = run.current_review_id
+                  AND source.status IN ('failed', 'stale')
+                  AND target.status = 'running'
+                  AND source.repository_id = run.repository_id
+                  AND target.repository_id = run.repository_id
+                  AND source.pr_number = run.pr_number
+                  AND target.pr_number = run.pr_number
+                  AND source.head_sha = run.head_sha
+                  AND target.head_sha = run.head_sha
+                  AND source.base_sha = run.base_sha
+                  AND target.base_sha = run.base_sha
+                  AND previous.review_id = source.id
+                  AND replacement.review_id = target.id
+                  AND previous.org_id = installation.org_id
+                  AND replacement.org_id = installation.org_id
+                  AND previous.operation = 'review'
+                  AND replacement.operation = 'review'
+                  AND previous.status = 'released'
+                  AND previous.actual_micros IS NULL
+                  AND replacement.status = 'active'
+                  AND replacement.actual_micros IS NULL
+                  AND replacement.expires_at > ${now}
+             )
+        `);
+      }
       const rebound = await tx
         .update(schema.largeReviewRuns)
         .set({
@@ -440,10 +494,22 @@ export class PostgresLargeReviewAttemptStore implements LargeReviewAttemptStore 
       );
   }
 
-  async deleteRun(runKey: string): Promise<void> {
-    await this.db
+  async deleteRun(runKey: string, context?: LargeReviewRunContext): Promise<void> {
+    const deleted = await this.db
       .delete(schema.largeReviewRuns)
-      .where(eq(schema.largeReviewRuns.runKey, runKey));
+      .where(and(
+        eq(schema.largeReviewRuns.runKey, runKey),
+        context ? eq(schema.largeReviewRuns.currentReviewId, context.currentReviewId) : undefined,
+        context
+          ? context.hostedReservationId === null
+            ? isNull(schema.largeReviewRuns.hostedReservationId)
+            : eq(schema.largeReviewRuns.hostedReservationId, context.hostedReservationId)
+          : undefined,
+      ))
+      .returning({ runKey: schema.largeReviewRuns.runKey });
+    if (context && deleted.length !== 1) {
+      throw new Error("large-review run context ownership collision");
+    }
   }
 }
 
@@ -1252,7 +1318,7 @@ export async function startLargeReviewProviderProxy(input: {
     },
     async discardCompletedRun() {
       if (bindPromise) await bindPromise;
-      if (runKey) await input.store.deleteRun(runKey);
+      if (runKey) await input.store.deleteRun(runKey, input.runContext);
     },
     billingOutcome() {
       if (ambiguousProviderContact) return "ambiguous";
