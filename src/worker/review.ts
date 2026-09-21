@@ -710,6 +710,62 @@ function reviewUsageFromEnvelope(
   }));
 }
 
+/** Failed inference evidence becomes visible only with its terminal state. */
+export async function failHostedReviewAttempt(
+  db: Pick<Database, "update">,
+  input: { reviewId: number; errorMessage: string; envelope?: Envelope },
+) {
+  return db.update(schema.reviews)
+    .set({
+      status: "failed",
+      errorMessage: input.errorMessage,
+      finishedAt: new Date(),
+      ...(input.envelope ? {
+        envelope: input.envelope,
+        silent: input.envelope.silent,
+        engineGateFailing: input.envelope.gate.failing,
+      } : {}),
+    })
+    .where(and(eq(schema.reviews.id, input.reviewId), eq(schema.reviews.status, "running")))
+    .returning({ id: schema.reviews.id });
+}
+
+/** Failed completed inference settles before its cached output can be discarded. */
+export async function settleFailedHostedReviewAttempt(
+  db: Database,
+  input: Omit<Parameters<typeof reconcileHostedReviewSpendFromReceipt>[1], "reservationId" | "usage"> & {
+    reservationId: string | null;
+    usage: ReviewCompletionInput["usage"];
+  },
+  proxy: Pick<LargeReviewProviderProxy, "discardCompletedRun"> | undefined,
+): Promise<void> {
+  try {
+    if (input.reservationId) {
+      await reconcileHostedReviewSpendFromReceipt(db, {
+        ...input,
+        reservationId: input.reservationId,
+      });
+    } else {
+      await db.transaction(async (tx) => {
+        await tx.select({ id: schema.reviews.id }).from(schema.reviews)
+          .where(eq(schema.reviews.id, input.reviewId)).for("update");
+        const existing = await tx.select({ id: schema.usageEvents.id }).from(schema.usageEvents)
+          .where(eq(schema.usageEvents.reviewId, input.reviewId)).limit(1);
+        if (existing.length === 0 && input.usage.length > 0) {
+          await tx.insert(schema.usageEvents).values(input.usage.map((usage) => ({
+            ...usage, reviewId: input.reviewId, triggerSource: input.triggerSource,
+          })));
+        }
+      });
+    }
+    await proxy?.discardCompletedRun();
+  } catch (error) {
+    throw new PermanentJobError(
+      `failed review accounting or artifact retirement could not complete safely: ${redactSecrets(error)}`,
+    );
+  }
+}
+
 async function reconcileReviewPublicationLifecycle(input: {
   pool: import("pg").Pool;
   token: string;
@@ -1310,6 +1366,7 @@ export async function runReviewJob(
   let completionStaged = false;
   let receiptUsageForRace: ReviewCompletionInput["usage"] | undefined;
   let usageAccountingCompleteForRace = false;
+  let failedAttemptEnvelope: Envelope | undefined;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
   let gateEnabled = false;
@@ -1767,6 +1824,17 @@ export async function runReviewJob(
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
+    const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
+      orgId: installation.orgId,
+      repositoryId: repository.id,
+      byok: llm.byok,
+    });
+    receiptUsageForRace = receiptUsage;
+    usageAccountingCompleteForRace = ingested.usageAccountingComplete;
+    failedAttemptEnvelope = ingested.envelope;
+    if (isEnvelopeOperationallyUnavailable(ingested.envelope)) {
+      throw new OperationalError("review unavailable: provider or model output failed; see retained review diagnostics");
+    }
     let publicationReceipt: PublicationReceipt | undefined;
     try {
       publicationReceipt = await readPublicationReceipt(publicationReceiptPath);
@@ -1780,16 +1848,6 @@ export async function runReviewJob(
         throw error;
       }
     }
-    const operationallyUnavailable = isEnvelopeOperationallyUnavailable(
-      ingested.envelope,
-    );
-    const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
-      orgId: installation.orgId,
-      repositoryId: repository.id,
-      byok: llm.byok,
-    });
-    receiptUsageForRace = receiptUsage;
-    usageAccountingCompleteForRace = ingested.usageAccountingComplete;
     const staged = await stageReviewCompletionCandidate(
       db,
       {
@@ -1873,7 +1931,7 @@ export async function runReviewJob(
           name: ADVISORY_CHECK_NAME,
           externalId: advisoryCheckExternalId,
           headSha: payload.headSha,
-          conclusion: operationallyUnavailable ? "failure" : "success",
+          conclusion: "success",
           requireOutput: true,
           detailsUrl,
         },
@@ -2026,6 +2084,17 @@ export async function runReviewJob(
       throw new ReviewPublicationReconciliationError(message);
     }
     const reconcileInterruptedSpend = async (): Promise<void> => {
+      if (receiptUsageForRace) {
+        await settleFailedHostedReviewAttempt(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          usage: receiptUsageForRace,
+          usageAccountingComplete: usageAccountingCompleteForRace,
+        }, largeReviewProxy);
+        return;
+      }
       if (hostedUsageReservationId && cliStarted) {
         const reservationId = hostedUsageReservationId;
         const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
@@ -2103,20 +2172,11 @@ export async function runReviewJob(
     const message = redactSecrets(err, sensitiveValues);
     reviewLog.line(`review failed: ${message}`);
     const failedRows = await db.transaction(async (tx) => {
-      const rows = await tx
-        .update(schema.reviews)
-        .set({
-          status: "failed",
-          errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
-          finishedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schema.reviews.id, reviewId),
-            eq(schema.reviews.status, "running"),
-          ),
-        )
-        .returning({ id: schema.reviews.id });
+      const rows = await failHostedReviewAttempt(tx, {
+        reviewId,
+        errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
+        envelope: failedAttemptEnvelope,
+      });
       if (rows.length === 0) return rows;
       await tx.insert(schema.jobs).values({
         kind: "check-run-cleanup",
