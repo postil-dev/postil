@@ -1317,7 +1317,14 @@ export async function startLargeReviewProviderProxy(input: {
       server.stop(true);
     },
     async discardCompletedRun() {
-      if (bindPromise) await bindPromise;
+      if (bindPromise) {
+        try {
+          await bindPromise;
+        } catch {
+          // Rejected registration never acquires a run to retire.
+          return;
+        }
+      }
       if (runKey) await input.store.deleteRun(runKey, input.runContext);
     },
     billingOutcome() {

@@ -572,6 +572,41 @@ describe("durable large-review provider proxy", () => {
     proxy.close();
   });
 
+  test.each([false, true])("cleanup preserves ownership when registration succeeds: %s", async (bound) => {
+    let deletions = 0;
+    class OwnershipStore extends MemoryAttemptStore {
+      override async bindRun(identity: LargeReviewRunIdentity, context: LargeReviewRunContext): Promise<string> {
+        if (!bound) throw new Error("large-review run context ownership collision");
+        return super.bindRun(identity, context);
+      }
+      override async deleteRun(): Promise<void> {
+        deletions += 1;
+        throw new Error("large-review run context ownership collision");
+      }
+    }
+    const upstream = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => new Response(successfulBody),
+    });
+    servers.push(upstream);
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://127.0.0.1:${upstream.port}/v1`),
+      store: new OwnershipStore(),
+    });
+    try {
+      expect((await register(proxy)).status).toBe(bound ? 204 : 409);
+      if (bound) {
+        await expect(proxy.discardCompletedRun()).rejects.toThrow("context ownership collision");
+        expect(deletions).toBe(1);
+      } else {
+        await expect(proxy.discardCompletedRun()).resolves.toBeUndefined();
+        expect(deletions).toBe(0);
+      }
+    } finally {
+      proxy.close();
+    }
+  });
+
   test("requires authenticated plan registration and uses the validated address set", async () => {
     let providerCalls = 0;
     let resolutions = 0;
