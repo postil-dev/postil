@@ -165,7 +165,8 @@ export async function admitReviewFeedbackEvent(input: ReviewFeedbackJobPayload &
   actor: { id?: number; login?: string; type?: string };
   rootCommentId: number;
 }, pool: Pool = getPool()): Promise<boolean> {
-  if (!reviewFeedbackEnabled() || !positiveId(input.actor?.id) || !input.actor.login ||
+  if (!reviewFeedbackEnabled() || !positiveId(input.actor?.id) ||
+      typeof input.actor.login !== "string" || !input.actor.login ||
       input.actor.type === "Bot" || input.actor.login.endsWith("[bot]") ||
       isPostilBotLogin(input.actor.login) || !positiveId(input.rootCommentId)) return false;
   const repository = await loadFeedbackRepository(pool, input);

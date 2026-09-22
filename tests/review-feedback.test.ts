@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { Pool } from "pg";
 
 import { readGitHubReviewFeedback } from "@/lib/github/publication-threads";
-import { reviewFeedbackDigest, serializeReviewFeedback, type ReviewFeedbackContext } from "@/lib/review-feedback";
+import { admitReviewFeedbackEvent, reviewFeedbackDigest, serializeReviewFeedback, type ReviewFeedbackContext } from "@/lib/review-feedback";
 import { normalizeReviewTriggerContext } from "@/lib/review-trigger";
 import contractFixture from "./fixtures/review-feedback-v1.json";
 
@@ -31,6 +32,22 @@ function response(overrides: Record<string, unknown> = {}): Response {
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 describe("bounded review feedback context", () => {
+  test("rejects malformed webhook actor logins before database or authority lookup", async () => {
+    const enabled = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+    process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "1";
+    const pool = { query() { throw new Error("Malformed actors must not reach database lookup"); } } as unknown as Pool;
+    try {
+      for (const login of [42, true, {}, [], null, undefined]) {
+        const actor = { id: 51, login } as unknown as Parameters<typeof admitReviewFeedbackEvent>[0]["actor"];
+        expect(await admitReviewFeedbackEvent({ githubRepoId: 71, prNumber: 17, installationId: 91,
+          rootCommentId, actor }, pool)).toBe(false);
+      }
+    } finally {
+      if (enabled === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+      else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = enabled;
+    }
+  });
+
   test("closed and draft pull requests yield no feedback evidence", async () => {
     for (const change of [{ state: "CLOSED" }, { isDraft: true }]) {
       const fixture = await response().json();
