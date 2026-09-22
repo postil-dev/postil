@@ -88,7 +88,8 @@ function positiveId(value: unknown): value is number {
 
 /** Validate and serialize exact feedback bytes shared by hashing and CLI input. */
 export function serializeReviewFeedback(context: ReviewFeedbackContext): string {
-  if (!feedbackSchema.safeParse(context).success) throw new Error("review feedback context identity or bounds are invalid");
+  const parsed = feedbackSchema.safeParse(context);
+  if (!parsed.success) throw new Error("review feedback context identity or bounds are invalid");
   const roots = new Set<number>();
   const comments = new Set<number>();
   for (const thread of context.threads) {
@@ -111,7 +112,8 @@ export function serializeReviewFeedback(context: ReviewFeedbackContext): string 
     }
   }
   if (comments.size > 128) throw new Error("review feedback exceeds 128 comments");
-  const bytes = JSON.stringify(context);
+  // Schema parsing fixes object-key order across PostgreSQL jsonb round trips.
+  const bytes = JSON.stringify(parsed.data);
   if (Buffer.byteLength(bytes) > REVIEW_FEEDBACK_MAX_BYTES) throw new Error("review feedback exceeds 32 KiB");
   return bytes;
 }

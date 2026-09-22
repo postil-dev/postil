@@ -72,6 +72,18 @@ describe("bounded review feedback context", () => {
     expect(reviewFeedbackDigest(input)).not.toBe(digest);
   });
 
+  test("serializes equivalent object-key orders to identical digest bytes", () => {
+    const input = context();
+    const reordered = Object.fromEntries(Object.entries(input).reverse()) as unknown as ReviewFeedbackContext;
+    reordered.threads = input.threads.map((thread) => ({
+      comments: thread.comments.map((comment) => ({ updatedAt: comment.updatedAt, body: comment.body,
+        author: { login: comment.author.login, id: comment.author.id }, commentId: comment.commentId })),
+      resolved: thread.resolved, rootCommentId: thread.rootCommentId, findingId: thread.findingId,
+    }));
+    expect(serializeReviewFeedback(reordered)).toBe(serializeReviewFeedback(input));
+    expect(reviewFeedbackDigest(reordered)).toBe(reviewFeedbackDigest(input));
+  });
+
   test("rejects oversized evidence, duplicate roots and invalid actor identities", () => {
     const oversized = context();
     oversized.threads[0]!.comments[0]!.body = "x".repeat(32 * 1024);
