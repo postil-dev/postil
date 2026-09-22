@@ -1,9 +1,11 @@
 import http from "node:http";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
   hashEffectiveReviewConfiguration,
@@ -29,14 +31,48 @@ const HEAD_SHA = "b".repeat(40);
 const BASE_SHA = "d".repeat(40);
 const CONFIG_SHA = "c".repeat(64);
 const servers: Array<{ stop(closeActiveConnections?: boolean): void }> = [];
+const transportMocks: Array<{ mockRestore(): void }> = [];
 const ipv6FirstLoopback = async () => [
   { address: "::1", family: 6 },
   { address: "127.0.0.1", family: 4 },
 ];
 
 afterEach(() => {
+  for (const transport of transportMocks.splice(0)) transport.mockRestore();
   for (const server of servers.splice(0)) server.stop(true);
 });
+
+function mockPinnedProvider() {
+  let calls = 0;
+  const addressSets: unknown[] = [];
+  const transport = spyOn(http, "request").mockImplementation(((
+    _url: URL,
+    options: http.RequestOptions,
+    callback: (response: http.IncomingMessage) => void,
+  ) => {
+    const request = new EventEmitter() as http.ClientRequest;
+    request.end = (() => {
+      calls += 1;
+      expect(options.lookup).toBeDefined();
+      options.lookup!("localhost", { all: true }, (error, addresses) => {
+        expect(error).toBeNull();
+        addressSets.push(addresses);
+      });
+      queueMicrotask(() => {
+        const stream = new PassThrough();
+        const response = stream as unknown as http.IncomingMessage;
+        response.statusCode = 200;
+        response.headers = { "x-request-id": "req-1" };
+        callback(response);
+        stream.end(successfulBody);
+      });
+      return request;
+    }) as http.ClientRequest["end"];
+    return request;
+  }) as typeof http.request);
+  transportMocks.push(transport);
+  return { calls: () => calls, addressSets };
+}
 
 class MemoryAttemptStore implements LargeReviewAttemptStore {
   readonly runs = new Map<string, LargeReviewRunIdentity>();
@@ -608,22 +644,11 @@ describe("durable large-review provider proxy", () => {
   });
 
   test("requires authenticated plan registration and uses the validated address set", async () => {
-    let providerCalls = 0;
+    const provider = mockPinnedProvider();
     let resolutions = 0;
-    const upstream = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch() {
-        providerCalls += 1;
-        return new Response(successfulBody, {
-          headers: { "x-request-id": "req-1" },
-        });
-      },
-    });
-    servers.push(upstream);
     const store = new MemoryAttemptStore();
     const proxy = await startLargeReviewProviderProxy({
-      ...proxySeed(`http://localhost:${upstream.port}/v1`),
+      ...proxySeed("http://localhost:1234/v1"),
       resolveHostname: async () => {
         resolutions += 1;
         return ipv6FirstLoopback();
@@ -635,7 +660,7 @@ describe("durable large-review provider proxy", () => {
       body: requestBody,
     });
     expect(early.status).toBe(428);
-    expect(providerCalls).toBe(0);
+    expect(provider.calls()).toBe(0);
     expect(
       (
         await fetch(proxy.planEndpoint, {
@@ -668,7 +693,8 @@ describe("durable large-review provider proxy", () => {
       });
       expect(await response.text()).toBe(successfulBody);
     }
-    expect(providerCalls).toBe(3);
+    expect(provider.calls()).toBe(3);
+    expect(provider.addressSets).toEqual(Array(3).fill(await ipv6FirstLoopback()));
     expect(resolutions).toBe(1);
     expect(proxy.billingOutcome()).toBe("resumable");
     expect(
@@ -684,17 +710,8 @@ describe("durable large-review provider proxy", () => {
   });
 
   test("replays a completed response only under the same registered identity", async () => {
-    let providerCalls = 0;
-    const upstream = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch() {
-        providerCalls += 1;
-        return new Response(successfulBody);
-      },
-    });
-    servers.push(upstream);
-    const seed = proxySeed(`http://localhost:${upstream.port}/v1`);
+    const provider = mockPinnedProvider();
+    const seed = proxySeed("http://localhost:1234/v1");
     const store = new MemoryAttemptStore();
     const first = await startLargeReviewProviderProxy({
       ...seed,
@@ -722,7 +739,8 @@ describe("durable large-review provider proxy", () => {
         })
       ).status,
     ).toBe(200);
-    expect(providerCalls).toBe(1);
+    expect(provider.calls()).toBe(1);
+    expect(provider.addressSets).toEqual([await ipv6FirstLoopback()]);
     await resumed.discardCompletedRun();
     resumed.close();
   });

@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Client } from "pg";
 
 import release from "@/data/public-cli-release.json";
 import {
@@ -497,26 +498,22 @@ console.log("fixture-key");
   test("preserves an operational finding when the local review check fails", async () => {
     const repo = await createFixtureRepo("failed-review-check");
 
-    const result = await runLocalReview(repo, "0", 1, {
-      args: ["--require-clean"],
+    const result = await runLocalReview(repo, "0", 2, {
+      args: ["--require-clean", "--keep-database"],
       env: { POSTIL_FAKE_ADVISORY_NEUTRAL: "1" },
     });
 
     expect(result.stdout).toContain(
       "would complete check-run #1000 as failure",
     );
-    expect(result.stdout).toContain("Review findings:");
-    expect(result.stdout).toContain(".postil/provider:1");
-    expect(result.stdout).toContain("Local provider unavailable");
-    expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
-    expect(result.stdout).toContain("Gate: passed");
+    await expectRetainedOperationalFailure(result, ".postil/provider");
   }, 120_000);
 
   test("persists a model-output sentinel omitted from the GitHub receipt", async () => {
     const repo = await createFixtureRepo("model-output-sentinel");
 
-    const result = await runLocalReview(repo, "1", 1, {
-      args: ["--require-clean"],
+    const result = await runLocalReview(repo, "1", 2, {
+      args: ["--require-clean", "--keep-database"],
       env: {
         POSTIL_FAKE_ADVISORY_NEUTRAL: "1",
         POSTIL_FAKE_OPERATIONAL_PATH: ".postil/model-output",
@@ -524,9 +521,7 @@ console.log("fixture-key");
     });
 
     expect(result.stdout).toContain("would complete check-run #1000 as failure");
-    expect(result.stdout).toContain(".postil/model-output:1");
-    expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
-    expect(result.stdout).toContain("Gate: failed");
+    await expectRetainedOperationalFailure(result, ".postil/model-output");
   }, 120_000);
 
   test("base mode uses the exact selected head and serves files from its tree", async () => {
@@ -655,6 +650,43 @@ console.log("fixture-key");
     return commit;
   }
 
+  async function expectRetainedOperationalFailure(
+    result: { stdout: string; stderr: string },
+    path: string,
+  ): Promise<void> {
+    expect(result.stderr).toContain("local review did not complete: job=failed review=failed");
+    expect(result.stdout).not.toContain("Gate: passed");
+    expect(result.stdout).not.toContain("would post PR review");
+    const name = result.stdout.match(/local review database retained: (postil_local_review_\d+_\d+)/)?.[1];
+    expect(name).toBeDefined();
+    let adminUrl = process.env.POSTIL_TEST_DATABASE_URL;
+    if (!adminUrl) {
+      const retained = result.stdout.match(/local review Postgres retained: runtime=(docker|podman) container=(postil-local-review-[\w-]+)/);
+      expect(retained).not.toBeNull();
+      const port = await runCapture([retained![1]!, "port", retained![2]!, "5432/tcp"]);
+      const match = port.match(/^127\.0\.0\.1:(\d+)$/m);
+      expect(match).not.toBeNull();
+      adminUrl = `postgresql://postgres@127.0.0.1:${match![1]}/postgres`;
+    }
+    const endpoint = new URL(adminUrl);
+    endpoint.pathname = `/${name}`;
+    const client = new Client({ connectionString: endpoint.toString() });
+    try {
+      await client.connect();
+      const { rows } = await client.query("SELECT status, envelope, error_message FROM reviews ORDER BY id DESC LIMIT 1");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("failed");
+      expect(rows[0].error_message).toContain("provider or model output failed");
+      expect(rows[0].envelope.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path, title: "Local provider unavailable" }),
+      ]));
+      const jobs = await client.query("SELECT status FROM jobs WHERE kind = 'review' ORDER BY id DESC LIMIT 1");
+      expect(jobs.rows[0].status).toBe("failed");
+    } finally {
+      await client.end();
+    }
+  }
+
   async function runLocalReview(
     repo: string,
     gateFailing: "0" | "1",
@@ -679,6 +711,7 @@ console.log("fixture-key");
         repo,
         "--repo",
         "local/postil-local",
+        ...(process.env.POSTIL_KEEP_TEST_DATABASE === "1" ? ["--keep-database"] : []),
         ...(options.args ?? []),
       ],
       {
