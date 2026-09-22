@@ -439,7 +439,10 @@ jobs:
           mapfile -t machine_ids < <(jq -r 'sort_by(.config.metadata.fly_process_group)[] | .id' "${RUNNER_TEMP}/postil-source-machines.json")
           umask 077
           for id in "${machine_ids[@]}"; do
-            flyctl machine status "${id}" --app postil-web --json > "${RUNNER_TEMP}/postil-before-update.json"
+            flyctl machine list --app postil-web --json | jq -ce --arg id "${id}" '
+              [.[] | select(.id == $id)] |
+              if length == 1 then .[0] else error("captured machine identity is not unique") end
+            ' > "${RUNNER_TEMP}/postil-before-update.json"
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg id "${id}" '
               def runtime_config: .config | del(.image,
                 .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version,
@@ -502,7 +505,10 @@ jobs:
               echo "::error::A captured machine could not return to the source image."
               exit 1
             fi
-            restored=$(flyctl machine status "${id}" --app postil-web --json)
+            restored=$(flyctl machine list --app postil-web --json | jq -ce --arg id "${id}" '
+              [.[] | select(.id == $id)] |
+              if length == 1 then .[0] else error("restored machine identity is not unique") end
+            ')
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg image "${SOURCE_IMAGE}" --arg id "${id}" '
               def runtime_config: .config | del(.image,
                 .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version,
