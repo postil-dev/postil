@@ -1,10 +1,12 @@
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { Pool } from "pg";
 
 import {
   COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
+  applyReviewedManagedReleaseMigration,
   type ManagedReleaseMigrationIdentity,
   prepareCompatibleManagedRelease,
   restoreAllManagedReleasePreparations,
@@ -21,7 +23,7 @@ type SpawnReleaseDatabaseCommand = (
   command: readonly string[],
   environment: Environment,
 ) => MigrationProcess;
-type VerifyCompatibleRelease = (
+type PrepareAndVerifyCompatibleRelease = (
   environment: Environment,
 ) => Promise<void>;
 type PrepareCompatibleRelease = (
@@ -46,7 +48,7 @@ export function releaseMigrationEnvironment(environment: Environment): Environme
 export async function runReleaseMigrations(
   environment: Environment = process.env,
   spawnCommand: SpawnReleaseDatabaseCommand = defaultSpawnReleaseDatabaseCommand,
-  verifyCompatibleRelease: VerifyCompatibleRelease = defaultVerifyCompatibleRelease,
+  prepareAndVerifyCompatibleRelease: PrepareAndVerifyCompatibleRelease = defaultPrepareAndVerifyCompatibleRelease,
   prepareCompatibleRelease: PrepareCompatibleRelease = defaultPrepareCompatibleRelease,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -69,7 +71,7 @@ export async function runReleaseMigrations(
   }
 
   requireCompatibleReleaseProtocol(databaseEnvironment);
-  await verifyCompatibleRelease(databaseEnvironment);
+  await prepareAndVerifyCompatibleRelease(databaseEnvironment);
   await runReleaseDatabaseCommand(
     ["bun", "run", "hosted:verify-provider"],
     "hosted provider preflight",
@@ -126,11 +128,13 @@ export function checkedInReleaseMigrations(): ManagedReleaseMigrationIdentity[] 
   }).map(({ folderMillis, hash }) => ({ folderMillis, hash }));
 }
 
-async function defaultVerifyCompatibleRelease(
-  environment: Environment,
+async function defaultPrepareAndVerifyCompatibleRelease(
+  inputEnvironment: Environment,
 ): Promise<void> {
+  const environment = releaseMigrationEnvironment(inputEnvironment);
   const pool = new Pool({ connectionString: environment.DATABASE_URL });
   try {
+    await prepareReviewedAdditiveMigration(environment, false, pool);
     await verifyCompatibleManagedRelease(
       pool,
       compatibleSourceReleaseSha(environment),
@@ -140,6 +144,32 @@ async function defaultVerifyCompatibleRelease(
     );
   } finally {
     await pool.end();
+  }
+}
+
+/** Return whether the reviewed migration is pending; dry-run does not apply it. */
+export async function prepareReviewedAdditiveMigration(
+  environment: Environment = process.env,
+  dryRun = true,
+  existingPool?: Pool,
+): Promise<boolean> {
+  const databaseEnvironment = releaseMigrationEnvironment(environment);
+  if (databaseEnvironment.POSTIL_MANAGED_RELEASE !== "1") {
+    throw new Error("reviewed additive preparation requires a managed release");
+  }
+  const pool = existingPool ?? new Pool({ connectionString: databaseEnvironment.DATABASE_URL });
+  try {
+    return await applyReviewedManagedReleaseMigration(
+      pool,
+      compatibleSourceReleaseSha(databaseEnvironment),
+      databaseEnvironment.POSTIL_RELEASE_SHA ?? "",
+      requireCompatibleReleaseProtocol(databaseEnvironment),
+      checkedInReleaseMigrations(),
+      await readFile(new URL("../drizzle/0061_review_feedback_reconciliation.sql", import.meta.url), "utf8"),
+      { dryRun },
+    );
+  } finally {
+    if (!existingPool) await pool.end();
   }
 }
 
@@ -328,6 +358,11 @@ function defaultSpawnReleaseDatabaseCommand(
 }
 
 if (import.meta.main) {
+  if (process.argv[2] === "--inspect-additive") {
+    const pending = await prepareReviewedAdditiveMigration();
+    console.log(`reviewed additive migration: ${pending ? "pending and compatible" : "already applied"}`);
+    process.exit(0);
+  }
   if (process.argv[2] === "--compensate") {
     const restored = await compensateReleasePreparation();
     console.log(
@@ -359,7 +394,7 @@ if (import.meta.main) {
     await runReleaseMigrations(
       process.env,
       defaultSpawnReleaseDatabaseCommand,
-      defaultVerifyCompatibleRelease,
+      defaultPrepareAndVerifyCompatibleRelease,
       defaultPrepareCompatibleRelease,
       controller.signal,
     );
