@@ -35,14 +35,9 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const NOW = new Date("2026-07-19T12:00:00.000Z");
 const BUCKET = new Date("2026-07-19T12:00:00.000Z");
 
-const livePullRequest = {
-  open: true, merged: false, draft: false,
-  headSha: "a".repeat(40), baseSha: "b".repeat(40),
-};
-const candidate = {
-  installationId: 1, repoFullName: "example/service", prNumber: 1,
-  headSha: livePullRequest.headSha,
-};
+const livePullRequest = { number: 1, draft: false, headSha: "a".repeat(40) };
+const repository = { repositoryId: 1, installationId: 1, repoFullName: "example/service" };
+const emptyPage = { pullRequests: [], nextPage: null };
 
 async function runDatabaseMonitoringChecks(
   pool: Pool,
@@ -51,15 +46,19 @@ async function runDatabaseMonitoringChecks(
   return runDatabaseMonitoringChecksWithGitHub(pool, {
     github: {
       getInstallationToken: async () => crypto.randomUUID(),
-      getPullRequestReviewContext: async (_token, repoFullName, prNumber) => {
-        const result = await pool.query<{ head_sha: string }>(
-          `SELECT review.head_sha FROM reviews review
+      listOpenPullRequestHeadsPage: async (_token, repoFullName, page) => {
+        const result = await pool.query<{ pr_number: number; head_sha: string }>(
+          `SELECT DISTINCT ON (review.pr_number) review.pr_number, review.head_sha FROM reviews review
            JOIN repositories repository ON repository.id = review.repository_id
-           WHERE repository.full_name = $1 AND review.pr_number = $2
-           ORDER BY review.id DESC LIMIT 1`,
-          [repoFullName, prNumber],
+           WHERE repository.full_name = $1 ORDER BY review.pr_number, review.id DESC`,
+          [repoFullName],
         );
-        return { ...livePullRequest, headSha: result.rows[0]!.head_sha };
+        return {
+          pullRequests: result.rows.slice((page - 1) * 100, page * 100).map((row) => ({
+            number: row.pr_number, headSha: row.head_sha, draft: false,
+          })),
+          nextPage: result.rows.length > page * 100 ? page + 1 : null,
+        };
       },
     },
     ...options,
@@ -67,100 +66,167 @@ async function runDatabaseMonitoringChecks(
 }
 
 describe("outstanding operational review visibility", () => {
-  test("checks live eligibility and exact head before retaining an old failure", async () => {
-    for (const [live, healthy] of [
-      [livePullRequest, false],
-      [{ ...livePullRequest, open: false }, true],
-      [{ ...livePullRequest, merged: true }, true],
-      [{ ...livePullRequest, draft: true }, true],
-      [{ ...livePullRequest, headSha: "c".repeat(40) }, true],
+  const pool = {
+    query: async (_sql: string, values: string[]) => ({ rows: [{ count: String(
+      JSON.parse(values[0]!).filter((head: { headSha: string }) => head.headSha === livePullRequest.headSha).length,
+    ) }] }),
+  } as unknown as Pool;
+  const github = {
+    getInstallationToken: async () => crypto.randomUUID(),
+    listOpenPullRequestHeadsPage: async () => ({ pullRequests: [livePullRequest], nextPage: null }),
+  };
+
+  test("matches live non-draft heads and observes reopening without cached closure", async () => {
+    for (const [pullRequests, healthy] of [
+      [[], true], [[livePullRequest], false], [[{ ...livePullRequest, draft: true }], true],
+      [[{ ...livePullRequest, headSha: "c".repeat(40) }], true], [[livePullRequest], false],
     ] as const) {
-      expect(await checkOutstandingOperationalReviews([candidate], {
-        github: {
-          getInstallationToken: async () => crypto.randomUUID(),
-          getPullRequestReviewContext: async () => live,
-        },
-      })).toMatchObject({ healthy });
+      expect(await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        ...github, listOpenPullRequestHeadsPage: async () => ({ pullRequests: [...pullRequests], nextPage: null }),
+      } })).toMatchObject({ healthy });
     }
   });
 
-  test("authentication and context failures remain unknown and unhealthy", async () => {
-    for (const failingStep of ["authentication", "context"]) {
-      const result = await checkOutstandingOperationalReviews([candidate], {
-        github: {
-          getInstallationToken: async () => {
-            if (failingStep === "authentication") throw new Error("Authentication unavailable");
-            return crypto.randomUUID();
-          },
-          getPullRequestReviewContext: async () => { throw new Error("GitHub unavailable"); },
+  test("authentication and listing failures remain unknown and unhealthy", async () => {
+    for (const failingStep of ["authentication", "listing"]) {
+      const result = await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        getInstallationToken: async () => {
+          if (failingStep === "authentication") throw new Error("Authentication unavailable");
+          return crypto.randomUUID();
         },
-      });
+        listOpenPullRequestHeadsPage: async () => { throw new Error("GitHub unavailable"); },
+      } });
       expect(result.healthy).toBe(false);
-      expect(result.detail).toContain("1 PR states could not be verified");
+      expect(result.detail).toContain("1 repository listings could not be verified");
     }
   });
 
-  test("limits live probes to twenty and four concurrent while keeping overflow visible", async () => {
+  test("limits all repositories to twenty pages and four concurrent requests with shared authentication", async () => {
     let active = 0;
     let maximumActive = 0;
     let calls = 0;
-    const result = await checkOutstandingOperationalReviews(
-      Array.from({ length: 21 }, (_, index) => ({ ...candidate, prNumber: index + 1 })),
-      { github: {
-        getInstallationToken: async () => crypto.randomUUID(),
-        getPullRequestReviewContext: async () => {
+    let tokens = 0;
+    const result = await checkOutstandingOperationalReviews(pool,
+      Array.from({ length: 21 }, (_, index) => ({ ...repository,
+        repositoryId: index + 1, repoFullName: `example/service-${index}`,
+      })), { github: {
+        getInstallationToken: async () => {
+          tokens += 1;
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return crypto.randomUUID();
+        },
+        listOpenPullRequestHeadsPage: async () => {
           calls += 1;
           maximumActive = Math.max(maximumActive, ++active);
           await new Promise((resolve) => setTimeout(resolve, 1));
           active -= 1;
-          return { ...livePullRequest, open: false };
+          return emptyPage;
         },
-      } },
-    );
+      } });
     expect(calls).toBe(20);
+    expect(tokens).toBe(1);
     expect(maximumActive).toBe(4);
     expect(result.healthy).toBe(false);
-    expect(result.detail).toContain("Candidate budget exceeded");
+    expect(result.detail).toContain("Repository or page budget exceeded");
   });
 
-  test("cancellation bounds unresponsive lookups and preserves unknown state", async () => {
-    const controller = new AbortController();
+  test("pagination shares the global budget instead of granting twenty pages per repository", async () => {
     let calls = 0;
-    const github = {
-      getInstallationToken: async () => {
+    const result = await checkOutstandingOperationalReviews(pool,
+      Array.from({ length: 4 }, (_, index) => ({ ...repository,
+        repositoryId: index + 1, repoFullName: `example/service-${index}`,
+      })), { github: { ...github, listOpenPullRequestHeadsPage: async (_token, _repo, page) => {
         calls += 1;
-        queueMicrotask(() => controller.abort());
-        return new Promise<string>(() => undefined);
-      },
-      getPullRequestReviewContext: async () => livePullRequest,
-    };
-    const result = await checkOutstandingOperationalReviews(
-      Array.from({ length: 6 }, () => candidate),
-      { signal: controller.signal, github },
-    );
-    expect(calls).toBe(4);
+        return { pullRequests: [{ ...livePullRequest, number: page }], nextPage: page + 1 };
+      } } });
+    expect(calls).toBe(20);
     expect(result.healthy).toBe(false);
-    expect(result.detail).toContain("6 PR states could not be verified");
-    expect(await checkOutstandingOperationalReviews([candidate], {
-      signal: controller.signal, github,
-    })).toMatchObject({ healthy: false });
-    expect(calls).toBe(4);
+    expect(result.detail).toContain("4 repository listings could not be verified");
+    expect(result.detail).toContain("page budget exceeded");
   });
 
-  test("deadline expiry and incomplete live state cannot report recovery", async () => {
-    const timeoutResult = await checkOutstandingOperationalReviews([candidate], {
-      signal: AbortSignal.timeout(5),
-      github: {
-        getInstallationToken: async () => crypto.randomUUID(),
-        getPullRequestReviewContext: async () => new Promise(() => undefined),
+  test("page two failures are matched and partial listings cannot establish recovery", async () => {
+    for (const failSecondPage of [false, true]) {
+      const pages: number[] = [];
+      const result = await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        ...github, listOpenPullRequestHeadsPage: async (_token, _repo, page) => {
+          pages.push(page);
+          if (page === 2 && failSecondPage) throw new Error("Listing unavailable");
+          return page === 1 ? {
+            pullRequests: Array.from({ length: 100 }, (_, index) => ({
+              ...livePullRequest, number: index + 2, headSha: "c".repeat(40),
+            })), nextPage: 2,
+          } : { pullRequests: [livePullRequest], nextPage: null };
+        },
+      } });
+      expect(pages).toEqual([1, 2]);
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain(failSecondPage
+        ? "1 repository listings could not be verified" : "1 unresolved terminal review failures");
+    }
+  });
+
+  test("conflicting duplicate heads or draft states remain unknown and exact duplicates count once", async () => {
+    for (const duplicate of [livePullRequest, { ...livePullRequest, draft: true },
+      { ...livePullRequest, headSha: "c".repeat(40) }]) {
+      const result = await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        ...github, listOpenPullRequestHeadsPage: async (_token, _repo, page) => ({
+          pullRequests: [page === 1 ? livePullRequest : duplicate], nextPage: page === 1 ? 2 : null,
+        }),
+      } });
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain(duplicate === livePullRequest
+        ? "1 unresolved terminal review failures" : "1 repository listings could not be verified");
+    }
+  });
+
+  test("cancellation bounds authentication and page readers that ignore abort", async () => {
+    for (const phase of ["authentication", "listing"]) {
+      const controller = new AbortController();
+      let tokens = 0;
+      let pages = 0;
+      const blocked = { github: {
+        getInstallationToken: async () => {
+          tokens += 1;
+          if (phase === "authentication") {
+            queueMicrotask(() => controller.abort());
+            return new Promise<string>(() => undefined);
+          }
+          return crypto.randomUUID();
+        },
+        listOpenPullRequestHeadsPage: async () => {
+          pages += 1;
+          queueMicrotask(() => controller.abort());
+          return new Promise<never>(() => undefined);
+        },
+      }, signal: controller.signal };
+      const repositories = Array.from({ length: 6 }, (_, index) => ({
+        ...repository, repositoryId: index + 1, repoFullName: `example/service-${index}`,
+      }));
+      const result = await checkOutstandingOperationalReviews(pool, repositories, blocked);
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain("6 repository listings could not be verified");
+      expect(tokens).toBe(1);
+      expect(pages).toBe(phase === "listing" ? 4 : 0);
+      expect(await checkOutstandingOperationalReviews(pool, repositories, blocked)).toMatchObject({ healthy: false });
+      expect(tokens).toBe(1);
+    }
+  });
+
+  test("deadline expiry and failed database matching cannot report recovery", async () => {
+    const result = await checkOutstandingOperationalReviews(pool, [repository], {
+      signal: AbortSignal.timeout(5), github: {
+        ...github, listOpenPullRequestHeadsPage: async () => new Promise(() => undefined),
       },
     });
-    expect(timeoutResult.healthy).toBe(false);
-    expect(timeoutResult.detail).toContain("1 PR states could not be verified");
-    expect(await checkOutstandingOperationalReviews([candidate], { github: {
-      getInstallationToken: async () => crypto.randomUUID(),
-      getPullRequestReviewContext: async () => ({ ...livePullRequest, headSha: "" }),
-    } })).toMatchObject({ healthy: false });
+    expect(result.healthy).toBe(false);
+    expect(result.detail).toContain("1 repository listings could not be verified");
+    for (const query of [async () => { throw new Error("Database unavailable"); },
+      async () => new Promise<never>(() => undefined)]) {
+      expect(await checkOutstandingOperationalReviews({ query } as unknown as Pool, [repository], {
+        signal: AbortSignal.timeout(5), github,
+      })).toMatchObject({ healthy: false, detail: expect.stringContaining("matching could not be verified") });
+    }
   });
 });
 
@@ -534,6 +600,87 @@ describe("private monitoring public probes", () => {
       "external monitor heartbeat returned HTTP 402: 402: Your account currently has no access to the heartbeat feature",
       NOW,
     ]);
+  });
+});
+
+describeDb("operational review repository reconciliation", () => {
+  let db: EphemeralDatabase;
+  beforeAll(async () => { db = await createEphemeralDatabase("monitor_open_heads"); }, 30_000);
+  afterAll(async () => { await db?.drop(); }, 30_000);
+
+  test("118 historical failures across eleven repositories clear after two current heads recover", async () => {
+    const pool = db.pool;
+    const installation = await pool.query<{ id: number }>(
+      `INSERT INTO installations (github_installation_id, account_login, account_type)
+       VALUES (900040, 'monitor-heads', 'Organization') RETURNING id`,
+    );
+    const repositories = await pool.query<{ id: number; full_name: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       SELECT $1, 900040000 + n, 'monitor-heads/repository-' || n, true
+         FROM generate_series(1, 11) AS n RETURNING id, full_name`,
+      [installation.rows[0]!.id],
+    );
+    const fixture = Array.from({ length: 118 }, (_, index) => ({
+      repositoryId: repositories.rows[index % 11]!.id, prNumber: index + 1,
+    }));
+    await pool.query(
+      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, envelope, queued_at, finished_at)
+       SELECT "repositoryId", "prNumber", $2, $3,
+         CASE WHEN "prNumber" = 2 THEN 'completed' ELSE 'failed' END::review_status,
+         CASE WHEN "prNumber" = 2 THEN $4::jsonb ELSE NULL END,
+         now() - interval '90 days', now() - interval '90 days'
+       FROM jsonb_to_recordset($1::jsonb) AS fixture("repositoryId" integer, "prNumber" integer)
+       ORDER BY "prNumber"`,
+      [JSON.stringify(fixture), livePullRequest.headSha, "b".repeat(40),
+        JSON.stringify({ findings: [{ path: ".postil/operational" }] })],
+    );
+    let openNumbers = [1, 2];
+    let calls = 0;
+    let tokens = 0;
+    const check = async () => {
+      calls = 0;
+      tokens = 0;
+      return (await runDatabaseMonitoringChecksWithGitHub(pool, { github: {
+        getInstallationToken: async () => { tokens += 1; return crypto.randomUUID(); },
+        listOpenPullRequestHeadsPage: async (_token, repoFullName, page) => {
+          calls += 1;
+          expect(page).toBe(1);
+          const repo = repositories.rows.find((row) => row.full_name === repoFullName)!;
+          return { nextPage: null, pullRequests: fixture.filter((row) =>
+            row.repositoryId === repo.id && openNumbers.includes(row.prNumber)
+          ).map((row) => ({ ...livePullRequest, number: row.prNumber })) };
+        },
+      } })).find((item) => item.key === "review-operational-failures")!;
+    };
+    const ranks = await pool.query<{ rank: number }>(
+      `SELECT rank FROM (SELECT pr_number, row_number() OVER (ORDER BY id DESC)::int AS rank FROM reviews) ranked
+       WHERE pr_number IN (1, 2) ORDER BY rank`,
+    );
+    expect(ranks.rows.map((row) => row.rank)).toEqual([117, 118]);
+    expect(await check()).toMatchObject({ healthy: false, detail: expect.stringContaining("2 unresolved terminal review failures") });
+    expect(calls).toBe(11);
+    expect(tokens).toBe(1);
+    openNumbers = [];
+    expect(await check()).toMatchObject({ healthy: true });
+    expect(calls).toBe(11);
+    openNumbers = [1, 2];
+    expect(await check()).toMatchObject({ healthy: false });
+    await pool.query(
+      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, envelope, queued_at, finished_at)
+       SELECT repository_id, pr_number, head_sha, base_sha, 'completed', '{"findings":[]}'::jsonb, now(), now()
+       FROM reviews WHERE pr_number IN (1, 2)`,
+    );
+    expect(await check()).toMatchObject({ healthy: true });
+    expect(calls).toBe(11);
+    const history = await pool.query<{ total: number; historical: number }>(
+      `SELECT count(*)::int AS total,
+         count(*) FILTER (WHERE finished_at < now() - interval '1 day')::int AS historical FROM reviews`,
+    );
+    expect(history.rows).toEqual([{ total: 120, historical: 118 }]);
+    openNumbers = [3];
+    expect(await check()).toMatchObject({ healthy: false, detail: expect.stringContaining("1 unresolved terminal review failures") });
+    openNumbers = [];
+    expect(await check()).toMatchObject({ healthy: true });
   });
 });
 
@@ -1629,7 +1776,7 @@ describeDb("private monitoring durability", () => {
         expect(await check()).toMatchObject({ healthy: false });
         const closedChecks = await runDatabaseMonitoringChecks(pool, { github: {
           getInstallationToken: async () => crypto.randomUUID(),
-          getPullRequestReviewContext: async () => ({ ...livePullRequest, open: false }),
+          listOpenPullRequestHeadsPage: async () => emptyPage,
         } });
         expect(closedChecks.find((item) => item.key === "review-operational-failures"))
           .toMatchObject({ healthy: true });

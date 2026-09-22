@@ -787,6 +787,70 @@ export function comparePullRequestSnapshotTimes(
   return "equal";
 }
 
+export interface OpenPullRequestHead {
+  number: number;
+  headSha: string;
+  draft: boolean;
+}
+
+export async function listOpenPullRequestHeadsPage(
+  token: string,
+  repoFullName: string,
+  page: number,
+  signal?: AbortSignal,
+): Promise<{ pullRequests: OpenPullRequestHead[]; nextPage: number | null }> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repoFullName) ||
+      !Number.isSafeInteger(page) || page < 1) {
+    throw new Error("GitHub pull request listing identity is malformed");
+  }
+  const path = `/repos/${repoFullName}/pulls`;
+  const query = new URLSearchParams({
+    state: "open", per_page: "100", sort: "created", direction: "asc", page: String(page),
+  });
+  const response = await githubFetch(token, "GET", `${path}?${query}`, undefined, signal);
+  const expected = new URL(`${apiBase()}${path}`);
+  let nextPage: number | null = null;
+  const relations = new Set<string>();
+  const link = response.headers.get("link");
+  if (link !== null) {
+    for (const entry of link.split(",")) {
+      const match = /^\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*$/u.exec(entry);
+      if (!match || relations.has(match[2]!)) throw new Error("GitHub pull request pagination is malformed");
+      relations.add(match[2]!);
+      const url = new URL(match[1]!);
+      const linkedPage = Number(url.searchParams.get("page"));
+      if (url.origin !== expected.origin || url.pathname !== expected.pathname ||
+          url.username || url.password || url.hash ||
+          [...url.searchParams].length !== 5 ||
+          !["state", "per_page", "sort", "direction"].every((key) =>
+            url.searchParams.getAll(key).length === 1 && url.searchParams.get(key) === query.get(key)) ||
+          url.searchParams.getAll("page").length !== 1 ||
+          !/^[1-9][0-9]*$/u.test(url.searchParams.get("page") ?? "") ||
+          !Number.isSafeInteger(linkedPage)) {
+        throw new Error("GitHub pull request pagination changed its endpoint");
+      }
+      if (match[2] === "next") {
+        if (linkedPage !== page + 1) throw new Error("GitHub pull request pagination did not advance");
+        nextPage = linkedPage;
+      }
+    }
+  }
+  const values: unknown = await response.json();
+  if (!Array.isArray(values) || values.length > 100 || (nextPage !== null && values.length === 0)) {
+    throw new Error("GitHub open pull request page is malformed");
+  }
+  const pullRequests = values.map((value): OpenPullRequestHead => {
+    if (typeof value !== "object" || value === null ||
+        !Number.isSafeInteger(value.number) || value.number <= 0 ||
+        value.state !== "open" || typeof value.draft !== "boolean" ||
+        typeof value.head?.sha !== "string" || !/^[a-f0-9]{40}$/u.test(value.head.sha)) {
+      throw new Error("GitHub open pull request head is malformed");
+    }
+    return { number: value.number, headSha: value.head.sha, draft: value.draft };
+  });
+  return { pullRequests, nextPage };
+}
+
 /** Load the immutable refs required by the existing review-job payload. */
 export async function getPullRequestReviewContext(
   token: string,
