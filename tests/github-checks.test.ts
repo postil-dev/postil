@@ -10,6 +10,7 @@ import {
   findPullRequestReviewCommentByMarker,
   getPullRequestReviewComment,
   getPullRequestReviewContext,
+  listOpenPullRequestHeadsPage,
   listPullRequestReviewCommentReactions,
   parsePullRequestUpdatedAt,
   RESPOND_MARKER_MAX_PAGES,
@@ -29,6 +30,74 @@ function comments(count: number, page: number) {
     user: { login: "postil-dev[bot]" },
   }));
 }
+
+describe("open pull request head listing", () => {
+  const pull = { number: 41, state: "open", draft: false, head: { sha: "a".repeat(40) } };
+  const nextUrl = "https://api.github.com/repos/octo/repo/pulls?state=open&per_page=100&sort=created&direction=asc&page=2";
+
+  test("projects only head identities and preserves the caller cancellation signal", async () => {
+    const signal = new AbortController().signal;
+    const privateBody = crypto.randomUUID();
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requested.push(String(input));
+      expect(init?.signal).toBe(signal);
+      return Response.json([{ ...pull, body: privateBody }], {
+        headers: requested.length === 1 ? { link: `<${nextUrl}>; rel="next", <${nextUrl}>; rel="last"` } : {},
+      });
+    }) as unknown as typeof fetch;
+    expect(await listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1, signal)).toEqual({
+      pullRequests: [{ number: 41, headSha: pull.head.sha, draft: false }], nextPage: 2,
+    });
+    expect(await listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 2, signal)).toEqual({
+      pullRequests: [{ number: 41, headSha: pull.head.sha, draft: false }], nextPage: null,
+    });
+    expect(requested).toEqual([nextUrl.replace("page=2", "page=1"), nextUrl]);
+  });
+
+  test("rejects malformed list shapes, PR numbers, states, head identities and draft flags", async () => {
+    for (const value of [{}, null, [null], [{ ...pull, number: 0 }], [{ ...pull, number: 1.5 }],
+      [{ ...pull, number: "41" }], [{ ...pull, state: "closed" }], [{ ...pull, draft: undefined }],
+      [{ ...pull, draft: "false" }], [{ ...pull, head: null }], [{ ...pull, head: { sha: "invalid" } }],
+      Array.from({ length: 101 }, () => pull)]) {
+      globalThis.fetch = (async () => Response.json(value)) as unknown as typeof fetch;
+      await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+    }
+  });
+
+  test("rejects foreign endpoints, changed filters, duplicate links and nonadvancing pages without following them", async () => {
+    const next = (url: string) => `<${url}>; rel="next"`;
+    for (const link of [
+      next(nextUrl.replace("api.github.com", "other.example.test")),
+      next(nextUrl.replace("octo/repo", "octo/other")),
+      next(nextUrl.replace("state=open", "state=all")),
+      next(`${nextUrl}&page=2`), next(`${nextUrl}&extra=1`), next(`${nextUrl}#fragment`),
+      next(nextUrl.replace("page=2", "page=1")), next(nextUrl.replace("page=2", "page=3")),
+      `${next(nextUrl)}, ${next(nextUrl)}`, "malformed", "",
+    ]) {
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls += 1;
+        return Response.json([pull], { headers: { link } });
+      }) as unknown as typeof fetch;
+      await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+      expect(calls).toBe(1);
+    }
+  });
+
+  test("an empty complete listing is valid but HTTP errors and an empty continuing page are unknown", async () => {
+    globalThis.fetch = (async () => Response.json([])) as unknown as typeof fetch;
+    expect(await listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).toEqual({
+      pullRequests: [], nextPage: null,
+    });
+    for (const status of [401, 403, 404, 429, 500]) {
+      globalThis.fetch = (async () => new Response(null, { status })) as unknown as typeof fetch;
+      await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+    }
+    globalThis.fetch = (async () => Response.json([], { headers: { link: `<${nextUrl}>; rel="next"` } })) as unknown as typeof fetch;
+    await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+  });
+});
 
 describe("review request reactions", () => {
   test("uses the comment-kind endpoint and recognizes GitHub idempotency", async () => {
