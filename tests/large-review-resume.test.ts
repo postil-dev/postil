@@ -745,6 +745,92 @@ describe("durable large-review provider proxy", () => {
     resumed.close();
   });
 
+  test.each(["envelope", "choice", "finish", "later-choice"])(
+    "does not replay partial content with a provider error: %s",
+    async (location) => {
+      const error = { code: 502, message: "Provider disconnected mid-stream" };
+      const choice = { message: { role: "assistant", content: "partial output" } };
+      const failedBody = JSON.stringify({
+        ...(location === "envelope" ? { error } : {}),
+        choices: location === "later-choice"
+          ? [choice, { error, finish_reason: "error" }]
+          : [{
+              ...choice,
+              ...(location === "choice" ? { error } : {}),
+              ...(location === "finish" ? { finish_reason: "error" } : {}),
+            }],
+        usage: { prompt_tokens: 23, completion_tokens: 2 },
+      });
+      let calls = 0;
+      const upstream = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        fetch: () => new Response(++calls === 1 ? failedBody : successfulBody),
+      });
+      servers.push(upstream);
+      const store = new MemoryAttemptStore();
+      const proxy = await startLargeReviewProviderProxy({
+        ...proxySeed(`http://127.0.0.1:${upstream.port}/v1`),
+        store,
+      });
+      try {
+        expect((await register(proxy)).status).toBe(204);
+        const first = await fetch(`${proxy.apiBase}/chat/completions`, {
+          method: "POST", body: requestBody,
+        });
+        expect(first.status).toBe(200);
+        expect(await first.text()).toBe(failedBody);
+        expect(calls).toBe(1);
+        expect(store.attempts.size).toBe(0);
+        expect(proxy.billingOutcome()).toBe("ambiguous");
+        for (let request = 0; request < 2; request += 1) {
+          const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+            method: "POST", body: requestBody,
+          });
+          expect(response.status).toBe(200);
+          expect(await response.text()).toBe(successfulBody);
+          expect(calls).toBe(2);
+          expect(proxy.billingOutcome()).toBe("ambiguous");
+        }
+        expect(store.attempts.size).toBe(1);
+        expect([...store.attempts.values()][0].response?.body).toBe(successfulBody);
+      } finally {
+        proxy.close();
+      }
+    },
+  );
+
+  test.each(["stop", "length"])("replays non-error content with finish reason %s", async (finishReason) => {
+    const body = JSON.stringify({
+      choices: [{ message: { role: "assistant", content: "output" }, finish_reason: finishReason, error: null }],
+      error: null,
+      usage: { prompt_tokens: 23, completion_tokens: 5 },
+    });
+    let calls = 0;
+    const upstream = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => { calls += 1; return new Response(body); },
+    });
+    servers.push(upstream);
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://127.0.0.1:${upstream.port}/v1`),
+      store: new MemoryAttemptStore(),
+    });
+    try {
+      expect((await register(proxy)).status).toBe(204);
+      for (let request = 0; request < 2; request += 1) {
+        const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+          method: "POST", body: requestBody,
+        });
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe(body);
+      }
+      expect(calls).toBe(1);
+      expect(proxy.billingOutcome()).toBe("resumable");
+    } finally {
+      proxy.close();
+    }
+  });
+
   test("marks a truncated response body ambiguous", async () => {
     const server = http.createServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });

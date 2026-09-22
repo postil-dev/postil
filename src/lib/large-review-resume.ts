@@ -862,9 +862,14 @@ function providerRequestIdentity(bytes: Uint8Array): {
 function hasReplayableAssistantContent(body: string, apiFormat: ApiFormat): boolean {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (parsed.error != null) return false;
     if (apiFormat === "openai-compatible") {
       const choices = parsed.choices;
       if (!Array.isArray(choices)) return false;
+      if (choices.some((choice) => {
+        const entry = recordValue(choice);
+        return entry && (entry.error != null || entry.finish_reason === "error");
+      })) return false;
       return choices.some((choice) => {
         if (!choice || typeof choice !== "object") return false;
         const message = (choice as Record<string, unknown>).message;
