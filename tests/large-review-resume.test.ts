@@ -772,7 +772,7 @@ describe("durable large-review provider proxy", () => {
         expect(resolutions).toBe(1);
         expect(provider.calls()).toBe(2);
         expect(provider.addressSets).toEqual([expected, expected]);
-        expect(provider.singleAddresses).toEqual([expected[0], expected[0]]);
+        expect(provider.singleAddresses).toEqual([expected[0]!, expected[0]!]);
         expect(provider.destinations).toEqual(Array(2).fill({
           url: "https://provider.example/v1/chat/completions",
           servername: "provider.example",
