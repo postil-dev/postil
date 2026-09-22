@@ -382,11 +382,11 @@ describeDb("operational recovery through the worker and CLI", () => {
       githubRepoId: 990002, repoFullName: "workflow/repo", prNumber, headSha, baseSha };
   }
 
-  for (const [index, scenario] of ["capacity", "capacity-plan-mismatch", "capacity-other-failure", "capacity-incomplete-usage", "capacity-missing-cost"].entries()) {
+  for (const [index, scenario] of ["capacity", "capacity-plan-mismatch", "capacity-other-failure", "capacity-incomplete-usage", "capacity-missing-cost", "capacity-empty-usage"].entries()) {
     test(`${scenario} preserves incomplete review evidence and settles the attempt`, async () => {
       const capacityOnly = scenario === "capacity";
       const prNumber = 30 + index;
-      const incompleteAccounting = scenario === "capacity-incomplete-usage" || scenario === "capacity-missing-cost";
+      const incompleteAccounting = scenario === "capacity-incomplete-usage" || scenario === "capacity-missing-cost" || scenario === "capacity-empty-usage";
       let providerCalls = 0;
       const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
         providerCalls++;
@@ -412,7 +412,9 @@ describeDb("operational recovery through the worker and CLI", () => {
         expect(review.envelope.findings[0]).toMatchObject({ path: "src/index.ts", title: "Retained partial finding" });
         expect(review.envelope.resolved).toEqual([]);
         expect(review.envelope.gate.failing).toBe(true);
-        expect(review.envelope.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
+        expect(review.envelope.usage).toEqual(scenario === "capacity-empty-usage"
+          ? { promptTokens: 0, completionTokens: 0 }
+          : { promptTokens: 10, completionTokens: 5 });
         for (const id of [Number(review.advisory_check_run_id), Number(review.gate_check_run_id)]) {
           const completions = github.events.filter((event) => event.type === "check-completed" && event.id === id);
           expect(completions.at(-1)).toMatchObject({ conclusion: "failure" });
@@ -477,6 +479,7 @@ if(registered.ok){const response=await fetch(process.env.POSTIL_API_BASE+"/chat/
 const findings=unavailable?[{id:"operational",path:registered.ok?".postil/provider":".postil/model-output",line:1,severity:"error",kind:"uncertainty",confidence:1,title:"Review unavailable",body:"Provider unavailable or plan registration HTTP "+registered.status}]:[];
 const envelope={version:1,summary:unavailable?"Review unavailable":"Complete",silent:!unavailable,findings,resolved:[],counts:{info:0,warn:0,error:findings.length,suppressed:0,ungrounded:0},confidenceBuckets:unavailable?[0,0,0,0,1]:[0,0,0,0,0],gate:{failOn:"error",failing:unavailable},modelUsed:${JSON.stringify(model)},usage:{promptTokens:10,completionTokens:5},usageAccountingComplete:true,durationMs:1,headSha:value("--sha"),baseSha:${JSON.stringify(baseSha)},sinceSha:null};
 if(capacity){findings.push({path:"src/index.ts",line:1,severity:"error",kind:"risk",confidence:1,title:"Retained partial finding",body:"A completed batch found this issue."},{path:".postil/model-output",line:1,severity:"error",kind:"uncertainty",confidence:1,title:"Large review coverage is incomplete",body:"Deterministic large-review coverage left 2 normalized hunks unreviewed within the hard request limit. Findings from completed requests remain available, but this result cannot be trusted as a pass."});envelope.summary="Review incomplete";envelope.silent=false;envelope.gate.failing=true;envelope.counts.error=findings.length;envelope.confidenceBuckets=[0,0,0,0,findings.length];envelope.reviewCoverage={mode:"bounded",selectedBatches:1,totalBatches:3,receipt:{planSha256:capacity==="capacity-plan-mismatch"?"d".repeat(64):planSha,totalHunks:3,directHunks:1,semanticHunks:0,unreviewedHunks:2}};if(capacity==="capacity-other-failure")envelope.modelIncidents=[{phase:"review",category:"providerError",recovered:false}];if(capacity==="capacity-incomplete-usage")envelope.usageAccountingComplete=false;if(capacity==="capacity-missing-cost")envelope.modelUsed="unknown/unpriced-model";unavailable=true;}
+if(capacity==="capacity-empty-usage"){envelope.modelUsage=[];envelope.usage={promptTokens:0,completionTokens:0};}
 await fetch(process.env.GITHUB_API_URL+"/repos/"+value("--repo")+"/check-runs/"+value("--check-run-id"),{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({status:"completed",conclusion:unavailable?"failure":"success",details_url:process.env.POSTIL_DETAILS_URL,output:{title:envelope.summary,summary:envelope.summary}})});
 console.log(JSON.stringify(envelope));process.exit(unavailable?1:0);
 `;

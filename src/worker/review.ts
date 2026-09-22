@@ -1845,6 +1845,7 @@ export async function runReviewJob(
       byok: llm.byok,
     });
     const coverageReceipt = ingested.usageAccountingComplete &&
+      receiptUsage.length > 0 &&
       receiptUsage.every((usage) => usage.costMicros !== null)
       ? activeLargeReviewProxy.registeredCoverageReceipt()
       : null;
