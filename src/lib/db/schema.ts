@@ -9,6 +9,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -338,11 +339,11 @@ export const reviews = pgTable(
       ),
     check(
       "reviews_trigger_source_check",
-      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun')`,
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'finding_feedback')`,
     ),
     check(
       "reviews_trigger_context_check",
-      sql`(${t.triggerSource} = 'unknown' AND (${t.triggerContext} IS NULL OR ${t.triggerContext} = '{"source":"unknown"}'::jsonb)) OR (${t.triggerSource} <> 'unknown' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'webhookDeliveryId', 'webhookEvent', 'webhookAction', 'sourceCommentId', 'sourceUrl', 'requestedByGithubId', 'requestedByLogin', 'checkName']::text[] = '{}'::jsonb AND ${t.triggerContext}->>'source' = ${t.triggerSource} AND jsonb_typeof(${t.triggerContext}->'webhookDeliveryId') = 'string' AND COALESCE(length(btrim(${t.triggerContext}->>'webhookDeliveryId')), 0) > 0 AND length(${t.triggerContext}->>'webhookDeliveryId') <= 200 AND ((${t.triggerSource} = 'automatic_pull_request' AND ${t.triggerContext}->>'webhookEvent' = 'pull_request') OR (${t.triggerSource} = 'requested_review' AND ${t.triggerContext}->>'webhookEvent' IN ('issue_comment', 'pull_request_review_comment')) OR (${t.triggerSource} = 'github_check_rerun' AND ${t.triggerContext}->>'webhookEvent' IN ('check_run', 'check_suite'))) AND (NOT ${t.triggerContext} ? 'webhookAction' OR (jsonb_typeof(${t.triggerContext}->'webhookAction') = 'string' AND length(${t.triggerContext}->>'webhookAction') <= 100)) AND (NOT ${t.triggerContext} ? 'sourceCommentId' OR (jsonb_typeof(${t.triggerContext}->'sourceCommentId') = 'number' AND (${t.triggerContext}->>'sourceCommentId')::numeric = trunc((${t.triggerContext}->>'sourceCommentId')::numeric) AND (${t.triggerContext}->>'sourceCommentId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'sourceUrl' OR (jsonb_typeof(${t.triggerContext}->'sourceUrl') = 'string' AND length(${t.triggerContext}->>'sourceUrl') <= 2048 AND ${t.triggerContext}->>'sourceUrl' ~* '^https://github[.]com([/?#]|$)')) AND (NOT ${t.triggerContext} ? 'requestedByGithubId' OR (jsonb_typeof(${t.triggerContext}->'requestedByGithubId') = 'number' AND (${t.triggerContext}->>'requestedByGithubId')::numeric = trunc((${t.triggerContext}->>'requestedByGithubId')::numeric) AND (${t.triggerContext}->>'requestedByGithubId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'requestedByLogin' OR (jsonb_typeof(${t.triggerContext}->'requestedByLogin') = 'string' AND length(${t.triggerContext}->>'requestedByLogin') <= 100)) AND (NOT ${t.triggerContext} ? 'checkName' OR (jsonb_typeof(${t.triggerContext}->'checkName') = 'string' AND length(${t.triggerContext}->>'checkName') <= 200)))`,
+      sql`(${t.triggerSource} = 'finding_feedback' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'feedbackDigest']::text[] = '{}'::jsonb AND ${t.triggerContext}->>'source' = 'finding_feedback' AND jsonb_typeof(${t.triggerContext}->'feedbackDigest') = 'string' AND COALESCE(${t.triggerContext}->>'feedbackDigest', '') ~ '^[a-f0-9]{64}$') OR (${t.triggerSource} = 'unknown' AND (${t.triggerContext} IS NULL OR ${t.triggerContext} = '{"source":"unknown"}'::jsonb)) OR (${t.triggerSource} <> 'unknown' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'webhookDeliveryId', 'webhookEvent', 'webhookAction', 'sourceCommentId', 'sourceUrl', 'requestedByGithubId', 'requestedByLogin', 'checkName']::text[] = '{}'::jsonb AND ${t.triggerContext}->>'source' = ${t.triggerSource} AND jsonb_typeof(${t.triggerContext}->'webhookDeliveryId') = 'string' AND COALESCE(length(btrim(${t.triggerContext}->>'webhookDeliveryId')), 0) > 0 AND length(${t.triggerContext}->>'webhookDeliveryId') <= 200 AND ((${t.triggerSource} = 'automatic_pull_request' AND ${t.triggerContext}->>'webhookEvent' = 'pull_request') OR (${t.triggerSource} = 'requested_review' AND ${t.triggerContext}->>'webhookEvent' IN ('issue_comment', 'pull_request_review_comment')) OR (${t.triggerSource} = 'github_check_rerun' AND ${t.triggerContext}->>'webhookEvent' IN ('check_run', 'check_suite'))) AND (NOT ${t.triggerContext} ? 'webhookAction' OR (jsonb_typeof(${t.triggerContext}->'webhookAction') = 'string' AND length(${t.triggerContext}->>'webhookAction') <= 100)) AND (NOT ${t.triggerContext} ? 'sourceCommentId' OR (jsonb_typeof(${t.triggerContext}->'sourceCommentId') = 'number' AND (${t.triggerContext}->>'sourceCommentId')::numeric = trunc((${t.triggerContext}->>'sourceCommentId')::numeric) AND (${t.triggerContext}->>'sourceCommentId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'sourceUrl' OR (jsonb_typeof(${t.triggerContext}->'sourceUrl') = 'string' AND length(${t.triggerContext}->>'sourceUrl') <= 2048 AND ${t.triggerContext}->>'sourceUrl' ~* '^https://github[.]com([/?#]|$)')) AND (NOT ${t.triggerContext} ? 'requestedByGithubId' OR (jsonb_typeof(${t.triggerContext}->'requestedByGithubId') = 'number' AND (${t.triggerContext}->>'requestedByGithubId')::numeric = trunc((${t.triggerContext}->>'requestedByGithubId')::numeric) AND (${t.triggerContext}->>'requestedByGithubId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'requestedByLogin' OR (jsonb_typeof(${t.triggerContext}->'requestedByLogin') = 'string' AND length(${t.triggerContext}->>'requestedByLogin') <= 100)) AND (NOT ${t.triggerContext} ? 'checkName' OR (jsonb_typeof(${t.triggerContext}->'checkName') = 'string' AND length(${t.triggerContext}->>'checkName') <= 200)))`,
     ),
   ],
 );
@@ -737,6 +738,27 @@ export const findingApprovals = pgTable(
   ],
 );
 
+/** Durable polling deadlines independent of GitHub App event subscriptions. */
+export const reviewFeedbackPolls = pgTable("review_feedback_polls", {
+  githubRepoId: bigint("github_repo_id", { mode: "number" }).notNull(),
+  prNumber: integer("pr_number").notNull(),
+  nextPollAt: timestamp("next_poll_at", { withTimezone: true }).notNull(),
+  lastError: text("last_error"),
+}, (t) => [primaryKey({ columns: [t.githubRepoId, t.prNumber] })]);
+
+/** Admission receipts prevent identical human evidence from spending more than once. */
+export const reviewFeedbackRequests = pgTable("review_feedback_requests", {
+  githubRepoId: bigint("github_repo_id", { mode: "number" }).notNull(),
+  prNumber: integer("pr_number").notNull(),
+  headSha: text("head_sha").notNull(),
+  digest: text("digest").notNull(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.githubRepoId, t.prNumber, t.headSha, t.digest] }),
+  index("review_feedback_requests_org_created_idx").on(t.orgId, t.createdAt),
+]);
+
 export const reviewLogs = pgTable(
   "review_logs",
   {
@@ -805,7 +827,7 @@ export const usageEvents = pgTable(
     ),
     check(
       "usage_events_trigger_source_check",
-      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'github_mention')`,
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'finding_feedback', 'github_mention')`,
     ),
   ],
 );

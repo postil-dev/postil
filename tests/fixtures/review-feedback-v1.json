@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "repository": "octo/repository",
+  "prNumber": 17,
+  "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "threads": [
+    {
+      "findingId": "database-recovery",
+      "rootCommentId": 4000000001,
+      "resolved": true,
+      "comments": [
+        {
+          "commentId": 4000000002,
+          "author": { "id": 51, "login": "maintainer" },
+          "body": "The initial deployment contains no production accounts. Recovery is verified before production use. This statement describes the deployment sequence; it is not an automated approval.",
+          "updatedAt": "2026-09-01T12:00:00Z"
+        }
+      ]
+    },
+    {
+      "findingId": "database-recovery",
+      "rootCommentId": 4000000003,
+      "resolved": false,
+      "comments": [
+        {
+          "commentId": 4000000004,
+          "author": { "id": 51, "login": "maintainer" },
+          "body": "The recovery posture matches the earlier thread: installation → restore validation → production use.",
+          "updatedAt": "2026-09-01T12:01:00Z"
+        }
+      ]
+    }
+  ]
+}

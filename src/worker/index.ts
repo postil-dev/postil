@@ -165,7 +165,7 @@ async function claimLoop(slot: number): Promise<void> {
     const job = outcome.job;
     idleDelayMs = POLL_INTERVAL_MS;
     const controller = new AbortController();
-    if (job.kind === "review") requeueableReviewIds.add(job.id);
+    if (["review", "review-feedback"].includes(job.kind)) requeueableReviewIds.add(job.id);
     // Interrupted reviews stay requeueable through publication: a fresh
     // attempt supersedes the interrupted one's check-runs, so forced
     // shutdown requeues every active review claim.
@@ -221,7 +221,7 @@ async function shutdown(signal: string): Promise<void> {
           getPool(),
           `${workerId}#`,
           "worker shutdown interrupted the claim",
-          ["review"],
+          ["review", "review-feedback"],
           activeReviewJobIds,
         ).catch((error) => {
           console.error(`failed to requeue shutdown claims: ${redactSecrets(error)}`);

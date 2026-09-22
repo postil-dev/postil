@@ -19,6 +19,7 @@ import {
   sweepExpiredSelfServiceTrials,
 } from "@/lib/operator-alerts";
 import { scheduleBillingSettlementJobs } from "@/lib/paddle-billing";
+import { scheduleReviewFeedbackReconciliationJobs } from "@/lib/review-feedback";
 import { REVIEW_DEADLINE_MS } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
@@ -249,19 +250,19 @@ export async function watchdogPass(
     `WITH updated AS (
        UPDATE jobs
        SET status = CASE
-             WHEN kind = 'review'
+             WHEN kind IN ('review', 'review-feedback')
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
                THEN 'failed'::job_status
              WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
-                  OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                  OR (kind IN ('review', 'review-feedback') AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
              ELSE 'failed'::job_status
            END,
            locked_at = NULL, locked_by = NULL, run_after = now(),
            last_error = CASE
-             WHEN kind = 'review'
+             WHEN kind IN ('review', 'review-feedback')
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
                THEN concat_ws(
@@ -271,7 +272,7 @@ export async function watchdogPass(
              ELSE COALESCE(last_error, '') ||
                CASE
                  WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
-                      OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                      OR (kind IN ('review', 'review-feedback') AND payload ? 'recoveryReviewId')
                       OR attempts < max_attempts
                    THEN ' [watchdog: requeued stuck job]'
                  ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
@@ -292,7 +293,7 @@ export async function watchdogPass(
        payload -> $2,
        max_attempts
      FROM updated
-     WHERE kind = 'review'
+     WHERE kind IN ('review', 'review-feedback')
        AND status = 'failed'
        AND jsonb_typeof(payload -> $2) = 'object'
      UNION ALL
@@ -310,6 +311,7 @@ export async function watchdogPass(
     now,
     findingFeedbackDigestPeriodEnd(now),
   );
+  await scheduleReviewFeedbackReconciliationJobs(pool, now);
   if (scheduledFeedbackReconciliations > 0) {
     console.log(`[finding feedback] scheduled=${scheduledFeedbackReconciliations}`);
   }
