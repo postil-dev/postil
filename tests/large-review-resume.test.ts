@@ -653,6 +653,9 @@ describe("durable large-review provider proxy", () => {
     });
     try {
       expect((await register(proxy)).status).toBe(bound ? 204 : 409);
+      expect(proxy.registeredCoverageReceipt()).toEqual(bound ? {
+        planSha256: PLAN_SHA, totalHunks: 6, directHunks: 4, semanticHunks: 2, unreviewedHunks: 0,
+      } : null);
       if (bound) {
         await expect(proxy.discardCompletedRun()).rejects.toThrow("context ownership collision");
         expect(deletions).toBe(1);
@@ -682,6 +685,7 @@ describe("durable large-review provider proxy", () => {
       body: requestBody,
     });
     expect(early.status).toBe(428);
+    expect(proxy.registeredCoverageReceipt()).toBeNull();
     expect(provider.calls()).toBe(0);
     expect(
       (
@@ -703,6 +707,12 @@ describe("durable large-review provider proxy", () => {
     expect((await register(proxy)).status).toBe(204);
     expect((await register(proxy)).status).toBe(204);
     expect((await register(proxy, { planSha256: "f".repeat(64) })).status).toBe(409);
+    const receipt = proxy.registeredCoverageReceipt();
+    expect(receipt).toEqual({
+      planSha256: PLAN_SHA, totalHunks: 6, directHunks: 4, semanticHunks: 2, unreviewedHunks: 0,
+    });
+    receipt!.unreviewedHunks = 5;
+    expect(proxy.registeredCoverageReceipt()?.unreviewedHunks).toBe(0);
 
     for (let batch = 4; batch <= 6; batch += 1) {
       const response = await fetch(`${proxy.apiBase}/chat/completions`, {

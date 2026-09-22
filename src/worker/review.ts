@@ -27,6 +27,7 @@ import {
   classifyOperationalModelIncidents,
   ingestEnvelope,
   isEnvelopeOperationallyUnavailable,
+  isReviewCoverageCapacityFailure,
   type Envelope,
 } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
@@ -144,6 +145,14 @@ const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 class OperationalError extends Error {}
 
 class TerminalReviewError extends OperationalError {}
+
+export class ReviewCoverageCapacityError extends TerminalReviewError {
+  override name = "ReviewCoverageCapacityError";
+
+  constructor(unreviewedHunks: number) {
+    super(`Review incomplete: the request limit left ${unreviewedHunks} source ${unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed. Partial findings are retained; this review cannot pass.`);
+  }
+}
 
 export class WorkerShutdownError extends OperationalError {
   constructor() {
@@ -1830,8 +1839,10 @@ export async function runReviewJob(
       interrupted: result.interrupted,
     }, sensitiveValues);
     const snapshotChanged = publicationSkippedForChangedSnapshot(result.stderr);
+    const coverageReceipt = activeLargeReviewProxy.registeredCoverageReceipt();
     for (const incident of classifyOperationalModelIncidents(
       ingested.envelope,
+      coverageReceipt,
     )) {
       reportOperationalModelIncident(observabilityProcessGroup, incident);
     }
@@ -1846,6 +1857,12 @@ export async function runReviewJob(
     receiptUsageForRace = receiptUsage;
     usageAccountingCompleteForRace = ingested.usageAccountingComplete;
     failedAttemptEnvelope = ingested.envelope;
+    if (isReviewCoverageCapacityFailure(
+      ingested.envelope,
+      coverageReceipt,
+    )) {
+      throw new ReviewCoverageCapacityError(ingested.envelope.reviewCoverage!.receipt!.unreviewedHunks);
+    }
     const advisoryConclusion = isEnvelopeOperationallyUnavailable(ingested.envelope)
       ? "failure"
       : "success";
