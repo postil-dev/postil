@@ -12,6 +12,8 @@ import {
   type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 import { redactSecrets } from "@/lib/redact";
+import { getInstallationToken } from "@/lib/github/app-auth";
+import { getPullRequestReviewContext } from "@/lib/github/checks";
 import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
 import type { TransactionalEmailContent } from "@/lib/transactional-email";
 
@@ -134,6 +136,89 @@ export interface PrivateMonitoringDashboard {
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type Sleep = (milliseconds: number) => Promise<void>;
+
+export interface OperationalReviewCandidate {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  headSha: string;
+}
+
+interface ReviewMonitoringOptions {
+  signal?: AbortSignal;
+  github?: {
+    getInstallationToken: typeof getInstallationToken;
+    getPullRequestReviewContext: typeof getPullRequestReviewContext;
+  };
+}
+
+/** Live PR state bounds failures whose terminal rows outlive the PR itself. */
+export async function checkOutstandingOperationalReviews(
+  candidates: readonly OperationalReviewCandidate[],
+  options: ReviewMonitoringOptions = {},
+): Promise<PrivateMonitoringCheck> {
+  const limit = 20;
+  const selected = candidates.slice(0, limit);
+  const overflow = candidates.length > limit;
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(20_000),
+    ...(options.signal ? [options.signal] : []),
+  ]);
+  const github = options.github ?? { getInstallationToken, getPullRequestReviewContext };
+  let unresolved = 0;
+  let unknown = 0;
+  let next = 0;
+  let rejectAborted: () => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAborted = () => reject(new Error("Review state observation cancelled"));
+  });
+  signal.addEventListener("abort", rejectAborted, { once: true });
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, selected.length) }, async () => {
+      for (;;) {
+        const candidate = selected[next++];
+        if (!candidate) return;
+        if (signal.aborted) {
+          unknown += 1;
+          continue;
+        }
+        try {
+          const live = await Promise.race([
+            (async () => {
+              const token = await github.getInstallationToken(candidate.installationId, signal);
+              signal.throwIfAborted();
+              return github.getPullRequestReviewContext(
+                token, candidate.repoFullName, candidate.prNumber, signal,
+              );
+            })(),
+            aborted,
+          ]);
+          signal.throwIfAborted();
+          if (typeof live.open !== "boolean" || typeof live.merged !== "boolean" ||
+              typeof live.draft !== "boolean" || !live.headSha) {
+            throw new Error("Incomplete pull request state");
+          }
+          if (live.open && !live.merged && !live.draft && live.headSha === candidate.headSha) {
+            unresolved += 1;
+          }
+        } catch {
+          // Authentication and transport errors cannot establish recovery.
+          unknown += 1;
+        }
+      }
+    }));
+  } finally {
+    signal.removeEventListener("abort", rejectAborted);
+  }
+  return {
+    key: "review-operational-failures",
+    group: "provider",
+    severity: "critical",
+    healthy: unresolved === 0 && unknown === 0 && !overflow,
+    summary: "Current reviews have no unresolved operational failures",
+    detail: `${unresolved} unresolved terminal review failures on open current heads; ${unknown} PR states could not be verified.${overflow ? " Candidate budget exceeded; additional failures remain unverified." : ""}`,
+  };
+}
 
 export interface PublicProbeOptions {
   /** Delay implementation between retry attempts; tests replace it. */
@@ -700,7 +785,7 @@ export async function runPublicMonitoringChecks(
 
 export async function runDatabaseMonitoringChecks(
   pool: Pool,
-  options: {
+  options: ReviewMonitoringOptions & {
     workerHeartbeatMaxAgeSeconds?: number;
     /** Whether an external dead-man heartbeat URL is configured, so its delivery is a check. */
     externalHeartbeatConfigured?: boolean;
@@ -719,6 +804,25 @@ export async function runDatabaseMonitoringChecks(
     );
   }
   const result = await pool.query<Record<string, string | null>>(`
+    WITH current_terminal_reviews AS (
+      SELECT review.*, repository.full_name AS repo_full_name,
+             installation.github_installation_id
+        FROM reviews AS review
+        JOIN repositories AS repository ON repository.id = review.repository_id
+        JOIN installations AS installation ON installation.id = repository.installation_id
+       WHERE review.status IN ('completed', 'failed')
+         AND repository.enabled AND NOT installation.suspended
+         AND NOT EXISTS (
+           SELECT 1 FROM reviews AS newer
+            WHERE newer.repository_id = review.repository_id
+              AND newer.pr_number = review.pr_number
+              AND newer.id > review.id
+              AND (
+                newer.head_sha <> review.head_sha
+                OR newer.status IN ('completed', 'failed', 'stale')
+              )
+         )
+    )
     SELECT
       (SELECT EXTRACT(EPOCH FROM now() - observed_at)::int::text
          FROM service_heartbeats WHERE component = 'worker') AS worker_heartbeat_age,
@@ -797,66 +901,25 @@ export async function runDatabaseMonitoringChecks(
        END) AS webhook_scan_age,
       (SELECT last_error_category
          FROM github_webhook_redelivery_state WHERE id = 1) AS webhook_scan_error_category,
-      (SELECT count(*)::text
-         FROM reviews
-         WHERE finished_at >= now() - interval '30 minutes'
-           AND (
+      (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'installationId', candidate.github_installation_id,
+                'repoFullName', candidate.repo_full_name,
+                'prNumber', candidate.pr_number,
+                'headSha', candidate.head_sha
+              )), '[]'::jsonb)::text
+         FROM (SELECT * FROM current_terminal_reviews
+         WHERE (
              (${OPERATIONAL_REVIEW_FAILURE_SQL})
              OR (status = 'completed' AND EXISTS (
                SELECT 1 FROM jsonb_array_elements(
                  CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
                    THEN envelope -> 'findings' ELSE '[]'::jsonb END
                ) AS finding
-               -- The CLI emits a provider sentinel with an exhausted scorer
-               -- provider incident, and one operational sentinel with an
-               -- unrecovered invalid-output incident. Collapse those exact
-               -- pairs. A second operational sentinel represents another
-               -- failure, such as incomplete coverage, and remains page-worthy.
-               WHERE (
-                    finding ->> 'path' = '.postil/operational'
-                    AND (
-                      NOT EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(
-                          CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                            THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-                        ) AS incident
-                        WHERE incident ->> 'category' = 'invalidOutput'
-                          AND incident ->> 'recovered' = 'false'
-                      )
-                      OR (
-                        SELECT count(*) FROM jsonb_array_elements(
-                          CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
-                            THEN envelope -> 'findings' ELSE '[]'::jsonb END
-                        ) AS operational_finding
-                        WHERE operational_finding ->> 'path' = '.postil/operational'
-                      ) > 1
-                    )
-                  )
-                  OR (
-                    finding ->> 'path' = '.postil/provider'
-                    AND NOT EXISTS (
-                      SELECT 1 FROM jsonb_array_elements(
-                        CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                          THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-                      ) AS incident
-                      WHERE incident ->> 'phase' = 'scorer'
-                        AND incident ->> 'category' = 'providerError'
-                        AND incident ->> 'recovered' = 'false'
-                    )
-                  )
-                  OR (
-                    finding ->> 'path' = '.postil/model-output'
-                    AND NOT EXISTS (
-                      SELECT 1 FROM jsonb_array_elements(
-                        CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
-                          THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
-                      ) AS incident
-                      WHERE incident ->> 'category' = 'invalidOutput'
-                        AND incident ->> 'recovered' = 'false'
-                    )
-                  )
+               WHERE finding ->> 'path' IN (
+                 '.postil/operational', '.postil/provider', '.postil/model-output'
+               )
              ))
-           )) AS operational_failures,
+           ) ORDER BY id DESC LIMIT 21) AS candidate) AS operational_failure_candidates,
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND (
@@ -919,6 +982,10 @@ export async function runDatabaseMonitoringChecks(
   `);
   const row = result.rows[0];
   if (!row) throw new Error("private monitoring database query returned no row");
+  const operationalReviewCheck = await checkOutstandingOperationalReviews(
+    JSON.parse(row.operational_failure_candidates ?? "[]") as OperationalReviewCandidate[],
+    options,
+  );
 
   const age = (key: string) => numeric(row[key], key);
   const count = (key: string) => numeric(row[key], key);
@@ -1020,7 +1087,7 @@ export async function runDatabaseMonitoringChecks(
               : ""
           }`,
     },
-    thresholdCheck("review-operational-failures", "provider", "critical", "Reviews complete without operational sentinels", count("operational_failures"), 0),
+    operationalReviewCheck,
     thresholdCheck("scorer-failures", "provider", "critical", "Scoring completes", count("scorer_failures"), 0),
     thresholdCheck("scorer-fallbacks", "provider", "warning", "Scoring avoids repeated fallback", count("scorer_fallbacks"), 2),
     thresholdCheck("model-fallbacks", "provider", "warning", "Review models avoid repeated fallback", count("model_fallbacks"), 5),
