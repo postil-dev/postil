@@ -33,7 +33,7 @@ mock.module("@/lib/private-repository-entitlement", () => ({ ...realEntitlement,
   canProcessRepositoryInference: async () => ({ allowed: true }),
 }));
 
-const { admitReviewFeedbackEvent, reconcileReviewFeedback, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
+const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
 const { claimJob, enqueueReviewJobOnce, requeueJobsOwnedBy } = await import("@/lib/queue");
 const { deferHostedReviewForRelease, activateHostedInferenceRelease } = await import("@/lib/release-job-rollout");
 const { closeDb } = await import("@/lib/db");
@@ -205,5 +205,46 @@ describeDb("durable review feedback admission", () => {
     expect(await scheduleReviewFeedbackReconciliationJobs(pool, new Date(Date.now() + 60 * 60_000))).toBe(0);
     const claimed = await claimJob(pool, "replacement-poller", ["review-feedback-reconciliation"]);
     expect(claimed?.payload).toEqual(poll.payload);
+  });
+
+  test("head changes isolate evidence while same-head coalescing retains its exact trigger digest", async () => {
+    const pool = database.pool;
+    const firstHead = "e".repeat(40);
+    const nextHead = "f".repeat(40);
+    const normal = (head: string) => ({ ...reviewPayload(), prNumber: 61, headSha: head });
+    const feedback = (head: string, body: string) => {
+      const reviewFeedback = { version: 1 as const, repository: "octo/repository", prNumber: 61, headSha: head,
+        threads: [{ findingId: "finding", rootCommentId: rootId, resolved: false,
+          comments: [{ commentId: rootId + 1, author: { id: 51, login: "maintainer" }, body, updatedAt }] }] };
+      return { ...normal(head), reviewFeedback,
+        trigger: { source: "finding_feedback" as const, feedbackDigest: reviewFeedbackDigest(reviewFeedback) } };
+    };
+    const first = feedback(firstHead, "Evidence on the first head.");
+    const firstId = await enqueueReviewJobOnce(pool, first);
+    const nextId = await enqueueReviewJobOnce(pool, normal(nextHead));
+    expect(nextId).not.toBe(firstId);
+    let payload = (await pool.query("SELECT payload FROM jobs WHERE id = $1", [nextId])).rows[0].payload;
+    expect(payload.reviewFeedback).toBeUndefined();
+    expect(payload.trigger).toBeUndefined();
+    expect(payload.headSha).toBe(nextHead);
+
+    const next = feedback(nextHead, "Evidence bound to the next head.");
+    await enqueueReviewJobOnce(pool, next);
+    await enqueueReviewJobOnce(pool, normal(nextHead));
+    payload = (await pool.query("SELECT payload FROM jobs WHERE id = $1", [nextId])).rows[0].payload;
+    expect(payload.reviewFeedback.headSha).toBe(nextHead);
+    expect(payload.trigger.feedbackDigest).toBe(reviewFeedbackDigest(payload.reviewFeedback));
+    expect(payload.trigger.feedbackDigest).not.toBe(first.trigger.feedbackDigest);
+
+    await pool.query("UPDATE jobs SET status = 'running', locked_by = 'coalescing-worker', locked_at = now() WHERE id = $1", [nextId]);
+    const edited = feedback(nextHead, "An edited explanation bound to the next head.");
+    await enqueueReviewJobOnce(pool, edited);
+    await enqueueReviewJobOnce(pool, normal(nextHead));
+    payload = (await pool.query("SELECT payload FROM jobs WHERE id = $1", [nextId])).rows[0].payload;
+    expect(payload.trigger.feedbackDigest).toBe(next.trigger.feedbackDigest);
+    const pending = payload._postilCoalescedReviewPayload;
+    expect(pending.headSha).toBe(nextHead);
+    expect(pending.trigger.feedbackDigest).toBe(reviewFeedbackDigest(pending.reviewFeedback));
+    expect(pending.trigger.feedbackDigest).toBe(edited.trigger.feedbackDigest);
   });
 });
