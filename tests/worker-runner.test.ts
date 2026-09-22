@@ -153,6 +153,7 @@ mock.module("@/lib/customer-notification-email", () => ({
 }));
 
 mock.module("@/lib/queue", () => ({
+  FEEDBACK_REVIEW_JOB_KIND: "review-feedback",
   HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND: "hosted-provider-key-lifecycle",
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
   isBoundedJobRetryError: (error: unknown) =>
@@ -564,7 +565,7 @@ describe("drainQueueOnce", () => {
     expect(shutdown).toContain("requeueableReviewIds.has(jobId)");
     expect(shutdown).toContain("await requeueJobsOwnedBy(");
     expect(shutdown).toContain("`${workerId}#`");
-    expect(shutdown).toContain('["review", "review-feedback"]');
+    expect(shutdown).toContain('["review", FEEDBACK_REVIEW_JOB_KIND]');
     expect(shutdown.indexOf("controller.abort()")).toBeLessThan(
       shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
     );

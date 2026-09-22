@@ -15,6 +15,7 @@ import {
   completeJob,
   externalSideEffectLeaseActive,
   failJob,
+  FEEDBACK_REVIEW_JOB_KIND,
   isBoundedJobRetryError,
   isPermanentJobError,
   loadWebhookDelivery,
@@ -36,7 +37,7 @@ import {
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
 import { reconcileFindingFeedbackReactions } from "@/lib/finding-feedback";
-import { reconcileReviewFeedback, REVIEW_FEEDBACK_JOB_KIND, type ReviewFeedbackJobPayload } from "@/lib/review-feedback";
+import { reconcileReviewFeedback, REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND, type ReviewFeedbackJobPayload } from "@/lib/review-feedback";
 import {
   deferHostedProviderKeyLifecycleForRelease,
   deferHostedReviewForRelease,
@@ -104,7 +105,7 @@ let backgroundDrainRequested = false;
 export const WEB_PROCESSABLE_JOB_KINDS = [
   "webhook-dispatch",
   "review",
-  "review-feedback",
+  FEEDBACK_REVIEW_JOB_KIND,
   "respond",
   "respond-delivery",
   "billing-contact-verification",
@@ -117,7 +118,7 @@ export const WEB_PROCESSABLE_JOB_KINDS = [
   "webhook-comment",
   "github-reaction",
   "finding-feedback-reconciliation",
-  REVIEW_FEEDBACK_JOB_KIND,
+  REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND,
 ] as const;
 
 export const PROCESSABLE_JOB_KINDS = [
@@ -169,7 +170,7 @@ async function handleJob(
       break;
     }
     case "review":
-    case "review-feedback":
+    case FEEDBACK_REVIEW_JOB_KIND:
       await runReviewJob(
         job.payload as ReviewJobPayload,
         {
@@ -269,7 +270,7 @@ async function handleJob(
       await reconcileFindingFeedbackReactions(getDb(), findingPublicationId);
       break;
     }
-    case REVIEW_FEEDBACK_JOB_KIND:
+    case REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND:
       await reconcileReviewFeedback(job.payload as ReviewFeedbackJobPayload);
       break;
     case HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND:
@@ -309,12 +310,12 @@ export async function runClaimedJob(
   } catch (err) {
     if (err instanceof WorkerInterruptionRehearsalError) throw err;
     const message = redactSecrets(err);
-    if (err instanceof WorkerShutdownError && ["review", "review-feedback"].includes(job.kind)) {
+    if (err instanceof WorkerShutdownError && ["review", FEEDBACK_REVIEW_JOB_KIND].includes(job.kind)) {
       const requeued = await requeueJobsOwnedBy(
         getPool(),
         job.lockedBy,
         "worker shutdown interrupted the claim",
-        ["review", "review-feedback"],
+        ["review", FEEDBACK_REVIEW_JOB_KIND],
         [job.id],
       );
       console.warn(
@@ -322,7 +323,7 @@ export async function runClaimedJob(
       );
       return;
     }
-    if (err instanceof HostedInferenceReleaseDarkError && ["review", "review-feedback"].includes(job.kind)) {
+    if (err instanceof HostedInferenceReleaseDarkError && ["review", FEEDBACK_REVIEW_JOB_KIND].includes(job.kind)) {
       const outcome = await deferHostedReviewForRelease(
         getPool(),
         job,

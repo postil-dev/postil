@@ -14,8 +14,10 @@ import { canProcessRepositoryInference } from "@/lib/private-repository-entitlem
 import { enqueueReviewJobOnce, type ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate } from "@/lib/redact";
 
-/** Cheap polls use generic watchdog retries; full reviews use kind review-feedback. */
-export const REVIEW_FEEDBACK_JOB_KIND = "review-feedback-reconciliation";
+/** Stage one: observe and authorize thread evidence, then admit a full feedback review.
+ * Polls use generic watchdog retries and carry no CLI publication recovery state.
+ */
+export const REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND = "review-feedback-reconciliation";
 export const REVIEW_FEEDBACK_MAX_BYTES = 32 * 1024;
 const POLL_INTERVAL_MS = 5 * 60_000;
 
@@ -196,7 +198,7 @@ async function enqueueReviewFeedbackJob(pool: Pool, payload: ReviewFeedbackJobPa
       SELECT $1, $2::jsonb, 'queued', now() + interval '10 seconds', 5
        WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND status IN ('queued', 'running')
                            AND payload->>'githubRepoId' = $3 AND payload->>'prNumber' = $4)
-      RETURNING id`, [REVIEW_FEEDBACK_JOB_KIND, JSON.stringify(payload), String(payload.githubRepoId), String(payload.prNumber)]);
+      RETURNING id`, [REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND, JSON.stringify(payload), String(payload.githubRepoId), String(payload.prNumber)]);
     await client.query("COMMIT");
     return (result.rowCount ?? 0) > 0;
   } catch (error) {
@@ -234,7 +236,7 @@ export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now =
     )
     SELECT github_repo_id AS "githubRepoId", pr_number AS "prNumber", github_installation_id AS "installationId"
       FROM candidates ORDER BY due_at, repository_id, pr_number LIMIT 20
-    `, [now, REVIEW_FEEDBACK_JOB_KIND]);
+    `, [now, REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND]);
   let scheduled = 0;
   for (const row of result.rows) {
     if (await enqueueReviewFeedbackJob(pool, {

@@ -42,6 +42,9 @@ export interface ClaimedJob {
   lockedBy: string;
 }
 
+/** Stage two: a full CLI review with exact thread evidence and publication recovery. */
+export const FEEDBACK_REVIEW_JOB_KIND = "review-feedback";
+
 export interface ReviewJobPayload extends Record<string, unknown> {
   installationId: number; // GitHub installation id
   sourceInstallationId?: number;
@@ -901,7 +904,7 @@ function mergeReviewJobPayload(
  * candidate being claimed and as the running work counted against the budget;
  * every other kind is cheap and stays claimable at any depth.
  */
-const ORGANIZATION_BUDGETED_JOB_KINDS = ["review", "review-feedback", "respond"] as const;
+const ORGANIZATION_BUDGETED_JOB_KINDS = ["review", FEEDBACK_REVIEW_JOB_KIND, "respond"] as const;
 
 const PER_ORGANIZATION_CONCURRENCY = readNonNegativeIntEnv(
   "WORKER_PER_ORG_CONCURRENCY",

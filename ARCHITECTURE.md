@@ -77,11 +77,21 @@ callbacks before exit. Fly gives the process a bounded termination window. A
 forced exit during webhook dispatch leaves the inbox job recoverable by the
 queue watchdog; completed delivery IDs remain durable dedupe records.
 
+Review-thread feedback has two queue stages. `review-feedback-reconciliation`
+observes bounded conversations under known publication roots and verifies human
+authority. It uses generic watchdog recovery. `review-feedback` carries the
+exact repository, pull request, head, and conversation snapshot into a full CLI
+review with the normal review publication and shutdown recovery paths. Evidence
+digests deduplicate admission; replies and resolution flags do not grant approvals
+or dismiss findings. Polling supplies discovery when App thread events are absent.
+Admission requires `POSTIL_REVIEW_FEEDBACK_ENABLED=1` and defaults off. Disabling
+admission leaves already queued full feedback reviews processable.
+
 Every queue consumer supplies its explicit supported job kinds to the claim query.
 The bounded web drain uses the latency-sensitive capability list. The long-running
 worker adds maintenance jobs such as repository-rule discovery, keeping those jobs
 away from request-serving processes.
-The claim query also caps how many `review` and `respond` jobs one organization
+The claim query also caps how many `review`, `review-feedback`, and `respond` jobs one organization
 runs at once, which reduces how much of the fleet a single organization opening
 many pull requests occupies. Cheap kinds carry no cap, and the limit is
 best-effort: concurrent claim loops read the running count independently, so an
