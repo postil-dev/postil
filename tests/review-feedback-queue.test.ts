@@ -305,4 +305,18 @@ describeDb("durable review feedback admission", () => {
       expect((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind IN ('review','review-feedback') AND payload->>'prNumber'=$1", [String(prNumber)])).rows[0].count).toBe(1);
     });
   }
+
+  test("finding feedback provenance requires a matching source alongside its digest", async () => {
+    const insert = (context: unknown) => database.pool.query(`INSERT INTO reviews
+      (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+       source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, trigger_source, trigger_context)
+      VALUES ($1, $2, $3, 81, 71, 'octo/repository', 18, $4, $5, 'failed', 51, 'maintainer', 'finding_feedback', $6::jsonb)
+      RETURNING trigger_context`, [repositoryId, orgId, installationId, headSha, baseSha, JSON.stringify(context)]);
+    const feedbackDigest = "d".repeat(64);
+    expect((await insert({ source: "finding_feedback", feedbackDigest })).rows[0].trigger_context)
+      .toEqual({ source: "finding_feedback", feedbackDigest });
+    for (const context of [{ feedbackDigest }, { source: null, feedbackDigest }, { source: "requested_review", feedbackDigest }]) {
+      await expect(insert(context)).rejects.toMatchObject({ code: "23514", constraint: "reviews_trigger_context_check" });
+    }
+  });
 });
