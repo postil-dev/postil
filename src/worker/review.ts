@@ -94,6 +94,7 @@ import {
   type LargeReviewProviderProxy,
 } from "@/lib/large-review-resume";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
+import { writeReviewFeedbackFile } from "@/lib/review-feedback";
 import {
   completeReviewPublicationLifecycle,
   finalizeStagedReviewCompletionWithGateMode,
@@ -1631,9 +1632,14 @@ export async function runReviewJob(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
 
+    const feedbackFile = "review-feedback.json";
+    const hasReviewFeedback = await writeReviewFeedbackFile(
+      join(workDir, feedbackFile),
+      payload,
+    );
     const configurationSha256 = await hashEffectiveReviewConfiguration(
       workDir,
-      configFiles,
+      hasReviewFeedback ? [...configFiles, feedbackFile] : configFiles,
     );
     const durableRunIdentity = {
       repositoryId: repository.id,
@@ -1782,6 +1788,9 @@ export async function runReviewJob(
         // The path is optional. A CLI without receipt support ignores it, and
         // absence is persisted as legacy unknown.
         POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
+        ...(hasReviewFeedback
+          ? { POSTIL_REVIEW_FEEDBACK_PATH: join(workDir, feedbackFile) }
+          : {}),
       },
     );
 
