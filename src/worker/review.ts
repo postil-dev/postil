@@ -1839,7 +1839,15 @@ export async function runReviewJob(
       interrupted: result.interrupted,
     }, sensitiveValues);
     const snapshotChanged = publicationSkippedForChangedSnapshot(result.stderr);
-    const coverageReceipt = activeLargeReviewProxy.registeredCoverageReceipt();
+    const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
+      orgId: installation.orgId,
+      repositoryId: repository.id,
+      byok: llm.byok,
+    });
+    const coverageReceipt = ingested.usageAccountingComplete &&
+      receiptUsage.every((usage) => usage.costMicros !== null)
+      ? activeLargeReviewProxy.registeredCoverageReceipt()
+      : null;
     for (const incident of classifyOperationalModelIncidents(
       ingested.envelope,
       coverageReceipt,
@@ -1849,11 +1857,6 @@ export async function runReviewJob(
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
-    const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
-      orgId: installation.orgId,
-      repositoryId: repository.id,
-      byok: llm.byok,
-    });
     receiptUsageForRace = receiptUsage;
     usageAccountingCompleteForRace = ingested.usageAccountingComplete;
     failedAttemptEnvelope = ingested.envelope;

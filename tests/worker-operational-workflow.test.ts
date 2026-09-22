@@ -382,10 +382,11 @@ describeDb("operational recovery through the worker and CLI", () => {
       githubRepoId: 990002, repoFullName: "workflow/repo", prNumber, headSha, baseSha };
   }
 
-  for (const scenario of ["capacity", "capacity-plan-mismatch", "capacity-other-failure"] as const) {
+  for (const [index, scenario] of ["capacity", "capacity-plan-mismatch", "capacity-other-failure", "capacity-incomplete-usage", "capacity-missing-cost"].entries()) {
     test(`${scenario} preserves incomplete review evidence and settles the attempt`, async () => {
       const capacityOnly = scenario === "capacity";
-      const prNumber = capacityOnly ? 30 : scenario === "capacity-plan-mismatch" ? 31 : 32;
+      const prNumber = 30 + index;
+      const incompleteAccounting = scenario === "capacity-incomplete-usage" || scenario === "capacity-missing-cost";
       let providerCalls = 0;
       const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
         providerCalls++;
@@ -419,8 +420,10 @@ describeDb("operational recovery through the worker and CLI", () => {
         }
         expect((await q.query("SELECT count(*)::int AS count FROM review_publication_receipts WHERE review_id=$1", [review.id])).rows[0].count).toBe(0);
         const expectedCost = calculateUsageCostMicrosForModel(model, 10, 5);
-        expect((await q.query("SELECT status,actual_micros::int AS cost FROM hosted_usage_reservations WHERE review_id=$1", [review.id])).rows).toEqual([{ status: "reconciled", cost: expectedCost }]);
-        expect((await q.query("SELECT cost_micros::int AS cost FROM usage_events WHERE review_id=$1", [review.id])).rows).toEqual([{ cost: expectedCost }]);
+        const reservation = (await q.query("SELECT status,actual_micros::int AS cost,reserved_micros::int AS reserved FROM hosted_usage_reservations WHERE review_id=$1", [review.id])).rows[0];
+        expect(reservation.status).toBe("reconciled");
+        expect(reservation.cost).toBe(incompleteAccounting ? reservation.reserved : expectedCost);
+        expect((await q.query("SELECT SUM(cost_micros)::int AS cost FROM usage_events WHERE review_id=$1", [review.id])).rows).toEqual([{ cost: reservation.cost }]);
         expect((await q.query("SELECT count(*)::int AS count FROM large_review_runs WHERE current_review_id=$1", [review.id])).rows[0].count).toBe(0);
         expect(providerCalls).toBe(1);
         delete process.env.POSTIL_FIXTURE_CAPACITY;
@@ -473,7 +476,7 @@ let unavailable=!registered.ok;
 if(registered.ok){const response=await fetch(process.env.POSTIL_API_BASE+"/chat/completions",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({model:${JSON.stringify(model)},messages:[{role:"user",content:"review"}]})});const body=await response.json();unavailable=body.choices[0].message.content==="unavailable";}
 const findings=unavailable?[{id:"operational",path:registered.ok?".postil/provider":".postil/model-output",line:1,severity:"error",kind:"uncertainty",confidence:1,title:"Review unavailable",body:"Provider unavailable or plan registration HTTP "+registered.status}]:[];
 const envelope={version:1,summary:unavailable?"Review unavailable":"Complete",silent:!unavailable,findings,resolved:[],counts:{info:0,warn:0,error:findings.length,suppressed:0,ungrounded:0},confidenceBuckets:unavailable?[0,0,0,0,1]:[0,0,0,0,0],gate:{failOn:"error",failing:unavailable},modelUsed:${JSON.stringify(model)},usage:{promptTokens:10,completionTokens:5},usageAccountingComplete:true,durationMs:1,headSha:value("--sha"),baseSha:${JSON.stringify(baseSha)},sinceSha:null};
-if(capacity){findings.push({path:"src/index.ts",line:1,severity:"error",kind:"risk",confidence:1,title:"Retained partial finding",body:"A completed batch found this issue."},{path:".postil/model-output",line:1,severity:"error",kind:"uncertainty",confidence:1,title:"Large review coverage is incomplete",body:"Deterministic large-review coverage left 2 normalized hunks unreviewed within the hard request limit. Findings from completed requests remain available, but this result cannot be trusted as a pass."});envelope.summary="Review incomplete";envelope.silent=false;envelope.gate.failing=true;envelope.counts.error=findings.length;envelope.confidenceBuckets=[0,0,0,0,findings.length];envelope.reviewCoverage={mode:"bounded",selectedBatches:1,totalBatches:3,receipt:{planSha256:capacity==="capacity-plan-mismatch"?"d".repeat(64):planSha,totalHunks:3,directHunks:1,semanticHunks:0,unreviewedHunks:2}};if(capacity==="capacity-other-failure")envelope.modelIncidents=[{phase:"review",category:"providerError",recovered:false}];unavailable=true;}
+if(capacity){findings.push({path:"src/index.ts",line:1,severity:"error",kind:"risk",confidence:1,title:"Retained partial finding",body:"A completed batch found this issue."},{path:".postil/model-output",line:1,severity:"error",kind:"uncertainty",confidence:1,title:"Large review coverage is incomplete",body:"Deterministic large-review coverage left 2 normalized hunks unreviewed within the hard request limit. Findings from completed requests remain available, but this result cannot be trusted as a pass."});envelope.summary="Review incomplete";envelope.silent=false;envelope.gate.failing=true;envelope.counts.error=findings.length;envelope.confidenceBuckets=[0,0,0,0,findings.length];envelope.reviewCoverage={mode:"bounded",selectedBatches:1,totalBatches:3,receipt:{planSha256:capacity==="capacity-plan-mismatch"?"d".repeat(64):planSha,totalHunks:3,directHunks:1,semanticHunks:0,unreviewedHunks:2}};if(capacity==="capacity-other-failure")envelope.modelIncidents=[{phase:"review",category:"providerError",recovered:false}];if(capacity==="capacity-incomplete-usage")envelope.usageAccountingComplete=false;if(capacity==="capacity-missing-cost")envelope.modelUsed="unknown/unpriced-model";unavailable=true;}
 await fetch(process.env.GITHUB_API_URL+"/repos/"+value("--repo")+"/check-runs/"+value("--check-run-id"),{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({status:"completed",conclusion:unavailable?"failure":"success",details_url:process.env.POSTIL_DETAILS_URL,output:{title:envelope.summary,summary:envelope.summary}})});
 console.log(JSON.stringify(envelope));process.exit(unavailable?1:0);
 `;

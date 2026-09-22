@@ -484,6 +484,7 @@ describe("deterministic coverage capacity", () => {
   };
   function capacityEnvelope(unreviewedHunks = 6): Envelope {
     return validEnvelope({
+      usageAccountingComplete: true,
       findings: [...validEnvelope().findings, {
         path: ".postil/model-output", line: 1, severity: "error", kind: "uncertainty",
         confidence: 1, title: "Large review coverage is incomplete",
@@ -559,6 +560,22 @@ describe("deterministic coverage capacity", () => {
     value.gate.failing = false;
     expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
     expect(reviewCoverageReceiptSchema.safeParse(receipt).success).toBe(true);
+  });
+
+  test("unaccounted usage and invalid batch counts cannot be classified as capacity", () => {
+    for (const complete of [undefined, false]) {
+      const value = capacityEnvelope();
+      value.usageAccountingComplete = complete;
+      expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+      expect(classifyOperationalModelIncidents(value, receipt)[0]?.category).toBe("invalidOutput");
+    }
+    const value = capacityEnvelope();
+    value.reviewCoverage!.selectedBatches = value.reviewCoverage!.totalBatches + 1;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    expect(() => ingestEnvelope(JSON.stringify(value))).toThrow();
+    value.reviewCoverage!.selectedBatches = 2;
+    Object.assign(value.reviewCoverage!, { mode: "unknown" });
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
   });
 });
 

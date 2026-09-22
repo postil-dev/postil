@@ -382,7 +382,7 @@ export function ingestEnvelope(raw: string): IngestedEnvelope {
  */
 export function classifyOperationalModelIncidents(
   envelope: Pick<Envelope, "findings" | "modelIncidents"> &
-    Partial<Pick<Envelope, "reviewCoverage" | "scorerError" | "gate">>,
+    Partial<Pick<Envelope, "reviewCoverage" | "scorerError" | "gate" | "usageAccountingComplete">>,
   registeredReceipt: ReviewCoverageReceipt | null = null,
 ): OperationalModelIncidentClassification[] {
   const classifications: OperationalModelIncidentClassification[] =
@@ -478,14 +478,17 @@ export function isEnvelopeOperationallyUnavailable(
 
 /** Only CLI-owned coverage evidence corroborated by the bound plan is terminal capacity. */
 export function isReviewCoverageCapacityFailure(
-  envelope: Pick<Envelope, "findings" | "reviewCoverage" | "modelIncidents" | "scorerError" | "gate">,
+  envelope: Pick<Envelope, "findings" | "reviewCoverage" | "modelIncidents" | "scorerError" | "gate" | "usageAccountingComplete">,
   registeredReceipt: ReviewCoverageReceipt | null,
 ): boolean {
-  const parsed = reviewCoverageReceiptSchema.safeParse(envelope.reviewCoverage?.receipt);
+  const coverage = reviewCoverageSchema.safeParse(envelope.reviewCoverage);
+  if (!coverage.success || coverage.data.selectedBatches > coverage.data.totalBatches) return false;
+  const parsed = reviewCoverageReceiptSchema.safeParse(coverage.data.receipt);
   const registered = reviewCoverageReceiptSchema.safeParse(registeredReceipt);
   if (!parsed.success || !registered.success) return false;
   const receipt = parsed.data;
   if (
+    envelope.usageAccountingComplete !== true ||
     receipt.unreviewedHunks === 0 || !envelope.gate.failing ||
     receipt.planSha256 !== registered.data.planSha256 ||
     receipt.totalHunks !== registered.data.totalHunks ||
