@@ -31,6 +31,16 @@ function response(overrides: Record<string, unknown> = {}): Response {
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 describe("bounded review feedback context", () => {
+  test("closed and draft pull requests yield no feedback evidence", async () => {
+    for (const change of [{ state: "CLOSED" }, { isDraft: true }]) {
+      const fixture = await response().json();
+      Object.assign(fixture.data.repository.pullRequest, change);
+      globalThis.fetch = (async () => Response.json(fixture)) as unknown as typeof fetch;
+      expect(await readGitHubReviewFeedback(crypto.randomUUID(), { id: 71, fullName: "octo/repository" },
+        17, new Set([rootCommentId]))).toEqual({ headSha, open: false, threads: [] });
+    }
+  });
+
   test("accepts the shared CLI fixture with repeated findings under distinct roots", () => {
     const bytes = serializeReviewFeedback(contractFixture as ReviewFeedbackContext);
     expect(JSON.parse(bytes)).toEqual(contractFixture);
