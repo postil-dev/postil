@@ -256,6 +256,45 @@ describe("review terminal check-runs", () => {
     expect(completions[0]?.summary).toContain("no review verdict exists");
   });
 
+  test.each([1, 2])("capacity cleanup renders safe count %s without suggesting the same retry", async (count) => {
+    const diagnostic = `private diagnostic ${crypto.randomUUID()}`;
+    await runCheckRunCleanupJob({
+      installationId: 42, repoFullName: "postil-dev/postil",
+      advisoryCheckRunId: 11, gateCheckRunId: 22, message: diagnostic,
+      coverageCapacity: { unreviewedHunks: count },
+    });
+    expect(completions).toHaveLength(2);
+    for (const completion of completions) {
+      expect(completion.conclusion).toBe("failure");
+      expect(completion.title).toBe("Review coverage incomplete");
+      expect(completion.summary).toContain(`${count} source ${count === 1 ? "hunk" : "hunks"} unreviewed`);
+      expect(completion.summary).toContain("Partial findings are retained");
+      expect(completion.summary).toContain("Reduce the size of the change");
+      expect(completion.summary).not.toMatch(/Push again|re-request/i);
+      expect(completion.summary).not.toContain(diagnostic);
+    }
+  });
+
+  test("capacity metadata rejects malformed or contradictory cleanup before publishing", async () => {
+    for (const coverageCapacity of [null, {}, [], { unreviewedHunks: 0 },
+      { unreviewedHunks: -1 }, { unreviewedHunks: 1.5 }, { unreviewedHunks: "2" },
+      { unreviewedHunks: 0x1_0000_0000 }]) {
+      await expect(runCheckRunCleanupJob({
+        installationId: 42, repoFullName: "postil-dev/postil",
+        advisoryCheckRunId: 11, gateCheckRunId: 22, message: "private detail",
+        coverageCapacity: coverageCapacity as { unreviewedHunks: number },
+      })).rejects.toThrow("check-run cleanup job payload is malformed");
+    }
+    for (const conflict of [{ intent: "neutralize" as const }, { publicationIncomplete: true }]) {
+      await expect(runCheckRunCleanupJob({
+        installationId: 42, repoFullName: "postil-dev/postil",
+        advisoryCheckRunId: 11, gateCheckRunId: 22, message: "private detail",
+        coverageCapacity: { unreviewedHunks: 2 }, ...conflict,
+      })).rejects.toThrow("check-run cleanup job payload is malformed");
+    }
+    expect(completions).toEqual([]);
+  });
+
   test("public failure output links the private run without exposing provider detail", async () => {
     await failCheckRuns(
       "test-token",

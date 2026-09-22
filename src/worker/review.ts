@@ -149,7 +149,7 @@ class TerminalReviewError extends OperationalError {}
 export class ReviewCoverageCapacityError extends TerminalReviewError {
   override name = "ReviewCoverageCapacityError";
 
-  constructor(unreviewedHunks: number) {
+  constructor(readonly unreviewedHunks: number) {
     super(`Review incomplete: the request limit left ${unreviewedHunks} source ${unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed. Partial findings are retained; this review cannot pass.`);
   }
 }
@@ -2207,6 +2207,9 @@ export async function runReviewJob(
       );
     }
     const publicationIncomplete = err instanceof CheckRunPublicationError;
+    const coverageCapacity = err instanceof ReviewCoverageCapacityError
+      ? { unreviewedHunks: err.unreviewedHunks }
+      : undefined;
     const message = redactSecrets(err, sensitiveValues);
     reviewLog.line(`review failed: ${message}`);
     const failedRows = await db.transaction(async (tx) => {
@@ -2232,6 +2235,7 @@ export async function runReviewJob(
           detailsUrl,
           intent: "fail",
           publicationIncomplete,
+          ...(coverageCapacity ? { coverageCapacity } : {}),
         },
         maxAttempts: 5,
       });
@@ -2269,6 +2273,7 @@ export async function runReviewJob(
         detailsUrl,
         expectedFailureCheckRuns(publicationIncomplete),
         gateEnabled,
+        coverageCapacity,
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
@@ -2464,9 +2469,14 @@ export async function failCheckRuns(
   detailsUrl?: string,
   expectedChecks?: ExpectedFailureCheckRuns,
   gateEnabled = true,
+  coverageCapacity?: CheckRunCleanupJobPayload["coverageCapacity"],
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
   const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
+  if (coverageCapacity !== undefined &&
+      (!validCoverageCapacity(coverageCapacity) || publicationIncomplete)) {
+    throw new PermanentJobError("check-run cleanup job payload is malformed");
+  }
   if (
     publicationIncomplete &&
     ((gateCheckRunId != null && !expectedChecks?.gate) ||
@@ -2478,10 +2488,12 @@ export async function failCheckRuns(
   }
   const reviewTitle = publicationIncomplete
     ? "Review publication incomplete"
-    : "Review did not complete";
+    : coverageCapacity ? "Review coverage incomplete" : "Review did not complete";
   const summary = publicationIncomplete
     ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
-    : `Postil could not complete this review, so no review verdict exists.${details}`;
+    : coverageCapacity
+      ? `Postil left ${coverageCapacity.unreviewedHunks} source ${coverageCapacity.unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed within the review limit. Partial findings are retained, but this is not a complete review. Reduce the size of the change to fit the review limit.${details}`
+      : `Postil could not complete this review, so no review verdict exists.${details}`;
   const errors: unknown[] = [];
   const complete = async (
     checkRunId: number,
@@ -2521,7 +2533,9 @@ export async function failCheckRuns(
     const gateSummary = gateEnabled
       ? publicationIncomplete
         ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
-        : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
+        : coverageCapacity
+          ? `${summary}\n\nThe merge check remains blocked because review coverage is incomplete.`
+          : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
       : `${summary}\n\nMerge blocking is disabled for this organization.`;
     await complete(
       gateCheckRunId,
@@ -2631,6 +2645,7 @@ export async function runCheckRunCleanupJob(
         payload.detailsUrl,
         expectedChecks,
         gateEnabled,
+        payload.coverageCapacity,
       );
     };
 
@@ -2728,6 +2743,12 @@ function checkRunCleanupErrorDetails(
   return [...messages].filter(Boolean).join("; ") || "unknown GitHub failure";
 }
 
+function validCoverageCapacity(value: unknown): value is NonNullable<CheckRunCleanupJobPayload["coverageCapacity"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const count = (value as { unreviewedHunks?: unknown }).unreviewedHunks;
+  return typeof count === "number" && Number.isInteger(count) && count > 0 && count <= 0xffff_ffff;
+}
+
 export function validateCheckRunCleanupPayload(
   payload: CheckRunCleanupJobPayload,
 ): void {
@@ -2742,6 +2763,9 @@ export function validateCheckRunCleanupPayload(
     !validId(payload.advisoryCheckRunId) ||
     !validId(payload.gateCheckRunId) ||
     typeof payload.message !== "string" ||
+    (payload.coverageCapacity !== undefined &&
+      (!validCoverageCapacity(payload.coverageCapacity) ||
+        payload.intent === "neutralize" || payload.publicationIncomplete === true)) ||
     (payload.intent !== undefined &&
       payload.intent !== "fail" &&
       payload.intent !== "neutralize")

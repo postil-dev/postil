@@ -279,6 +279,7 @@ export interface CheckRunCleanupJobPayload extends Record<string, unknown> {
   detailsUrl?: string;
   intent?: "fail" | "neutralize";
   publicationIncomplete?: boolean;
+  coverageCapacity?: { unreviewedHunks: number };
 }
 
 export interface GateEnforcementSweepJobPayload extends Record<string, unknown> {

@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { createLocalGitHubServer } from "../scripts/run-review-locally";
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import { closeDb, schema } from "@/lib/db";
+import { checkRunExternalId } from "@/lib/github/checks";
 import { claimJob, enqueueJob, enqueueReviewJobOnce } from "@/lib/queue";
 import { reviewFeedbackDigest } from "@/lib/review-feedback";
 import { reconcileHostedReviewSpendFromReceipt } from "@/lib/hosted-usage-reservations";
@@ -405,7 +406,7 @@ describeDb("operational recovery through the worker and CLI", () => {
         expect(job.attempts).toBe(1);
         expect(job.max_attempts).toBe(3);
         expect(job.payload.recoveryReviewId).toBeUndefined();
-        const review = (await q.query("SELECT id,status,error_message,envelope,advisory_check_run_id,gate_check_run_id FROM reviews WHERE repository_id=$1 AND pr_number=$2", [repositoryId, prNumber])).rows[0];
+        const review = (await q.query("SELECT id,public_id,status,error_message,envelope,advisory_check_run_id,gate_check_run_id FROM reviews WHERE repository_id=$1 AND pr_number=$2", [repositoryId, prNumber])).rows[0];
         expect(review.status).toBe("failed");
         expect(review.error_message).toContain(capacityOnly ? "2 source hunks unreviewed" : "provider or model output failed");
         expect(review.envelope.reviewCoverage.receipt.unreviewedHunks).toBe(2);
@@ -419,6 +420,25 @@ describeDb("operational recovery through the worker and CLI", () => {
           const completions = github.events.filter((event) => event.type === "check-completed" && event.id === id);
           expect(completions.at(-1)).toMatchObject({ conclusion: "failure" });
           expect(completions.some((event) => event.type === "check-completed" && event.conclusion === "success")).toBe(false);
+        }
+        if (capacityOnly) {
+          const assertCapacityOutput = () => {
+            for (const id of [Number(review.advisory_check_run_id), Number(review.gate_check_run_id)]) {
+              const completion = github.events.findLast((event) => event.type === "check-completed" && event.id === id);
+              expect(completion).toMatchObject({ title: "Review coverage incomplete", conclusion: "failure" });
+              if (completion?.type !== "check-completed") throw new Error("Missing capacity check output");
+              expect(completion.summary).toContain("2 source hunks unreviewed");
+              expect(completion.summary).toContain("Partial findings are retained");
+              expect(completion.summary).toContain("Reduce the size of the change");
+              expect(completion.summary).not.toMatch(/Push again|re-request/i);
+            }
+          };
+          assertCapacityOutput();
+          const cleanup = (await q.query("SELECT payload FROM jobs WHERE kind='check-run-cleanup' AND payload->>'advisoryCheckExternalId'=$1", [checkRunExternalId(review.public_id, "review")])).rows[0];
+          expect(cleanup.payload.coverageCapacity).toEqual({ unreviewedHunks: 2 });
+          const { runCheckRunCleanupJob } = await import("@/worker/review");
+          await runCheckRunCleanupJob(cleanup.payload);
+          assertCapacityOutput();
         }
         expect((await q.query("SELECT count(*)::int AS count FROM review_publication_receipts WHERE review_id=$1", [review.id])).rows[0].count).toBe(0);
         const expectedCost = calculateUsageCostMicrosForModel(model, 10, 5);
