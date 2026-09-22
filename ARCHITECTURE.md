@@ -223,8 +223,12 @@ validation to original and replayed response bytes. The active hosted-spend
 reservation is attached to the run and transferred to the replacement review
 only when the source review is terminal and every retry identity component
 matches. The registered plan must reproduce the stored run key before provider
-access. The proxy resolves and validates the upstream once, then pins that
-address while retaining TLS hostname verification for HTTPS. The loopback-only
+access. The proxy resolves and validates all upstream addresses once, then pins
+the connection candidates while retaining TLS hostname verification for HTTPS.
+`POSTIL_PROVIDER_ADDRESS_FAMILY` defaults to `auto`. Setting it to `ipv4`
+restricts connections to validated IPv4 addresses without skipping validation of
+IPv6 answers. An upstream with no IPv4 address fails before provider contact.
+The loopback-only
 private-base opt-in is scoped to the spawned CLI and never relaxes BYOK upstream
 validation.
 A legacy envelope without per-model usage is priced only when its aggregate names

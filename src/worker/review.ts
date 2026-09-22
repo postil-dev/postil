@@ -1746,11 +1746,16 @@ export async function runReviewJob(
       byok: llm.byok,
       configuredOptIn: optionalEnv("POSTIL_ALLOW_PRIVATE_API_BASE"),
     });
+    const providerAddressFamily = optionalEnv("POSTIL_PROVIDER_ADDRESS_FAMILY", "auto");
+    if (providerAddressFamily !== "auto" && providerAddressFamily !== "ipv4") {
+      throw new Error("POSTIL_PROVIDER_ADDRESS_FAMILY must be auto or ipv4");
+    }
     const activeLargeReviewProxy = await startLargeReviewProviderProxy({
       upstreamApiBase: llm.apiBase,
       apiFormat: llm.apiFormat,
       additionalAuthHeader: llm.apiAuthHeader,
       allowPrivateUpstream,
+      addressFamily: providerAddressFamily,
       identity: durableRunIdentity,
       runContext: {
         currentReviewId: reviewId,

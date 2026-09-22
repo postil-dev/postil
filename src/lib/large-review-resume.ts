@@ -941,6 +941,7 @@ async function resolvePinnedUpstream(
   endpoint: string,
   allowPrivate: boolean,
   resolveHostname: ResolveAllAddresses = lookup,
+  addressFamily: "auto" | "ipv4" = "auto",
 ): Promise<PinnedUpstream> {
   const url = new URL(rawBase);
   if (url.username || url.password || url.hash) {
@@ -977,10 +978,16 @@ async function resolvePinnedUpstream(
   if (!allowPrivate && privateResults.some(Boolean)) {
     throw new Error("provider API hostname resolved to a non-public address");
   }
+  const connectionAddresses = addressFamily === "ipv4"
+    ? addresses.filter((entry) => entry.family === 4)
+    : addresses;
+  if (connectionAddresses.length === 0) {
+    throw new Error("provider API hostname resolved to no IPv4 addresses");
+  }
   return {
     url,
     hostname,
-    addresses,
+    addresses: connectionAddresses,
   };
 }
 
@@ -1124,6 +1131,7 @@ export async function startLargeReviewProviderProxy(input: {
   apiFormat: ApiFormat;
   additionalAuthHeader?: string;
   allowPrivateUpstream?: boolean;
+  addressFamily?: "auto" | "ipv4";
   resolveHostname?: ResolveAllAddresses;
   identity: ProxyIdentitySeed;
   runContext: LargeReviewRunContext;
@@ -1139,6 +1147,7 @@ export async function startLargeReviewProviderProxy(input: {
     expectedEndpoint,
     input.allowPrivateUpstream ?? false,
     input.resolveHostname,
+    input.addressFamily,
   );
   let runKey: string | undefined;
   let bindPromise: Promise<void> | undefined;
