@@ -74,6 +74,17 @@ describe("bounded review feedback context", () => {
     expect(() => serializeReviewFeedback(invalid)).toThrow("identity");
   });
 
+  test("rejects timestamps whose calendar date would be normalized", () => {
+    for (const timestamp of ["2026-02-30T12:00:00Z", "2025-02-29T12:00:00Z", "2026-09-31T12:00:00Z"]) {
+      const input = context();
+      input.threads[0]!.comments[0]!.updatedAt = timestamp;
+      expect(() => serializeReviewFeedback(input)).toThrow("identity or bounds");
+    }
+    const valid = context();
+    valid.threads[0]!.comments[0]!.updatedAt = "2024-02-29T12:00:00Z";
+    expect(() => serializeReviewFeedback(valid)).not.toThrow();
+  });
+
   test("reads known historical roots with full-width IDs and excludes bot replies", async () => {
     globalThis.fetch = (async () => response()) as unknown as typeof fetch;
     const result = await readGitHubReviewFeedback(crypto.randomUUID(), { id: 71, fullName: "octo/repository" },

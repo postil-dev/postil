@@ -51,8 +51,8 @@ const feedbackSchema = z.object({
       commentId: safeId,
       author: z.object({ id: safeId, login: boundedText(100).refine((value) => value.trim().length > 0) }).strict(),
       body: boundedText(4 * 1024),
-      updatedAt: z.string().max(64).regex(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/)
-        .refine((value) => Number.isFinite(Date.parse(value))),
+      updatedAt: z.iso.datetime().max(64)
+        .regex(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/),
     }).strict()).max(20),
   }).strict()).max(20),
 }).strict();

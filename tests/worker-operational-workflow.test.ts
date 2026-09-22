@@ -69,12 +69,21 @@ describeDb("operational recovery through the worker and CLI", () => {
     Object.assign(process.env, originalEnvironment);
   });
 
-  for (const foreignPlan of [false, true]) {
-    test(foreignPlan ? "failed registration retries without retiring a foreign plan" : "unavailable output is retired before a successful queue retry", async () => {
-      const prNumber = foreignPlan ? 2 : 1;
+  for (const scenario of ["unavailable", "foreign-plan", "feedback"] as const) {
+    const foreignPlan = scenario === "foreign-plan";
+    const withFeedback = scenario === "feedback";
+    test(withFeedback ? "queued feedback survives retry with exact CLI context and plan binding" : foreignPlan ? "failed registration retries without retiring a foreign plan" : "unavailable output is retired before a successful queue retry", async () => {
+      const prNumber = withFeedback ? 5 : foreignPlan ? 2 : 1;
       let providerCalls = 0;
-      const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+      const configurations: string[] = [];
+      const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
         providerCalls += 1;
+        if (withFeedback) {
+          const plans = await fixture.pool.query(`SELECT configuration_sha256 FROM large_review_runs
+            WHERE repository_id=$1 AND pr_number=$2`, [repositoryId, prNumber]);
+          expect(plans.rows).toHaveLength(1);
+          configurations.push(plans.rows[0].configuration_sha256);
+        }
         return Response.json({ choices: [{ message: {
           content: !foreignPlan && providerCalls === 1 ? "unavailable" : "complete",
         } }] });
@@ -89,12 +98,22 @@ describeDb("operational recovery through the worker and CLI", () => {
       process.env.POSTIL_PUBLIC_URL = github.origin;
       process.env.POSTIL_FIXTURE_COUNT_PATH = join(directory, `invocations-${prNumber}`);
       process.env.POSTIL_FIXTURE_FOREIGN_PLAN = foreignPlan ? "1" : "0";
+      const reviewFeedback = {
+        version: 1, repository: "workflow/repo", prNumber, headSha,
+        threads: [{ findingId: "documented-sequence", rootCommentId: 501, resolved: true,
+          comments: [{ commentId: 502, author: { id: 503, login: "maintainer" },
+            body: "The documented restore follows initial installation.", updatedAt: "2026-09-01T12:00:00Z" }] }],
+      };
+      if (withFeedback) process.env.POSTIL_FIXTURE_EXPECTED_FEEDBACK = JSON.stringify(reviewFeedback);
+      else delete process.env.POSTIL_FIXTURE_EXPECTED_FEEDBACK;
       const payload = {
         installationId: 990001, sourceInstallationId: installationId, sourceOrgId: orgId,
         githubRepoId: 990002, repoFullName: "workflow/repo", prNumber, headSha, baseSha,
+        ...(withFeedback ? { reviewFeedback } : {}),
       };
       const q = fixture.pool;
-      const jobId = await enqueueJob(q, "review", payload);
+      const kind = withFeedback ? "review-feedback" : "review";
+      const jobId = await enqueueJob(q, kind, payload);
       let foreignKey: string | undefined;
       let foreignSnapshot: Array<Record<string, unknown>> = [];
       if (foreignPlan) {
@@ -111,7 +130,7 @@ describeDb("operational recovery through the worker and CLI", () => {
         foreignSnapshot = (await q.query("SELECT * FROM large_review_runs WHERE run_key=$1", [foreignKey])).rows;
       }
       try {
-        const first = await claimJob(q, "workflow-first", ["review"]);
+        const first = await claimJob(q, "workflow-first", [kind]);
         expect(first?.id).toBe(jobId);
         await runClaimedJob(first!, "workflow-first");
         const firstJob = (await q.query("SELECT status,attempts,max_attempts,payload FROM jobs WHERE id=$1", [jobId])).rows[0];
@@ -127,7 +146,7 @@ describeDb("operational recovery through the worker and CLI", () => {
         expect(expectedCost).not.toBeNull();
         expect((await q.query("SELECT status,actual_micros::int AS actual_micros FROM hosted_usage_reservations WHERE review_id=$1", [failed.id])).rows).toEqual([{ status: "reconciled", actual_micros: expectedCost }]);
         await q.query("UPDATE jobs SET run_after=now() WHERE id=$1", [jobId]);
-        const second = await claimJob(q, "workflow-second", ["review"]);
+        const second = await claimJob(q, "workflow-second", [kind]);
         expect(second?.id).toBe(jobId);
         await runClaimedJob(second!, "workflow-second");
         const finalJob = (await q.query("SELECT status,attempts,payload FROM jobs WHERE id=$1", [jobId])).rows[0];
@@ -143,11 +162,18 @@ describeDb("operational recovery through the worker and CLI", () => {
           { review_id: String(completed.id), cost_micros: expectedCost, billing_scope: "private_hosted" },
         ]);
         expect(providerCalls).toBe(foreignPlan ? 1 : 2);
+        if (withFeedback) {
+          expect(configurations).toHaveLength(2);
+          expect(configurations[0]).toBe(configurations[1]);
+          expect(configurations[0]).not.toBe(await hashEffectiveReviewConfiguration(directory, []));
+          expect(finalJob.payload.reviewFeedback).toEqual(reviewFeedback);
+        }
         expect(github.events.some((event) => event.type === "check-completed" && event.id === Number(completed.advisory_check_run_id) && event.conclusion === "success")).toBe(true);
         if (foreignKey) {
           expect((await q.query("SELECT * FROM large_review_runs WHERE run_key=$1", [foreignKey])).rows).toEqual(foreignSnapshot);
         }
       } finally {
+        delete process.env.POSTIL_FIXTURE_EXPECTED_FEEDBACK;
         github.stop();
         upstream.stop(true);
       }
@@ -278,6 +304,7 @@ function mockCliSource(): string {
 if (process.argv.includes("--version")) { console.log("postil 0.9.8"); process.exit(0); }
 const args=process.argv.slice(2);
 const value=(flag)=>args[args.indexOf(flag)+1];
+if(process.env.POSTIL_FIXTURE_EXPECTED_FEEDBACK){const observed=await Bun.file(process.env.POSTIL_REVIEW_FEEDBACK_PATH).json();if(!Bun.deepEquals(observed,JSON.parse(process.env.POSTIL_FIXTURE_EXPECTED_FEEDBACK))||observed.repository!==value("--repo")||String(observed.prNumber)!==value("--pr")||observed.headSha!==value("--sha"))throw Error("CLI feedback context mismatch");}
 const countFile=Bun.file(process.env.POSTIL_FIXTURE_COUNT_PATH);
 const count=(await countFile.exists()?Number(await countFile.text()):0)+1;
 await Bun.write(countFile,String(count));
