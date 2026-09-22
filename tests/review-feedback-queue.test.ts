@@ -28,12 +28,16 @@ mock.module("@/lib/github/checks", () => ({ ...realChecks,
       authorGithubId: 51, authorLogin: "maintainer" };
   },
 }));
-mock.module("@/lib/private-repository-entitlement", () => ({ canProcessRepositoryInference: async () => ({ allowed: true }) }));
+const realEntitlement = await import("@/lib/private-repository-entitlement");
+mock.module("@/lib/private-repository-entitlement", () => ({ ...realEntitlement,
+  canProcessRepositoryInference: async () => ({ allowed: true }),
+}));
 
 const { admitReviewFeedbackEvent, reconcileReviewFeedback, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
 const { claimJob, enqueueReviewJobOnce, requeueJobsOwnedBy } = await import("@/lib/queue");
 const { deferHostedReviewForRelease, activateHostedInferenceRelease } = await import("@/lib/release-job-rollout");
 const { closeDb } = await import("@/lib/db");
+const { watchdogPass } = await import("@/worker/watchdog");
 
 describeDb("durable review feedback admission", () => {
   let database: EphemeralDatabase;
@@ -187,5 +191,19 @@ describeDb("durable review feedback admission", () => {
     authority = "unavailable";
     await expect(admitReviewFeedbackEvent(event, pool)).rejects.toThrow("authority is unavailable");
     authority = "authorized";
+  });
+
+  test("generic watchdog recovery retains an interrupted polling job and its retry budget", async () => {
+    const pool = database.pool;
+    const poll = (await pool.query("SELECT id, payload FROM jobs WHERE kind = 'review-feedback-reconciliation' AND status = 'queued' LIMIT 1")).rows[0];
+    expect(poll).toBeDefined();
+    await pool.query("UPDATE jobs SET status = 'running', attempts = 1, locked_by = 'interrupted-poller', locked_at = now() - interval '11 minutes' WHERE id = $1", [poll.id]);
+    await watchdogPass();
+    const recovered = (await pool.query("SELECT kind, status, attempts, max_attempts, payload, locked_by FROM jobs WHERE id = $1", [poll.id])).rows[0];
+    expect(recovered).toEqual({ kind: "review-feedback-reconciliation", status: "queued", attempts: 1,
+      max_attempts: 5, payload: poll.payload, locked_by: null });
+    expect(await scheduleReviewFeedbackReconciliationJobs(pool, new Date(Date.now() + 60 * 60_000))).toBe(0);
+    const claimed = await claimJob(pool, "replacement-poller", ["review-feedback-reconciliation"]);
+    expect(claimed?.payload).toEqual(poll.payload);
   });
 });

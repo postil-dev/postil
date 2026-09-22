@@ -14,6 +14,7 @@ import { canProcessRepositoryInference } from "@/lib/private-repository-entitlem
 import { enqueueReviewJobOnce, type ReviewJobPayload } from "@/lib/queue";
 import { redactAndTruncate } from "@/lib/redact";
 
+/** Cheap polls use generic watchdog retries; full reviews use kind review-feedback. */
 export const REVIEW_FEEDBACK_JOB_KIND = "review-feedback-reconciliation";
 export const REVIEW_FEEDBACK_MAX_BYTES = 32 * 1024;
 const POLL_INTERVAL_MS = 5 * 60_000;
