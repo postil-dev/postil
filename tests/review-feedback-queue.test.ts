@@ -34,7 +34,7 @@ mock.module("@/lib/private-repository-entitlement", () => ({ ...realEntitlement,
 }));
 
 const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
-const { claimJob, enqueueReviewJobOnce, requeueJobsOwnedBy } = await import("@/lib/queue");
+const { claimJob, completeJob, enqueueJob, enqueueReviewJobOnce, failJob, requeueJobsOwnedBy } = await import("@/lib/queue");
 const { deferHostedReviewForRelease, activateHostedInferenceRelease } = await import("@/lib/release-job-rollout");
 const { closeDb } = await import("@/lib/db");
 const { watchdogPass } = await import("@/worker/watchdog");
@@ -247,4 +247,62 @@ describeDb("durable review feedback admission", () => {
     expect(pending.trigger.feedbackDigest).toBe(reviewFeedbackDigest(pending.reviewFeedback));
     expect(pending.trigger.feedbackDigest).toBe(edited.trigger.feedbackDigest);
   });
+
+  for (const kind of ["review", "review-feedback"] as const) {
+    test(`${kind} publication recovery retains newest feedback through queue transitions`, async () => {
+      const pool = database.pool;
+      const prNumber = kind === "review" ? 70 : 71;
+      const base = { ...reviewPayload(), prNumber };
+      const feedback = (body: string) => {
+        const reviewFeedback = { version: 1 as const, repository: base.repoFullName, prNumber, headSha,
+          threads: [{ findingId: "recovery", rootCommentId: rootId, resolved: false,
+            comments: [{ commentId: rootId + 1, author: { id: 51, login: "maintainer" }, body, updatedAt }] }] };
+        return { ...base, reviewFeedback,
+          trigger: { source: "finding_feedback" as const, feedbackDigest: reviewFeedbackDigest(reviewFeedback) } };
+      };
+      const original = { ...(kind === "review" ? base : feedback("Original evidence")), recoveryReviewId: 1000 + prNumber };
+      const id = await enqueueJob(pool, kind, original);
+      const read = async () => (await pool.query("SELECT status,attempts,payload FROM jobs WHERE id=$1", [id])).rows[0];
+      const count = async () => Number((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE payload->>'prNumber'=$1 AND kind IN ('review','review-feedback')", [String(prNumber)])).rows[0].count);
+      const claim = async (attempts: number) => {
+        await pool.query("UPDATE jobs SET status='running',locked_by='recovery-owner',locked_at=now(),attempts=$2 WHERE id=$1", [id, attempts]);
+        return { id, lockedBy: "recovery-owner", attempts, maxAttempts: 3 };
+      };
+      await enqueueReviewJobOnce(pool, feedback("First incoming evidence"));
+      const latest = feedback("Latest incoming evidence");
+      await enqueueReviewJobOnce(pool, latest);
+      await enqueueReviewJobOnce(pool, base);
+      const retained = { ...original, _postilCoalescedReviewPayload: latest };
+      expect((await read()).payload).toEqual(retained);
+      expect(await failJob(pool, await claim(1), "transient verification failure")).toBe("retried");
+      expect((await read()).payload).toEqual(retained);
+      expect(await count()).toBe(1);
+      await claim(2);
+      expect(await requeueJobsOwnedBy(pool, "recovery-owner", "shutdown", [kind], [id])).toBe(1);
+      expect(await read()).toMatchObject({ status: "queued", attempts: 1, payload: original });
+      expect(await count()).toBe(1);
+      await expect(pool.query("UPDATE jobs SET payload=$2 WHERE id=$1", [id, JSON.stringify(latest)]))
+        .rejects.toThrow("review recovery identity is immutable");
+      expect(await completeJob(pool, await claim(2))).toBe("coalesced");
+      const followups = (await pool.query("SELECT kind,payload FROM jobs WHERE id<>$1 AND payload->>'prNumber'=$2", [id, String(prNumber)])).rows;
+      expect(followups).toEqual([{ kind: "review-feedback", payload: latest }]);
+      expect(await completeJob(pool, { id, lockedBy: "recovery-owner" })).toBe("lost");
+      expect(await count()).toBe(2);
+    });
+  }
+
+  for (const withFollowup of [false, true]) {
+    test(`terminal recovery failure retains pending evidence without promotion (${withFollowup})`, async () => {
+      const pool = database.pool;
+      const prNumber = withFollowup ? 73 : 72;
+      const pending = { ...reviewPayload(), prNumber };
+      const payload = { ...pending, recoveryReviewId: 1000 + prNumber, _postilCoalescedReviewPayload: pending };
+      const id = await enqueueJob(pool, "review", payload);
+      await pool.query("UPDATE jobs SET status='running',locked_by='terminal-owner',locked_at=now(),attempts=3 WHERE id=$1", [id]);
+      expect(await failJob(pool, { id, lockedBy: "terminal-owner", attempts: 3, maxAttempts: 3 }, "terminal failure",
+        withFollowup ? { permanent: true, failureFollowup: { kind: "respond-failure-comment", payload: { prNumber }, maxAttempts: 5 } } : {})).toBe("failed");
+      expect((await pool.query("SELECT status,payload FROM jobs WHERE id=$1", [id])).rows[0]).toEqual({ status: "failed", payload });
+      expect((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind IN ('review','review-feedback') AND payload->>'prNumber'=$1", [String(prNumber)])).rows[0].count).toBe(1);
+    });
+  }
 });

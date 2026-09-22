@@ -7,7 +7,8 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { createLocalGitHubServer } from "../scripts/run-review-locally";
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import { closeDb, schema } from "@/lib/db";
-import { claimJob, enqueueJob } from "@/lib/queue";
+import { claimJob, enqueueJob, enqueueReviewJobOnce } from "@/lib/queue";
+import { reviewFeedbackDigest } from "@/lib/review-feedback";
 import { reconcileHostedReviewSpendFromReceipt } from "@/lib/hosted-usage-reservations";
 import {
   hashEffectiveReviewConfiguration, PostgresLargeReviewAttemptStore, providerIdentity,
@@ -287,6 +288,94 @@ describeDb("operational recovery through the worker and CLI", () => {
       upstream.stop(true);
     }
   }, 30_000);
+
+  for (const kind of ["review", "review-feedback"] as const) {
+    test(`${kind} finishes staged accounting before executing queued feedback`, async () => {
+      const prNumber = kind === "review" ? 10 : 11;
+      let providerCalls = 0;
+      let deferVerification = true;
+      const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+        providerCalls += 1;
+        return Response.json({ choices: [{ message: { content: "complete" } }] });
+      } });
+      const github = configureWorkflow(prNumber, upstream.port!);
+      const transport = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+        const url = new URL(request.url);
+        const response = await fetch(new Request(github.origin + url.pathname + url.search, request));
+        if (deferVerification && request.method === "GET" && /\/check-runs\/\d+$/.test(url.pathname)) {
+          return Response.json({ ...await response.json(), status: "in_progress" });
+        }
+        return response;
+      } });
+      process.env.GITHUB_API_URL = `http://127.0.0.1:${transport.port}`;
+      const feedback = (body: string) => {
+        const reviewFeedback = { version: 1 as const, repository: "workflow/repo", prNumber, headSha,
+          threads: [{ findingId: "recovery", rootCommentId: 101, resolved: false,
+            comments: [{ commentId: 102, author: { id: 51, login: "maintainer" }, body,
+              updatedAt: "2026-09-01T12:00:00Z" }] }] };
+        return { ...workflowPayload(prNumber), forceFullReview: true, reviewFeedback,
+          trigger: { source: "finding_feedback" as const, feedbackDigest: reviewFeedbackDigest(reviewFeedback) } };
+      };
+      const original = kind === "review" ? workflowPayload(prNumber) : feedback("Original evidence");
+      const q = fixture.pool;
+      const jobId = await enqueueJob(q, kind, original);
+      try {
+        const first = await claimJob(q, "publication-first", [kind]);
+        expect(first?.id).toBe(jobId);
+        await runClaimedJob(first!, "publication-first");
+        const staged = (await q.query("SELECT status,payload FROM jobs WHERE id=$1", [jobId])).rows[0];
+        expect(staged.status).toBe("queued");
+        const reviewId = Number(staged.payload.recoveryReviewId);
+        expect(Number.isSafeInteger(reviewId)).toBe(true);
+        const receipt = (await q.query("SELECT * FROM review_publication_receipts WHERE review_id=$1", [reviewId])).rows;
+        expect(receipt).toHaveLength(1);
+        expect((await q.query("SELECT count(*)::int AS count FROM usage_events WHERE review_id=$1", [reviewId])).rows[0].count).toBe(0);
+        const latest = feedback("New evidence while publication is deferred");
+        await enqueueReviewJobOnce(q, latest);
+        const retained = (await q.query("SELECT payload FROM jobs WHERE id=$1", [jobId])).rows[0].payload;
+        expect(retained).toEqual({ ...staged.payload, _postilCoalescedReviewPayload: latest });
+        for (const status of ["done", "failed"]) {
+          await expect(q.query(`WITH retired AS (
+            UPDATE jobs SET status=$2::job_status WHERE id=$1 RETURNING payload,max_attempts
+          ) INSERT INTO jobs(kind,payload,max_attempts)
+            SELECT 'review',payload->'_postilCoalescedReviewPayload',max_attempts FROM retired`, [jobId, status]))
+            .rejects.toThrow("review publication recovery is unfinished");
+          expect((await q.query("SELECT status,payload FROM jobs WHERE id=$1", [jobId])).rows[0])
+            .toEqual({ status: "queued", payload: retained });
+        }
+        deferVerification = false;
+        const publishedBeforeRecovery = [...github.events];
+        await q.query("UPDATE jobs SET run_after=now() WHERE id=$1", [jobId]);
+        const recovery = await claimJob(q, "publication-recovery", [kind]);
+        expect(recovery?.id).toBe(jobId);
+        await runClaimedJob(recovery!, "publication-recovery");
+        expect(providerCalls).toBe(1);
+        expect(github.events).toEqual(publishedBeforeRecovery);
+        expect(github.events.filter((event) => event.type === "check-created")).toHaveLength(2);
+        expect(github.events.filter((event) => event.type === "review-posted")).toHaveLength(0);
+        expect((await q.query("SELECT * FROM review_publication_receipts WHERE review_id=$1", [reviewId])).rows).toEqual(receipt);
+        expect((await q.query("SELECT status FROM reviews WHERE id=$1", [reviewId])).rows[0].status).toBe("completed");
+        const expectedCost = calculateUsageCostMicrosForModel(model, 10, 5);
+        expect((await q.query("SELECT status,actual_micros::int AS cost FROM hosted_usage_reservations WHERE review_id=$1", [reviewId])).rows).toEqual([{ status: "reconciled", cost: expectedCost }]);
+        expect((await q.query("SELECT cost_micros::int AS cost FROM usage_events WHERE review_id=$1", [reviewId])).rows).toEqual([{ cost: expectedCost }]);
+        const followups = (await q.query("SELECT id,kind,payload FROM jobs WHERE kind='review-feedback' AND status='queued' AND payload->>'prNumber'=$1", [String(prNumber)])).rows;
+        expect(followups).toHaveLength(1);
+        expect(followups[0].payload).toEqual(latest);
+        process.env.POSTIL_FIXTURE_EXPECTED_FEEDBACK = JSON.stringify(latest.reviewFeedback);
+        const followup = await claimJob(q, "publication-feedback", ["review-feedback"]);
+        expect(followup?.id).toBe(Number(followups[0].id));
+        await runClaimedJob(followup!, "publication-feedback");
+        expect((await q.query("SELECT status FROM jobs WHERE id=$1", [followup!.id])).rows[0].status).toBe("done");
+        expect(providerCalls).toBe(2);
+        expect((await q.query("SELECT usage.cost_micros::int AS cost FROM usage_events usage JOIN reviews review ON review.id=usage.review_id WHERE review.repository_id=$1 AND review.pr_number=$2 ORDER BY review.id", [repositoryId, prNumber])).rows).toEqual([{ cost: expectedCost }, { cost: expectedCost }]);
+      } finally {
+        delete process.env.POSTIL_FIXTURE_EXPECTED_FEEDBACK;
+        transport.stop(true);
+        github.stop();
+        upstream.stop(true);
+      }
+    }, 30_000);
+  }
 
   function workflowPayload(prNumber: number) {
     return { installationId: 990001, sourceInstallationId: installationId, sourceOrgId: orgId,

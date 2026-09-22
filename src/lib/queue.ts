@@ -688,8 +688,8 @@ export async function enqueueGithubReactionJobOnce(
 
 /**
  * Atomically retain the newest review intent for an exact repository, PR, and
- * head. Queued work is upgraded in place. Work requested during a running
- * review is retained as one coalesced rerun payload on that job.
+ * head. Unstarted queued work is upgraded in place. Running work and staged
+ * publication recovery retain one coalesced rerun payload on the owning job.
  */
 export async function enqueueReviewJobOnce(
   pool: Pool,
@@ -755,13 +755,14 @@ export async function enqueueReviewJobOnce(
       return result.rows[0] ? Number(result.rows[0].id) : null;
     }
 
+    const preserveActivePayload = active.status === "running" || active.payload.recoveryReviewId !== undefined;
     const previous =
-      active.status === "running"
+      preserveActivePayload
         ? (active.payload[COALESCED_REVIEW_PAYLOAD_KEY] ?? active.payload)
         : active.payload;
     const merged = mergeReviewJobPayload(previous, payload);
     if (
-      active.status === "queued" &&
+      !preserveActivePayload &&
       !sameReviewPublicationIdentity(active.payload, merged)
     ) {
       const replacement = await client.query<{ id: string }>(
@@ -781,7 +782,7 @@ export async function enqueueReviewJobOnce(
       return replacement.rows[0] ? Number(replacement.rows[0].id) : null;
     }
     const stored: StoredReviewJobPayload =
-      active.status === "running"
+      preserveActivePayload
         ? { ...active.payload, [COALESCED_REVIEW_PAYLOAD_KEY]: merged }
         : merged;
     const updated = await client.query<{ id: string }>(
@@ -1202,12 +1203,14 @@ export async function requeueJobsOwnedBy(
     `WITH transitioned AS (
        UPDATE jobs
           SET status = CASE
-                WHEN kind IN ('review', 'review-feedback') AND jsonb_typeof(payload -> $5) = 'object'
+                WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
+                     AND jsonb_typeof(payload -> $5) = 'object'
                   THEN 'done'::job_status
                 ELSE 'queued'::job_status
               END,
               attempts = CASE
-                WHEN kind IN ('review', 'review-feedback') AND jsonb_typeof(payload -> $5) = 'object'
+                WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
+                     AND jsonb_typeof(payload -> $5) = 'object'
                   THEN attempts
                 ELSE GREATEST(attempts - 1, 0)
               END,
@@ -1218,12 +1221,12 @@ export async function requeueJobsOwnedBy(
           AND left(locked_by, length($1)) = $1
           AND kind = ANY($3::text[])
           AND id = ANY($4::bigint[])
-      RETURNING kind, payload -> $5 AS pending, max_attempts
+      RETURNING kind, payload -> $5 AS pending, max_attempts, payload ? 'recoveryReviewId' AS recovering
      ), inserted AS (
        INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
        SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
          FROM transitioned
-        WHERE kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object'
+        WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
        RETURNING id
      )
      SELECT count(*)::text AS count FROM transitioned`,
@@ -1256,6 +1259,8 @@ export function backoffMs(attempts: number): number {
  * the job goes straight to `failed` because retrying the same work against the
  * same image would fail identically. Retained intent becomes a fresh queued
  * job, preserving the immutable publication identity of the failed attempt.
+ * Staged publication recovery retains that intent until completion, including
+ * when recovery itself reaches a terminal failure.
  */
 export async function failJob(
   pool: Pool,
@@ -1285,24 +1290,26 @@ export async function failJob(
       `WITH transitioned AS (
          UPDATE jobs
             SET status = CASE
-                  WHEN kind IN ('review', 'review-feedback') AND jsonb_typeof(payload -> $5) = 'object'
+                  WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
+                       AND jsonb_typeof(payload -> $5) = 'object'
                     THEN 'failed'::job_status
                   ELSE 'queued'::job_status
                 END,
                 locked_at = NULL, locked_by = NULL,
                 last_error = $2,
                 run_after = CASE
-                  WHEN kind IN ('review', 'review-feedback') AND jsonb_typeof(payload -> $5) = 'object'
+                  WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
+                       AND jsonb_typeof(payload -> $5) = 'object'
                     THEN now()
                   ELSE now() + ($3 || ' milliseconds')::interval
                 END
           WHERE id = $1 AND status = 'running' AND locked_by = $4
-        RETURNING status, kind, payload -> $5 AS pending, max_attempts
+        RETURNING status, kind, payload -> $5 AS pending, max_attempts, payload ? 'recoveryReviewId' AS recovering
        ), inserted AS (
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
          SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
            FROM transitioned
-          WHERE kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object'
+          WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
          RETURNING id
        )
        SELECT CASE
@@ -1327,18 +1334,18 @@ export async function failJob(
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending, max_attempts
+          RETURNING status, kind, payload -> $4 AS pending, max_attempts, payload ? 'recoveryReviewId' AS recovering
          ), inserted_review AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
            SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
              FROM transitioned
-            WHERE kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object'
+            WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
            RETURNING id
          ), inserted_followup AS (
          INSERT INTO jobs (kind, payload, max_attempts)
          SELECT $5, $6::jsonb, $7
            FROM transitioned
-          WHERE status = 'failed'
+          WHERE status = 'failed' AND NOT recovering
             AND NOT (kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object')
          RETURNING id
          )
@@ -1364,12 +1371,12 @@ export async function failJob(
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending, max_attempts
+          RETURNING status, kind, payload -> $4 AS pending, max_attempts, payload ? 'recoveryReviewId' AS recovering
          ), inserted AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
            SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
              FROM transitioned
-            WHERE kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object'
+            WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
            RETURNING id
          )
          SELECT CASE

@@ -103,6 +103,20 @@ BEGIN
   PERFORM pg_advisory_xact_lock(
     hashtextextended('postil:active-review:' || review_identity, 0)
   );
+  -- Reject legacy coalescing atomically when it retires an unfinished recovery.
+  IF TG_OP = 'INSERT' AND NOT NEW.payload ? 'recoveryReviewId' AND EXISTS (
+    SELECT 1 FROM jobs recovering
+    JOIN reviews review ON review.id::text = recovering.payload->>'recoveryReviewId'
+    JOIN review_publication_receipts receipt ON receipt.review_id = review.id
+    WHERE recovering.kind IN ('review', 'review-feedback')
+      AND recovering.status IN ('done', 'failed')
+      AND recovering.payload->>'githubRepoId' = repository_identity
+      AND recovering.payload->>'prNumber' = pull_request_number
+      AND recovering.payload->>'headSha' = NEW.payload->>'headSha'
+      AND review.status = 'running'
+  ) THEN
+    RAISE EXCEPTION 'review publication recovery is unfinished';
+  END IF;
   IF EXISTS (
     SELECT 1 FROM jobs existing
     WHERE existing.kind IN ('review', 'review-feedback')
@@ -133,6 +147,11 @@ END $$;
 CREATE OR REPLACE FUNCTION "postil_guard_job_publication_identity"()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF OLD."kind" IN ('review', 'review-feedback')
+     AND OLD."payload" ? 'recoveryReviewId'
+     AND NEW."payload"->'recoveryReviewId' IS DISTINCT FROM OLD."payload"->'recoveryReviewId' THEN
+    RAISE EXCEPTION 'review recovery identity is immutable';
+  END IF;
   IF OLD."kind" IN ('review', 'review-feedback', 'respond', 'respond-failure-comment', 'webhook-comment')
      AND (
        (NEW."kind" IS DISTINCT FROM OLD."kind" AND NOT ((OLD."kind" = 'review' AND OLD."status" = 'queued' AND NEW."kind" = 'review-feedback' AND jsonb_typeof(NEW."payload"->'reviewFeedback') = 'object') IS TRUE)) OR
