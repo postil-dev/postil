@@ -77,11 +77,21 @@ callbacks before exit. Fly gives the process a bounded termination window. A
 forced exit during webhook dispatch leaves the inbox job recoverable by the
 queue watchdog; completed delivery IDs remain durable dedupe records.
 
+Review-thread feedback has two queue stages. `review-feedback-reconciliation`
+observes bounded conversations under known publication roots and verifies human
+authority. It uses generic watchdog recovery. `review-feedback` carries the
+exact repository, pull request, head, and conversation snapshot into a full CLI
+review with the normal review publication and shutdown recovery paths. Evidence
+digests deduplicate admission; replies and resolution flags do not grant approvals
+or dismiss findings. Polling supplies discovery when App thread events are absent.
+Admission requires `POSTIL_REVIEW_FEEDBACK_ENABLED=1` and defaults off. Disabling
+admission leaves already queued full feedback reviews processable.
+
 Every queue consumer supplies its explicit supported job kinds to the claim query.
 The bounded web drain uses the latency-sensitive capability list. The long-running
 worker adds maintenance jobs such as repository-rule discovery, keeping those jobs
 away from request-serving processes.
-The claim query also caps how many `review` and `respond` jobs one organization
+The claim query also caps how many `review`, `review-feedback`, and `respond` jobs one organization
 runs at once, which reduces how much of the fleet a single organization opening
 many pull requests occupies. Cheap kinds carry no cap, and the limit is
 best-effort: concurrent claim loops read the running count independently, so an
@@ -213,8 +223,12 @@ validation to original and replayed response bytes. The active hosted-spend
 reservation is attached to the run and transferred to the replacement review
 only when the source review is terminal and every retry identity component
 matches. The registered plan must reproduce the stored run key before provider
-access. The proxy resolves and validates the upstream once, then pins that
-address while retaining TLS hostname verification for HTTPS. The loopback-only
+access. The proxy resolves and validates all upstream addresses once, then pins
+the connection candidates while retaining TLS hostname verification for HTTPS.
+`POSTIL_PROVIDER_ADDRESS_FAMILY` defaults to `auto`. Setting it to `ipv4`
+restricts connections to validated IPv4 addresses without skipping validation of
+IPv6 answers. An upstream with no IPv4 address fails before provider contact.
+The loopback-only
 private-base opt-in is scoped to the spawned CLI and never relaxes BYOK upstream
 validation.
 A legacy envelope without per-model usage is priced only when its aggregate names

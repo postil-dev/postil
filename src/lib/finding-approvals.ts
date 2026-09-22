@@ -596,7 +596,7 @@ export async function hasInFlightReviewForPr(
   )).limit(1))[0];
   if (reviewRow) return true;
   const jobRow = (await db.select({ id: schema.jobs.id }).from(schema.jobs).where(and(
-    eq(schema.jobs.kind, "review"),
+    sql`${schema.jobs.kind} IN ('review', 'review-feedback')`,
     sql`${schema.jobs.status} IN ('queued', 'running')`,
     sql`(
       ${schema.jobs.payload}->>'githubRepoId' = ${String(review.githubRepoId)}

@@ -11,6 +11,7 @@ import { runOpenRouterCapMonitoringChecks } from "@/lib/openrouter-cap-monitorin
 import { NON_OPERATIONAL_REVIEW_FAILURE_MESSAGES } from "@/lib/review-outcome";
 import {
   acquirePrivateMonitorLease,
+  checkOutstandingOperationalReviews,
   claimPrivateMonitoringNotifications,
   deliverExternalMonitorHeartbeat,
   deliverPrivateMonitoringNotification,
@@ -21,7 +22,7 @@ import {
   recordMonitorPassFailure,
   recordMonitorPassSuccess,
   recordServiceHeartbeat,
-  runDatabaseMonitoringChecks,
+  runDatabaseMonitoringChecks as runDatabaseMonitoringChecksWithGitHub,
   runPublicMonitoringChecks,
   sendMonitorPassFailureNotification,
   startPrivateMonitoringPass,
@@ -33,6 +34,135 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 const NOW = new Date("2026-07-19T12:00:00.000Z");
 const BUCKET = new Date("2026-07-19T12:00:00.000Z");
+
+const livePullRequest = {
+  open: true, merged: false, draft: false,
+  headSha: "a".repeat(40), baseSha: "b".repeat(40),
+};
+const candidate = {
+  installationId: 1, repoFullName: "example/service", prNumber: 1,
+  headSha: livePullRequest.headSha,
+};
+
+async function runDatabaseMonitoringChecks(
+  pool: Pool,
+  options: Parameters<typeof runDatabaseMonitoringChecksWithGitHub>[1] = {},
+) {
+  return runDatabaseMonitoringChecksWithGitHub(pool, {
+    github: {
+      getInstallationToken: async () => crypto.randomUUID(),
+      getPullRequestReviewContext: async (_token, repoFullName, prNumber) => {
+        const result = await pool.query<{ head_sha: string }>(
+          `SELECT review.head_sha FROM reviews review
+           JOIN repositories repository ON repository.id = review.repository_id
+           WHERE repository.full_name = $1 AND review.pr_number = $2
+           ORDER BY review.id DESC LIMIT 1`,
+          [repoFullName, prNumber],
+        );
+        return { ...livePullRequest, headSha: result.rows[0]!.head_sha };
+      },
+    },
+    ...options,
+  });
+}
+
+describe("outstanding operational review visibility", () => {
+  test("checks live eligibility and exact head before retaining an old failure", async () => {
+    for (const [live, healthy] of [
+      [livePullRequest, false],
+      [{ ...livePullRequest, open: false }, true],
+      [{ ...livePullRequest, merged: true }, true],
+      [{ ...livePullRequest, draft: true }, true],
+      [{ ...livePullRequest, headSha: "c".repeat(40) }, true],
+    ] as const) {
+      expect(await checkOutstandingOperationalReviews([candidate], {
+        github: {
+          getInstallationToken: async () => crypto.randomUUID(),
+          getPullRequestReviewContext: async () => live,
+        },
+      })).toMatchObject({ healthy });
+    }
+  });
+
+  test("authentication and context failures remain unknown and unhealthy", async () => {
+    for (const failingStep of ["authentication", "context"]) {
+      const result = await checkOutstandingOperationalReviews([candidate], {
+        github: {
+          getInstallationToken: async () => {
+            if (failingStep === "authentication") throw new Error("Authentication unavailable");
+            return crypto.randomUUID();
+          },
+          getPullRequestReviewContext: async () => { throw new Error("GitHub unavailable"); },
+        },
+      });
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain("1 PR states could not be verified");
+    }
+  });
+
+  test("limits live probes to twenty and four concurrent while keeping overflow visible", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    let calls = 0;
+    const result = await checkOutstandingOperationalReviews(
+      Array.from({ length: 21 }, (_, index) => ({ ...candidate, prNumber: index + 1 })),
+      { github: {
+        getInstallationToken: async () => crypto.randomUUID(),
+        getPullRequestReviewContext: async () => {
+          calls += 1;
+          maximumActive = Math.max(maximumActive, ++active);
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          active -= 1;
+          return { ...livePullRequest, open: false };
+        },
+      } },
+    );
+    expect(calls).toBe(20);
+    expect(maximumActive).toBe(4);
+    expect(result.healthy).toBe(false);
+    expect(result.detail).toContain("Candidate budget exceeded");
+  });
+
+  test("cancellation bounds unresponsive lookups and preserves unknown state", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const github = {
+      getInstallationToken: async () => {
+        calls += 1;
+        queueMicrotask(() => controller.abort());
+        return new Promise<string>(() => undefined);
+      },
+      getPullRequestReviewContext: async () => livePullRequest,
+    };
+    const result = await checkOutstandingOperationalReviews(
+      Array.from({ length: 6 }, () => candidate),
+      { signal: controller.signal, github },
+    );
+    expect(calls).toBe(4);
+    expect(result.healthy).toBe(false);
+    expect(result.detail).toContain("6 PR states could not be verified");
+    expect(await checkOutstandingOperationalReviews([candidate], {
+      signal: controller.signal, github,
+    })).toMatchObject({ healthy: false });
+    expect(calls).toBe(4);
+  });
+
+  test("deadline expiry and incomplete live state cannot report recovery", async () => {
+    const timeoutResult = await checkOutstandingOperationalReviews([candidate], {
+      signal: AbortSignal.timeout(5),
+      github: {
+        getInstallationToken: async () => crypto.randomUUID(),
+        getPullRequestReviewContext: async () => new Promise(() => undefined),
+      },
+    });
+    expect(timeoutResult.healthy).toBe(false);
+    expect(timeoutResult.detail).toContain("1 PR states could not be verified");
+    expect(await checkOutstandingOperationalReviews([candidate], { github: {
+      getInstallationToken: async () => crypto.randomUUID(),
+      getPullRequestReviewContext: async () => ({ ...livePullRequest, headSha: "" }),
+    } })).toMatchObject({ healthy: false });
+  });
+});
 
 describe("private monitoring public probes", () => {
   test("records external heartbeat delivery only after a successful response", async () => {
@@ -1408,6 +1538,120 @@ describeDb("private monitoring durability", () => {
     }
   });
 
+  test("retains operational failures across age, retry, recovery, and head supersession", async () => {
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, suspended)
+       VALUES (900039, 'monitor-recovery', 'Organization', false) RETURNING id`,
+    );
+    const repository = await pool.query<{ id: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       VALUES ($1, 900039001, 'monitor-recovery/service', true) RETURNING id`,
+      [installation.rows[0]!.id],
+    );
+    const repositoryId = repository.rows[0]!.id;
+    const insertReview = async (
+      prNumber: number,
+      status: string,
+      head = "a".repeat(40),
+      envelope: unknown = null,
+      errorMessage: string | null = null,
+    ) => {
+      const result = await pool.query<{ id: string }>(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, status, envelope,
+            error_message, queued_at, finished_at)
+         VALUES ($1, $2, $3, $4, $5::review_status, $6, $7, now() - interval '8 hours',
+                 CASE WHEN $5::review_status IN ('completed', 'failed', 'stale')
+                   THEN now() - interval '7 hours' ELSE NULL END)
+         RETURNING id`,
+        [repositoryId, prNumber, head, "b".repeat(40), status,
+          JSON.stringify(envelope), errorMessage],
+      );
+      return result.rows[0]!.id;
+    };
+    const check = async () => (await runDatabaseMonitoringChecks(pool)).find(
+      (candidate) => candidate.key === "review-operational-failures",
+    );
+    const sentinel = { findings: [{ path: ".postil/operational" }] };
+    try {
+      await insertReview(1000, "completed", undefined, sentinel);
+      expect(await check()).toMatchObject({ healthy: false });
+      expect((await check())?.detail).toContain("1 unresolved terminal review failures");
+
+      // A retry has not repaired the failed verdict merely by starting.
+      const retry = await insertReview(1000, "queued");
+      expect(await check()).toMatchObject({ healthy: false });
+      await pool.query("UPDATE reviews SET status = 'running' WHERE id = $1", [retry]);
+      expect(await check()).toMatchObject({ healthy: false });
+      await pool.query(
+        "UPDATE reviews SET status = 'completed', envelope = $2, finished_at = now() WHERE id = $1",
+        [retry, JSON.stringify({ findings: [] })],
+      );
+      expect(await check()).toMatchObject({ healthy: true });
+
+      // Completion order must not revive a superseded older attempt.
+      await pool.query(
+        "UPDATE reviews SET finished_at = now() + interval '1 minute' WHERE repository_id = $1 AND id < $2",
+        [repositoryId, retry],
+      );
+      expect(await check()).toMatchObject({ healthy: true });
+      await insertReview(1000, "failed");
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1001, "completed", undefined, { findings: [] });
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1000, "queued", "c".repeat(40));
+      expect(await check()).toMatchObject({ healthy: true });
+
+      // A terminal expected skip replaces the previous same-head failure.
+      await insertReview(1002, "failed");
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1002, "failed", undefined, null,
+        "pull request is no longer eligible for publication");
+      expect(await check()).toMatchObject({ healthy: true });
+      await insertReview(1003, "completed", undefined, sentinel);
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1003, "stale");
+      expect(await check()).toMatchObject({ healthy: true });
+
+      for (const [index, envelope] of [
+        {
+          findings: [{ path: ".postil/model-output" }],
+          modelIncidents: [{ phase: "review", category: "invalidOutput", recovered: false }],
+        },
+        {
+          findings: [{ path: ".postil/provider" }],
+          modelIncidents: [{ phase: "scorer", category: "providerError", recovered: false }],
+        },
+      ].entries()) {
+        const prNumber = 1010 + index;
+        await insertReview(prNumber, "completed", undefined, envelope);
+        expect(await check()).toMatchObject({ healthy: false });
+        const closedChecks = await runDatabaseMonitoringChecks(pool, { github: {
+          getInstallationToken: async () => crypto.randomUUID(),
+          getPullRequestReviewContext: async () => ({ ...livePullRequest, open: false }),
+        } });
+        expect(closedChecks.find((item) => item.key === "review-operational-failures"))
+          .toMatchObject({ healthy: true });
+        expect(closedChecks.find((item) => item.key === "invalid-model-output"))
+          .toMatchObject({ healthy: true });
+        expect(closedChecks.find((item) => item.key === "scorer-failures"))
+          .toMatchObject({ healthy: true });
+        await insertReview(prNumber, "queued", "c".repeat(40));
+        expect(await check()).toMatchObject({ healthy: true });
+      }
+
+      await insertReview(1020, "completed", undefined, sentinel);
+      await pool.query("UPDATE repositories SET enabled = false WHERE id = $1", [repositoryId]);
+      expect(await check()).toMatchObject({ healthy: true });
+      await pool.query("UPDATE repositories SET enabled = true WHERE id = $1", [repositoryId]);
+      await pool.query("UPDATE installations SET suspended = true WHERE id = $1", [installation.rows[0]!.id]);
+      expect(await check()).toMatchObject({ healthy: true });
+    } finally {
+      await pool.query("DELETE FROM installations WHERE github_installation_id = 900039");
+    }
+  });
+
   test("pages for invalid model output only when the run could not recover", async () => {
     const installation = await pool.query<{ id: string }>(
       `INSERT INTO installations
@@ -1477,7 +1721,7 @@ describeDb("private monitoring durability", () => {
     }
   });
 
-  test("assigns one actionable alert to each classified review failure", async () => {
+  test("separates outstanding sentinel health from recent classified failure rates", async () => {
     const installation = await pool.query<{ id: string }>(
       `INSERT INTO installations
          (github_installation_id, account_login, account_type, suspended)
@@ -1534,7 +1778,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": false,
         "invalid-model-output": true,
       });
@@ -1548,7 +1792,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": true,
         "invalid-model-output": false,
       });
@@ -1602,7 +1846,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": false,
         "invalid-model-output": false,
       });
@@ -1629,7 +1873,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": true,
         "invalid-model-output": false,
       });

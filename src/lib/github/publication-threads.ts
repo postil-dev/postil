@@ -1,5 +1,6 @@
 import { apiBase } from "@/lib/github/app-auth";
 import type { PublicationThreadObservation } from "@/lib/publication-receipt";
+import { isPostilBotLogin } from "./conversation";
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
@@ -54,6 +55,166 @@ function graphqlApi(): string {
   return rest.endsWith("/api/v3")
     ? `${rest.slice(0, -"/api/v3".length)}/api/graphql`
     : `${rest}/graphql`;
+}
+
+export interface ReviewFeedbackActor {
+  id: number;
+  login: string;
+}
+
+export interface ObservedFeedbackThread {
+  rootCommentId: number;
+  resolved: boolean;
+  resolvedBy: ReviewFeedbackActor | null;
+  comments: Array<{
+    commentId: number;
+    author: ReviewFeedbackActor;
+    body: string;
+    updatedAt: string;
+  }>;
+}
+
+/** Read complete bounded conversations only for known Postil publication roots. */
+export async function readGitHubReviewFeedback(
+  token: string,
+  repository: { id: number; fullName: string },
+  prNumber: number,
+  rootCommentIds: ReadonlySet<number>,
+  signal?: AbortSignal,
+): Promise<{ headSha: string; open: boolean; threads: ObservedFeedbackThread[] }> {
+  const [owner, name, extra] = repository.fullName.split("/");
+  if (!owner || !name || extra || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
+    throw new Error("review feedback repository identity is invalid");
+  }
+  const threads: ObservedFeedbackThread[] = [];
+  let headSha: string | undefined;
+  let cursor: string | null = null;
+  const requestSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+    : AbortSignal.timeout(30_000);
+  type Actor = { __typename?: string; databaseId?: number; login?: string };
+  const human = (actor: Actor | null | undefined): ReviewFeedbackActor | null => {
+    if (actor?.__typename !== "User" || !Number.isSafeInteger(actor.databaseId) ||
+        actor.databaseId! <= 0 || !actor.login || actor.login.length > 100 ||
+        actor.login.endsWith("[bot]") || isPostilBotLogin(actor.login)) return null;
+    return { id: actor.databaseId!, login: actor.login };
+  };
+  for (let page = 0; page < 4; page += 1) {
+    const response = await fetch(graphqlApi(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "postil-control-plane",
+      },
+      body: JSON.stringify({
+        query: `query PostilReviewFeedback($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+          repository(owner: $owner, name: $name) {
+            databaseId nameWithOwner
+            pullRequest(number: $number) {
+              headRefOid state isDraft
+              reviewThreads(first: 50, after: $cursor) {
+                nodes {
+                  isResolved
+                  resolvedBy { __typename databaseId login }
+                  comments(first: 21) {
+                    nodes {
+                      databaseId: fullDatabaseId body updatedAt
+                      author { __typename login ... on User { databaseId } }
+                    }
+                    pageInfo { hasNextPage }
+                  }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }`,
+        variables: { owner, name, number: prNumber, cursor },
+      }),
+      signal: requestSignal,
+    });
+    if (!response.ok) throw new Error(`review feedback read failed with HTTP ${response.status}`);
+    if (!response.body) throw new Error("review feedback response body is missing");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        length += chunk.value.byteLength;
+        if (length > 512 * 1024) {
+          await reader.cancel();
+          throw new Error("review feedback response exceeds its byte bound");
+        }
+        chunks.push(chunk.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const raw = Buffer.concat(chunks, length).toString("utf8");
+    const result = JSON.parse(raw) as {
+      errors?: unknown[];
+      data?: { repository?: {
+        databaseId?: number; nameWithOwner?: string;
+        pullRequest?: { headRefOid?: string; state?: string; isDraft?: boolean;
+          reviewThreads?: {
+            nodes?: Array<{ isResolved?: boolean; resolvedBy?: Actor | null;
+              comments?: { nodes?: Array<{ databaseId?: string | number; body?: string;
+                updatedAt?: string; author?: Actor | null }>;
+                pageInfo?: { hasNextPage?: boolean } } }>;
+            pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+          };
+        };
+      } };
+    };
+    const repo = result.data?.repository;
+    const pull = repo?.pullRequest;
+    if (result.errors?.length || repo?.databaseId !== repository.id ||
+        repo.nameWithOwner?.toLowerCase() !== repository.fullName.toLowerCase() ||
+        !pull?.headRefOid || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(pull.headRefOid)) {
+      throw new Error("review feedback response does not identify the expected pull request");
+    }
+    if (headSha !== undefined && headSha !== pull.headRefOid) {
+      throw new Error("review feedback head changed during pagination");
+    }
+    headSha = pull.headRefOid;
+    if (pull.state !== "OPEN" || pull.isDraft !== false) return { headSha, open: false, threads: [] };
+    const connection = pull.reviewThreads;
+    if (!Array.isArray(connection?.nodes) || typeof connection.pageInfo?.hasNextPage !== "boolean") {
+      throw new Error("review feedback thread pagination is incomplete");
+    }
+    for (const thread of connection.nodes) {
+      const comments = thread.comments?.nodes;
+      const root = comments?.[0];
+      const rootCommentId = Number(root?.databaseId);
+      if (!Number.isSafeInteger(rootCommentId) || !rootCommentIds.has(rootCommentId)) continue;
+      if (!isPostilBotLogin(root?.author?.login) || typeof thread.isResolved !== "boolean" ||
+          thread.comments?.pageInfo?.hasNextPage !== false || !Array.isArray(comments)) {
+        throw new Error("review feedback published thread is incomplete");
+      }
+      if (threads.length >= 20) throw new Error("review feedback exceeds 20 published threads");
+      const replies: ObservedFeedbackThread["comments"] = [];
+      for (const comment of comments.slice(1)) {
+        const author = human(comment.author);
+        if (!author) continue;
+        const commentId = Number(comment.databaseId);
+        if (!Number.isSafeInteger(commentId) || commentId <= 0 || typeof comment.body !== "string" ||
+            typeof comment.updatedAt !== "string" || !Number.isFinite(Date.parse(comment.updatedAt))) {
+          throw new Error("review feedback comment identity is incomplete");
+        }
+        replies.push({ commentId, author, body: comment.body, updatedAt: comment.updatedAt });
+      }
+      threads.push({ rootCommentId, resolved: thread.isResolved,
+        resolvedBy: human(thread.resolvedBy), comments: replies });
+    }
+    if (!connection.pageInfo.hasNextPage) return { headSha, open: true, threads };
+    cursor = connection.pageInfo.endCursor ?? null;
+    if (!cursor) throw new Error("review feedback pagination cursor is missing");
+  }
+  throw new Error("review feedback exceeds 200 pull request threads");
 }
 
 /**

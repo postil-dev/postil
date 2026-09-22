@@ -361,7 +361,7 @@ export async function activatePublicationLifecycleRelease(
          AND NOT EXISTS (
            SELECT 1
              FROM jobs AS active_recovery
-            WHERE active_recovery.kind = 'review'
+            WHERE active_recovery.kind IN ('review', 'review-feedback')
               AND active_recovery.status IN ('queued', 'running')
               AND active_recovery.payload->>'recoveryReviewId' = review.id::text
          )`,
@@ -973,7 +973,7 @@ export async function activateHostedInferenceRelease(
               AND NOT EXISTS (
                 SELECT 1
                   FROM jobs AS active
-                 WHERE active.kind = 'review'
+                 WHERE active.kind IN ('review', 'review-feedback')
                    AND active.status IN ('queued', 'running')
                    AND active.id <> job.id
                    AND active.payload->>'githubRepoId' = job.payload->>'githubRepoId'
@@ -994,7 +994,7 @@ export async function activateHostedInferenceRelease(
       `UPDATE jobs
           SET run_after = now(),
               payload = payload - 'releaseDarkSha'
-        WHERE kind IN ('review', $1)
+        WHERE kind IN ('review', 'review-feedback', $1)
           AND status = 'queued'
           AND run_after = 'infinity'::timestamptz
           AND payload ? 'releaseDarkSha'`,
@@ -1377,7 +1377,7 @@ async function restoreManagedReleaseCapabilitiesOnClient(
     await client.query(
       `UPDATE jobs
           SET run_after = now(), payload = payload - 'releaseDarkSha'
-        WHERE kind IN ('review', $1)
+        WHERE kind IN ('review', 'review-feedback', $1)
           AND status = 'queued'
           AND run_after = 'infinity'::timestamptz
           AND payload ? 'releaseDarkSha'`,
@@ -1496,10 +1496,10 @@ export async function restoreAllManagedReleasePreparations(
 /** Atomically park a claimed hosted review until a verified managed release activates. */
 export async function deferHostedReviewForRelease(
   pool: Pool,
-  job: { id: number; lockedBy: string },
+  job: { id: number; lockedBy: string; kind?: string },
   releaseSha: string,
 ): Promise<"deferred" | "released"> {
-  return deferHostedJobForRelease(pool, job, releaseSha, "review");
+  return deferHostedJobForRelease(pool, job, releaseSha, job.kind === "review-feedback" ? "review-feedback" : "review");
 }
 
 /** Atomically park provider-key work until a verified managed release activates. */
@@ -1520,7 +1520,7 @@ async function deferHostedJobForRelease(
   pool: Pool,
   job: { id: number; lockedBy: string },
   releaseSha: string,
-  kind: "review" | typeof HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  kind: "review" | "review-feedback" | typeof HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
 ): Promise<"deferred" | "released"> {
   const normalized = normalizedReleaseSha(releaseSha);
   const client = await pool.connect();

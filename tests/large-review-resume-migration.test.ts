@@ -6,12 +6,13 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
 import * as schema from "@/lib/db/schema";
-import { reconcileConservativeHostedReviewSpend } from "@/lib/hosted-usage-reservations";
+import { reconcileConservativeHostedReviewSpend, reconcileHostedReviewSpendFromReceipt } from "@/lib/hosted-usage-reservations";
 import {
   PostgresLargeReviewAttemptStore,
   claimReusableLargeReviewReservation,
   largeReviewAttemptKey,
   largeReviewRunKey,
+  startLargeReviewProviderProxy,
   type LargeReviewRunIdentity,
 } from "@/lib/large-review-resume";
 
@@ -80,7 +81,9 @@ describeDb("large-review durable resume migration", () => {
   afterAll(async () => {
     await pool?.end();
     if (admin) {
-      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+      if (process.env.POSTIL_KEEP_TEST_DATABASE !== "1") {
+        await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+      }
       await admin.end();
     }
   });
@@ -220,6 +223,181 @@ describeDb("large-review durable resume migration", () => {
     );
     expect(keys.rows).toEqual([{ run_key: activeRunKey }]);
     await store.deleteRun(activeRunKey);
+  });
+
+  test.each([
+    "released empty plan",
+    "provider attempt",
+    "completed provider attempt",
+    "active reservation",
+    "running owner",
+    "different head",
+    "different base",
+    "different pull request",
+    "different organization",
+    "expired replacement reservation",
+    "settled billing",
+  ])("retry ownership: %s", async (scenario) => {
+    const db = drizzle(pool, { schema });
+    const store = new PostgresLargeReviewAttemptStore(db);
+    const source = await pool.query<{ id: string }>(
+      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, trigger_source)
+       VALUES ($1, 5, $2, $3, $4, 'unknown') RETURNING id`,
+      [repositoryId, "b".repeat(40), "0".repeat(40), scenario === "running owner" ? "running" : "failed"],
+    );
+    const replacement = await pool.query<{ id: string }>(
+      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, trigger_source)
+       VALUES ($1, $2, $3, $4, 'running', 'unknown') RETURNING id`,
+      [repositoryId, scenario === "different pull request" ? 6 : 5,
+        (scenario === "different head" ? "c" : "b").repeat(40),
+        (scenario === "different base" ? "c" : "0").repeat(40)],
+    );
+    const sourceReviewId = Number(source.rows[0]!.id);
+    const replacementReviewId = Number(replacement.rows[0]!.id);
+    let replacementOrgId = orgId;
+    if (scenario === "different organization") {
+      const other = await pool.query<{ id: string }>(
+        "INSERT INTO organizations (slug, name) VALUES ('other-plan-owner', 'Other') RETURNING id",
+      );
+      replacementOrgId = Number(other.rows[0]!.id);
+    }
+    const sourceReservation = await pool.query<{ id: string }>(
+      `INSERT INTO hosted_usage_reservations
+         (org_id, review_id, operation, reserved_micros, status, expires_at, updated_at)
+       VALUES ($1, $2, 'review', 1000000, $3, now() + interval '15 minutes', now()) RETURNING id`,
+      [orgId, sourceReviewId, scenario === "active reservation" ? "active" : "released"],
+    );
+    const replacementReservation = await pool.query<{ id: string }>(
+      `INSERT INTO hosted_usage_reservations
+         (org_id, review_id, operation, reserved_micros, status, expires_at, updated_at)
+       VALUES ($1, $2, 'review', 1000000, 'active', now() + $3::interval, now()) RETURNING id`,
+      [replacementOrgId, replacementReviewId, scenario === "expired replacement reservation" ? "-1 second" : "15 minutes"],
+    );
+    const identity: LargeReviewRunIdentity = {
+      repositoryId, prNumber: 5, cliVersion: "0.8.0",
+      configurationSha256: "a".repeat(64),
+      providerIdentity: '["managed","openai-compatible","https://example.test/v1"]',
+      headSha: "b".repeat(40), baseSha: "0".repeat(40),
+      retryLineage: `review-job:${sourceReviewId}`, planSha256: "c".repeat(64),
+    };
+    const originalContext = { currentReviewId: sourceReviewId, hostedReservationId: sourceReservation.rows[0]!.id };
+    const runKey = await store.bindRun(identity, originalContext);
+    if (scenario === "provider attempt" || scenario === "completed provider attempt") {
+      const claim = await store.claimAttempt({ runKey, requestSha256: "d".repeat(64), batchIdentity: "e".repeat(64), attempt: 1, model: "openai/test-model" });
+      if (scenario === "completed provider attempt" && claim.kind === "execute") {
+        await store.completeAttempt({ ...claim, response: { status: 200, headers: {}, body: "completed" } });
+      }
+    }
+    if (scenario === "settled billing") {
+      await pool.query("UPDATE large_review_runs SET billing_state = 'conservative', conservatively_settled_at = now() WHERE run_key = $1", [runKey]);
+    }
+    const context = { currentReviewId: replacementReviewId, hostedReservationId: replacementReservation.rows[0]!.id };
+    if (scenario === "released empty plan") {
+      expect(await claimReusableLargeReviewReservation(db, identity, replacementReviewId)).toEqual({ kind: "none" });
+      let providerCalls = 0;
+      const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+        providerCalls += 1;
+        return Response.json({ choices: [{ message: { content: "complete" } }] });
+      } });
+      const proxy = await startLargeReviewProviderProxy({
+        upstreamApiBase: `http://127.0.0.1:${upstream.port}/v1`,
+        apiFormat: "openai-compatible", allowPrivateUpstream: true,
+        identity, runContext: context, store,
+      });
+      try {
+        const registration = await fetch(proxy.planEndpoint, {
+          method: "POST",
+          headers: { authorization: `Bearer ${proxy.planToken}`, "content-type": "application/json" },
+          body: JSON.stringify({ version: 1, planSha256: identity.planSha256,
+            directHunks: 1, semanticHunks: 0, unreviewedHunks: 0,
+            selectedBatches: 1, totalBatches: 1, concurrency: 1,
+            requestTimeoutSeconds: 60, reviewBudgetSeconds: 120 }),
+        });
+        expect(registration.status).toBe(204);
+        const result = await fetch(`${proxy.apiBase}/chat/completions`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "openai/test-model", messages: [{ role: "user", content: "review" }] }),
+        });
+        expect(result.status).toBe(200);
+        expect(await result.json()).toEqual({ choices: [{ message: { content: "complete" } }] });
+        expect(providerCalls).toBe(1);
+        expect(await proxy.boundRunKey()).toBe(runKey);
+        await expect(store.deleteRun(runKey, originalContext)).rejects.toThrow("context ownership collision");
+      } finally {
+        proxy.close();
+        upstream.stop(true);
+      }
+      expect(await store.bindRun(identity, context)).toBe(runKey);
+      await expect(store.bindRun(identity, originalContext)).rejects.toThrow("context ownership collision");
+      const claim = await store.claimAttempt({ runKey, requestSha256: "f".repeat(64), batchIdentity: "e".repeat(64), attempt: 1, model: "openai/test-model" });
+      expect(claim.kind).toBe("execute");
+    } else {
+      await expect(store.bindRun(identity, context)).rejects.toThrow("context ownership collision");
+    }
+    const row = await pool.query("SELECT current_review_id, hosted_reservation_id FROM large_review_runs WHERE run_key = $1", [runKey]);
+    const expected = scenario === "released empty plan" ? context : originalContext;
+    expect(row.rows).toEqual([{ current_review_id: String(expected.currentReviewId), hosted_reservation_id: expected.hostedReservationId }]);
+    const reservations = await pool.query("SELECT review_id, status, actual_micros FROM hosted_usage_reservations WHERE id IN ($1, $2) ORDER BY review_id", [originalContext.hostedReservationId, context.hostedReservationId]);
+    expect(reservations.rows).toEqual([
+      { review_id: String(sourceReviewId), status: scenario === "active reservation" ? "active" : "released", actual_micros: null },
+      { review_id: String(replacementReviewId), status: "active", actual_micros: null },
+    ]);
+    await store.deleteRun(runKey, expected);
+    const remainingAttempts = await pool.query("SELECT count(*)::int AS count FROM large_review_attempts WHERE run_key = $1", [runKey]);
+    expect(remainingAttempts.rows).toEqual([{ count: 0 }]);
+  });
+
+  test("settled journal retirement preserves mismatched owners and successor heads", async () => {
+    const db = drizzle(pool, { schema });
+    const store = new PostgresLargeReviewAttemptStore(db);
+    const source = Number((await pool.query(
+      "INSERT INTO reviews(repository_id,pr_number,head_sha,base_sha,status) VALUES ($1,7,$2,$3,'completed') RETURNING id",
+      [repositoryId, "b".repeat(40), "0".repeat(40)],
+    )).rows[0].id);
+    const target = Number((await pool.query(
+      "INSERT INTO reviews(repository_id,pr_number,head_sha,base_sha,status) VALUES ($1,7,$2,$3,'running') RETURNING id",
+      [repositoryId, "b".repeat(40), "0".repeat(40)],
+    )).rows[0].id);
+    const reservationId = (await pool.query(
+      "INSERT INTO hosted_usage_reservations(org_id,review_id,operation,reserved_micros,status,expires_at) VALUES ($1,$2,'review',1000,'active',now()+interval '15 minutes') RETURNING id",
+      [orgId, source],
+    )).rows[0].id;
+    const identity: LargeReviewRunIdentity = {
+      repositoryId, prNumber: 7, cliVersion: "0.8.0", configurationSha256: "a".repeat(64),
+      providerIdentity: "managed-fixture", headSha: "b".repeat(40), baseSha: "0".repeat(40),
+      retryLineage: "review-job:settled", planSha256: "c".repeat(64),
+    };
+    const context = { currentReviewId: source, hostedReservationId: reservationId };
+    const runKey = await store.bindRun(identity, context);
+    await reconcileHostedReviewSpendFromReceipt(db, {
+      reservationId, repositoryId, reviewId: source, triggerSource: "unknown",
+      usage: [{ modelUsed: "fixture", promptTokens: 1, completionTokens: 1, costMicros: 100 }],
+      usageAccountingComplete: true,
+    });
+    const retained = async (successor = target) => {
+      expect(await claimReusableLargeReviewReservation(db, identity, successor)).toEqual({ kind: "none" });
+      expect((await pool.query("SELECT count(*)::int AS count FROM large_review_runs WHERE run_key=$1", [runKey])).rows[0].count).toBe(1);
+    };
+    await retained();
+    await pool.query("UPDATE reviews SET status='failed' WHERE id=$1", [source]);
+    const otherHead = Number((await pool.query(
+      "INSERT INTO reviews(repository_id,pr_number,head_sha,base_sha,status) VALUES ($1,7,$2,$3,'running') RETURNING id",
+      [repositoryId, "c".repeat(40), identity.baseSha],
+    )).rows[0].id);
+    await retained(otherHead);
+    const otherOrg = Number((await pool.query(
+      "INSERT INTO organizations(slug,name) VALUES ('settled-journal-other','Other') RETURNING id",
+    )).rows[0].id);
+    await pool.query("UPDATE hosted_usage_reservations SET org_id=$2 WHERE id=$1", [reservationId, otherOrg]);
+    await retained();
+    await pool.query("UPDATE hosted_usage_reservations SET org_id=$2 WHERE id=$1", [reservationId, orgId]);
+    await pool.query("UPDATE hosted_usage_reservations SET review_id=$2 WHERE id=$1", [reservationId, target]);
+    await retained();
+    await pool.query("UPDATE hosted_usage_reservations SET review_id=$2 WHERE id=$1", [reservationId, source]);
+    expect(await claimReusableLargeReviewReservation(db, identity, target)).toEqual({ kind: "none" });
+    expect((await pool.query("SELECT count(*)::int AS count FROM large_review_runs WHERE run_key=$1", [runKey])).rows[0].count).toBe(0);
+    await expect(store.deleteRun(runKey, context)).resolves.toBeUndefined();
+    expect((await pool.query("SELECT cost_micros::int AS cost FROM usage_events WHERE review_id=$1", [source])).rows).toEqual([{ cost: 100 }]);
   });
 
   test("transfers one active hosted hold to a replacement review", async () => {

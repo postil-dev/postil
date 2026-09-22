@@ -1,9 +1,12 @@
 import http from "node:http";
+import https from "node:https";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
   hashEffectiveReviewConfiguration,
@@ -29,14 +32,69 @@ const HEAD_SHA = "b".repeat(40);
 const BASE_SHA = "d".repeat(40);
 const CONFIG_SHA = "c".repeat(64);
 const servers: Array<{ stop(closeActiveConnections?: boolean): void }> = [];
+const transportMocks: Array<{ mockRestore(): void }> = [];
 const ipv6FirstLoopback = async () => [
   { address: "::1", family: 6 },
   { address: "127.0.0.1", family: 4 },
 ];
 
 afterEach(() => {
+  for (const transport of transportMocks.splice(0)) transport.mockRestore();
   for (const server of servers.splice(0)) server.stop(true);
 });
+
+function mockPinnedProvider(configuration: { secure?: boolean; delayMs?: number; failures?: number } = {}) {
+  let calls = 0;
+  const addressSets: unknown[] = [];
+  const singleAddresses: Array<{ address: string; family: number }> = [];
+  const destinations: Array<{ url: string; servername?: string; host?: string }> = [];
+  const transport = spyOn(configuration.secure ? https : http, "request").mockImplementation(((
+    url: URL,
+    options: http.RequestOptions,
+    callback: (response: http.IncomingMessage) => void,
+  ) => {
+    const request = new EventEmitter() as http.ClientRequest;
+    request.end = (() => {
+      calls += 1;
+      const attempt = calls;
+      destinations.push({
+        url: url.href,
+        servername: (options as https.RequestOptions).servername,
+        host: (options.headers as Record<string, string>).host,
+      });
+      expect(options.lookup).toBeDefined();
+      options.lookup!(url.hostname, { all: true }, (error, addresses) => {
+        expect(error).toBeNull();
+        addressSets.push(addresses);
+      });
+      options.lookup!(url.hostname, {}, (error, address, family) => {
+        expect(error).toBeNull();
+        if (typeof address !== "string" || typeof family !== "number") {
+          throw new Error("A single-address lookup must return one address and family");
+        }
+        singleAddresses.push({ address, family });
+      });
+      const respond = () => {
+        if (attempt <= (configuration.failures ?? 0)) {
+          request.emit("error", new Error("test provider connection failed"));
+          return;
+        }
+        const stream = new PassThrough();
+        const response = stream as unknown as http.IncomingMessage;
+        response.statusCode = 200;
+        response.headers = { "x-request-id": "req-1" };
+        callback(response);
+        stream.end(successfulBody);
+      };
+      if (configuration.delayMs) setTimeout(respond, configuration.delayMs);
+      else queueMicrotask(respond);
+      return request;
+    }) as http.ClientRequest["end"];
+    return request;
+  }) as typeof http.request);
+  transportMocks.push(transport);
+  return { calls: () => calls, addressSets, singleAddresses, destinations };
+}
 
 class MemoryAttemptStore implements LargeReviewAttemptStore {
   readonly runs = new Map<string, LargeReviewRunIdentity>();
@@ -572,23 +630,47 @@ describe("durable large-review provider proxy", () => {
     proxy.close();
   });
 
-  test("requires authenticated plan registration and uses the validated address set", async () => {
-    let providerCalls = 0;
-    let resolutions = 0;
+  test.each([false, true])("cleanup preserves ownership when registration succeeds: %s", async (bound) => {
+    let deletions = 0;
+    class OwnershipStore extends MemoryAttemptStore {
+      override async bindRun(identity: LargeReviewRunIdentity, context: LargeReviewRunContext): Promise<string> {
+        if (!bound) throw new Error("large-review run context ownership collision");
+        return super.bindRun(identity, context);
+      }
+      override async deleteRun(): Promise<void> {
+        deletions += 1;
+        throw new Error("large-review run context ownership collision");
+      }
+    }
     const upstream = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch() {
-        providerCalls += 1;
-        return new Response(successfulBody, {
-          headers: { "x-request-id": "req-1" },
-        });
-      },
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => new Response(successfulBody),
     });
     servers.push(upstream);
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://127.0.0.1:${upstream.port}/v1`),
+      store: new OwnershipStore(),
+    });
+    try {
+      expect((await register(proxy)).status).toBe(bound ? 204 : 409);
+      if (bound) {
+        await expect(proxy.discardCompletedRun()).rejects.toThrow("context ownership collision");
+        expect(deletions).toBe(1);
+      } else {
+        await expect(proxy.discardCompletedRun()).resolves.toBeUndefined();
+        expect(deletions).toBe(0);
+      }
+    } finally {
+      proxy.close();
+    }
+  });
+
+  test("requires authenticated plan registration and uses the validated address set", async () => {
+    const provider = mockPinnedProvider();
+    let resolutions = 0;
     const store = new MemoryAttemptStore();
     const proxy = await startLargeReviewProviderProxy({
-      ...proxySeed(`http://localhost:${upstream.port}/v1`),
+      ...proxySeed("http://localhost:1234/v1"),
       resolveHostname: async () => {
         resolutions += 1;
         return ipv6FirstLoopback();
@@ -600,7 +682,7 @@ describe("durable large-review provider proxy", () => {
       body: requestBody,
     });
     expect(early.status).toBe(428);
-    expect(providerCalls).toBe(0);
+    expect(provider.calls()).toBe(0);
     expect(
       (
         await fetch(proxy.planEndpoint, {
@@ -633,7 +715,8 @@ describe("durable large-review provider proxy", () => {
       });
       expect(await response.text()).toBe(successfulBody);
     }
-    expect(providerCalls).toBe(3);
+    expect(provider.calls()).toBe(3);
+    expect(provider.addressSets).toEqual(Array(3).fill(await ipv6FirstLoopback()));
     expect(resolutions).toBe(1);
     expect(proxy.billingOutcome()).toBe("resumable");
     expect(
@@ -648,18 +731,154 @@ describe("durable large-review provider proxy", () => {
     proxy.close();
   });
 
-  test("replays a completed response only under the same registered identity", async () => {
-    let providerCalls = 0;
-    const upstream = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch() {
-        providerCalls += 1;
-        return new Response(successfulBody);
+  test.each([undefined, "auto", "ipv4"] as const)(
+    "upstream address family %s preserves the hostname and pins only eligible addresses",
+    async (addressFamily) => {
+      const provider = mockPinnedProvider({ secure: true });
+      const addresses = [
+        { address: "2001:4860:4860::8888", family: 6 },
+        { address: "8.8.8.8", family: 4 },
+        { address: "1.1.1.1", family: 4 },
+      ];
+      const expected = addressFamily === "ipv4" ? addresses.slice(1) : addresses;
+      let resolutions = 0;
+      const proxy = await startLargeReviewProviderProxy({
+        ...proxySeed("https://provider.example/v1"),
+        allowPrivateUpstream: false,
+        addressFamily,
+        resolveHostname: async (hostname, options) => {
+          expect(hostname).toBe("provider.example");
+          expect(options).toEqual({ all: true, verbatim: true });
+          resolutions += 1;
+          return resolutions === 1 ? addresses : [{ address: "127.0.0.1", family: 4 }];
+        },
+        store: new MemoryAttemptStore(),
+      });
+      try {
+        const beforeRegistration = await fetch(`${proxy.apiBase}/chat/completions`, {
+          method: "POST", body: requestBody,
+        });
+        expect(beforeRegistration.status).toBe(428);
+        expect(provider.calls()).toBe(0);
+        expect((await register(proxy)).status).toBe(204);
+        for (const batch of ["first", "second"]) {
+          const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+            method: "POST",
+            body: JSON.stringify({ model: "openai/test-model", messages: [{ role: "user", content: batch }] }),
+          });
+          expect(response.status).toBe(200);
+          expect(await response.text()).toBe(successfulBody);
+        }
+        expect(resolutions).toBe(1);
+        expect(provider.calls()).toBe(2);
+        expect(provider.addressSets).toEqual([expected, expected]);
+        expect(provider.singleAddresses).toEqual([expected[0]!, expected[0]!]);
+        expect(provider.destinations).toEqual(Array(2).fill({
+          url: "https://provider.example/v1/chat/completions",
+          servername: "provider.example",
+          host: undefined,
+        }));
+      } finally {
+        proxy.close();
+      }
+    },
+  );
+
+  test.each(["::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1"])(
+    "IPv4 selection rejects forbidden IPv6 answer %s before filtering",
+    async (address) => {
+      const provider = mockPinnedProvider({ secure: true });
+      let resolutions = 0;
+      await expect(startLargeReviewProviderProxy({
+        ...proxySeed("https://provider.example/v1"),
+        allowPrivateUpstream: false,
+        addressFamily: "ipv4",
+        resolveHostname: async () => {
+          resolutions += 1;
+          return [{ address, family: 6 }, { address: "8.8.8.8", family: 4 }];
+        },
+        store: new MemoryAttemptStore(),
+      })).rejects.toThrow("non-public address");
+      expect(resolutions).toBe(1);
+      expect(provider.calls()).toBe(0);
+      expect(provider.addressSets).toEqual([]);
+    },
+  );
+
+  test("IPv4 selection rejects an invalid discarded address family before filtering", async () => {
+    const provider = mockPinnedProvider({ secure: true });
+    await expect(startLargeReviewProviderProxy({
+      ...proxySeed("https://provider.example/v1"),
+      allowPrivateUpstream: false,
+      addressFamily: "ipv4",
+      resolveHostname: async () => [
+        { address: "not-an-address", family: 6 },
+        { address: "8.8.8.8", family: 4 },
+      ],
+      store: new MemoryAttemptStore(),
+    })).rejects.toThrow("invalid address");
+    expect(provider.calls()).toBe(0);
+  });
+
+  test.each(["https://provider.example/v1", "https://[2001:4860:4860::8888]/v1"])(
+    "IPv4 selection fails without contacting an IPv6-only upstream: %s",
+    async (upstreamApiBase) => {
+      const provider = mockPinnedProvider({ secure: true });
+      let resolutions = 0;
+      await expect(startLargeReviewProviderProxy({
+        ...proxySeed(upstreamApiBase),
+        allowPrivateUpstream: false,
+        addressFamily: "ipv4",
+        resolveHostname: async () => {
+          resolutions += 1;
+          return [{ address: "2001:4860:4860::8888", family: 6 }];
+        },
+        store: new MemoryAttemptStore(),
+      })).rejects.toThrow("IPv4");
+      expect(resolutions).toBe(upstreamApiBase.includes("[") ? 0 : 1);
+      expect(provider.calls()).toBe(0);
+      expect(provider.addressSets).toEqual([]);
+    },
+  );
+
+  test("a delayed failed IPv4 request retains the pinned family and DNS snapshot on retry", async () => {
+    const provider = mockPinnedProvider({ secure: true, delayMs: 300, failures: 1 });
+    let resolutions = 0;
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed("https://provider.example/v1"),
+      allowPrivateUpstream: false,
+      addressFamily: "ipv4",
+      resolveHostname: async () => {
+        resolutions += 1;
+        return resolutions === 1
+          ? [{ address: "2001:4860:4860::8888", family: 6 }, { address: "8.8.8.8", family: 4 }]
+          : [{ address: "127.0.0.1", family: 4 }];
       },
+      store: new MemoryAttemptStore(),
+      operatorLog: () => {},
     });
-    servers.push(upstream);
-    const seed = proxySeed(`http://localhost:${upstream.port}/v1`);
+    try {
+      expect((await register(proxy)).status).toBe(204);
+      const started = performance.now();
+      const first = await fetch(`${proxy.apiBase}/chat/completions`, { method: "POST", body: requestBody });
+      expect(first.status).toBe(502);
+      expect(performance.now() - started).toBeGreaterThanOrEqual(250);
+      const retry = await fetch(`${proxy.apiBase}/chat/completions`, { method: "POST", body: requestBody });
+      expect(retry.status).toBe(200);
+      expect(await retry.text()).toBe(successfulBody);
+      expect(provider.calls()).toBe(2);
+      expect(provider.addressSets).toEqual(Array(2).fill([{ address: "8.8.8.8", family: 4 }]));
+      expect(provider.singleAddresses).toEqual(Array(2).fill({ address: "8.8.8.8", family: 4 }));
+      expect(resolutions).toBe(1);
+      expect(proxy.billingOutcome()).toBe("ambiguous");
+    } finally {
+      proxy.close();
+    }
+  });
+
+  test("replays a completed response only under the same registered identity", async () => {
+    const provider = mockPinnedProvider();
+    const seed = proxySeed("http://localhost:1234/v1");
     const store = new MemoryAttemptStore();
     const first = await startLargeReviewProviderProxy({
       ...seed,
@@ -687,9 +906,96 @@ describe("durable large-review provider proxy", () => {
         })
       ).status,
     ).toBe(200);
-    expect(providerCalls).toBe(1);
+    expect(provider.calls()).toBe(1);
+    expect(provider.addressSets).toEqual([await ipv6FirstLoopback()]);
     await resumed.discardCompletedRun();
     resumed.close();
+  });
+
+  test.each(["envelope", "choice", "finish", "later-choice"])(
+    "does not replay partial content with a provider error: %s",
+    async (location) => {
+      const error = { code: 502, message: "Provider disconnected mid-stream" };
+      const choice = { message: { role: "assistant", content: "partial output" } };
+      const failedBody = JSON.stringify({
+        ...(location === "envelope" ? { error } : {}),
+        choices: location === "later-choice"
+          ? [choice, { error, finish_reason: "error" }]
+          : [{
+              ...choice,
+              ...(location === "choice" ? { error } : {}),
+              ...(location === "finish" ? { finish_reason: "error" } : {}),
+            }],
+        usage: { prompt_tokens: 23, completion_tokens: 2 },
+      });
+      let calls = 0;
+      const upstream = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        fetch: () => new Response(++calls === 1 ? failedBody : successfulBody),
+      });
+      servers.push(upstream);
+      const store = new MemoryAttemptStore();
+      const proxy = await startLargeReviewProviderProxy({
+        ...proxySeed(`http://127.0.0.1:${upstream.port}/v1`),
+        store,
+      });
+      try {
+        expect((await register(proxy)).status).toBe(204);
+        const first = await fetch(`${proxy.apiBase}/chat/completions`, {
+          method: "POST", body: requestBody,
+        });
+        expect(first.status).toBe(200);
+        expect(await first.text()).toBe(failedBody);
+        expect(calls).toBe(1);
+        expect(store.attempts.size).toBe(0);
+        expect(proxy.billingOutcome()).toBe("ambiguous");
+        for (let request = 0; request < 2; request += 1) {
+          const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+            method: "POST", body: requestBody,
+          });
+          expect(response.status).toBe(200);
+          expect(await response.text()).toBe(successfulBody);
+          expect(calls).toBe(2);
+          expect(proxy.billingOutcome()).toBe("ambiguous");
+        }
+        expect(store.attempts.size).toBe(1);
+        expect([...store.attempts.values()][0]?.response?.body).toBe(successfulBody);
+      } finally {
+        proxy.close();
+      }
+    },
+  );
+
+  test.each(["stop", "length"])("replays non-error content with finish reason %s", async (finishReason) => {
+    const body = JSON.stringify({
+      choices: [{ message: { role: "assistant", content: "output" }, finish_reason: finishReason, error: null }],
+      error: null,
+      usage: { prompt_tokens: 23, completion_tokens: 5 },
+    });
+    let calls = 0;
+    const upstream = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => { calls += 1; return new Response(body); },
+    });
+    servers.push(upstream);
+    const proxy = await startLargeReviewProviderProxy({
+      ...proxySeed(`http://127.0.0.1:${upstream.port}/v1`),
+      store: new MemoryAttemptStore(),
+    });
+    try {
+      expect((await register(proxy)).status).toBe(204);
+      for (let request = 0; request < 2; request += 1) {
+        const response = await fetch(`${proxy.apiBase}/chat/completions`, {
+          method: "POST", body: requestBody,
+        });
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe(body);
+      }
+      expect(calls).toBe(1);
+      expect(proxy.billingOutcome()).toBe("resumable");
+    } finally {
+      proxy.close();
+    }
   });
 
   test("marks a truncated response body ambiguous", async () => {

@@ -153,6 +153,7 @@ mock.module("@/lib/customer-notification-email", () => ({
 }));
 
 mock.module("@/lib/queue", () => ({
+  FEEDBACK_REVIEW_JOB_KIND: "review-feedback",
   HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND: "hosted-provider-key-lifecycle",
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
   isBoundedJobRetryError: (error: unknown) =>
@@ -418,6 +419,19 @@ afterEach(() => {
 });
 
 describe("drainQueueOnce", () => {
+  test("executes an admitted feedback review while new admission is disabled", async () => {
+    const enabled = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+    process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "0";
+    try {
+      await runClaimedJob({ ...reviewJob(71), kind: "review-feedback" }, "worker 0", "worker");
+      expect(completed).toEqual([71]);
+      expect(failed).toEqual([]);
+    } finally {
+      if (enabled === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+      else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = enabled;
+    }
+  });
+
   test("forwards worker cancellation to review execution", async () => {
     const controller = new AbortController();
     const onPublicationStarted = () => undefined;
@@ -551,7 +565,7 @@ describe("drainQueueOnce", () => {
     expect(shutdown).toContain("requeueableReviewIds.has(jobId)");
     expect(shutdown).toContain("await requeueJobsOwnedBy(");
     expect(shutdown).toContain("`${workerId}#`");
-    expect(shutdown).toContain('["review"]');
+    expect(shutdown).toContain('["review", FEEDBACK_REVIEW_JOB_KIND]');
     expect(shutdown.indexOf("controller.abort()")).toBeLessThan(
       shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
     );
@@ -619,6 +633,7 @@ describe("drainQueueOnce", () => {
       [
         "webhook-dispatch",
         "review",
+        "review-feedback",
         "respond",
         "respond-delivery",
         "billing-contact-verification",
@@ -631,6 +646,7 @@ describe("drainQueueOnce", () => {
         "webhook-comment",
         "github-reaction",
         "finding-feedback-reconciliation",
+        "review-feedback-reconciliation",
       ],
     ]);
     expect(claimOptions).toEqual([{ excludePrivateWorkerRehearsals: true }]);

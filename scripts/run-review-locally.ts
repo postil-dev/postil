@@ -439,7 +439,7 @@ export function formatRunSummary(result: RunResult): string {
   return lines.join("\n");
 }
 
-function createLocalGitHubServer(input: {
+export function createLocalGitHubServer(input: {
   repoPath: string;
   repoFullName: string;
   prNumber: number;
