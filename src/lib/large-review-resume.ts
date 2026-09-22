@@ -508,7 +508,12 @@ export class PostgresLargeReviewAttemptStore implements LargeReviewAttemptStore 
       ))
       .returning({ runKey: schema.largeReviewRuns.runKey });
     if (context && deleted.length !== 1) {
-      throw new Error("large-review run context ownership collision");
+      const remaining = await this.db.select({ runKey: schema.largeReviewRuns.runKey })
+        .from(schema.largeReviewRuns)
+        .where(eq(schema.largeReviewRuns.runKey, runKey)).limit(1);
+      if (remaining.length > 0) {
+        throw new Error("large-review run context ownership collision");
+      }
     }
   }
 }
@@ -561,6 +566,43 @@ export async function claimReusableLargeReviewReservation(
     if (!row) return { kind: "none" };
     if (row.billing_state === "conservative") {
       return { kind: "conservatively-settled" };
+    }
+    if (row.reservation_status === "reconciled") {
+      // Settlement can commit before process loss prevents journal retirement.
+      // Retire only the exact settled owner; cached output must not be replayed
+      // under the fresh reservation that the replacement review acquires.
+      await tx.execute(sql`
+        DELETE FROM large_review_runs AS run
+         WHERE run.run_key = ${row.run_key}
+           AND run.current_review_id = ${Number(row.current_review_id)}
+           AND run.hosted_reservation_id = ${row.hosted_reservation_id}
+           AND run.billing_state = 'active'
+           AND EXISTS (
+             SELECT 1
+               FROM hosted_usage_reservations reservation
+               JOIN reviews source ON source.id = reservation.review_id
+               JOIN reviews target ON target.id = ${currentReviewId}
+               JOIN repositories repository ON repository.id = run.repository_id
+               JOIN installations installation ON installation.id = repository.installation_id
+              WHERE reservation.id = run.hosted_reservation_id
+                AND reservation.status = 'reconciled'
+                AND reservation.actual_micros IS NOT NULL
+                AND reservation.operation = 'review'
+                AND reservation.org_id = installation.org_id
+                AND source.id = run.current_review_id
+                AND source.status IN ('failed', 'stale')
+                AND target.status = 'running'
+                AND source.repository_id = run.repository_id
+                AND target.repository_id = run.repository_id
+                AND source.pr_number = run.pr_number
+                AND target.pr_number = run.pr_number
+                AND source.head_sha = run.head_sha
+                AND target.head_sha = run.head_sha
+                AND source.base_sha = run.base_sha
+                AND target.base_sha = run.base_sha
+           )
+      `);
+      return { kind: "none" };
     }
     if (
       !row.hosted_reservation_id ||

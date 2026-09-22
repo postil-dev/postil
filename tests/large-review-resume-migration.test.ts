@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
 import * as schema from "@/lib/db/schema";
-import { reconcileConservativeHostedReviewSpend } from "@/lib/hosted-usage-reservations";
+import { reconcileConservativeHostedReviewSpend, reconcileHostedReviewSpendFromReceipt } from "@/lib/hosted-usage-reservations";
 import {
   PostgresLargeReviewAttemptStore,
   claimReusableLargeReviewReservation,
@@ -345,6 +345,59 @@ describeDb("large-review durable resume migration", () => {
     await store.deleteRun(runKey, expected);
     const remainingAttempts = await pool.query("SELECT count(*)::int AS count FROM large_review_attempts WHERE run_key = $1", [runKey]);
     expect(remainingAttempts.rows).toEqual([{ count: 0 }]);
+  });
+
+  test("settled journal retirement preserves mismatched owners and successor heads", async () => {
+    const db = drizzle(pool, { schema });
+    const store = new PostgresLargeReviewAttemptStore(db);
+    const source = Number((await pool.query(
+      "INSERT INTO reviews(repository_id,pr_number,head_sha,base_sha,status) VALUES ($1,7,$2,$3,'completed') RETURNING id",
+      [repositoryId, "b".repeat(40), "0".repeat(40)],
+    )).rows[0].id);
+    const target = Number((await pool.query(
+      "INSERT INTO reviews(repository_id,pr_number,head_sha,base_sha,status) VALUES ($1,7,$2,$3,'running') RETURNING id",
+      [repositoryId, "b".repeat(40), "0".repeat(40)],
+    )).rows[0].id);
+    const reservationId = (await pool.query(
+      "INSERT INTO hosted_usage_reservations(org_id,review_id,operation,reserved_micros,status,expires_at) VALUES ($1,$2,'review',1000,'active',now()+interval '15 minutes') RETURNING id",
+      [orgId, source],
+    )).rows[0].id;
+    const identity: LargeReviewRunIdentity = {
+      repositoryId, prNumber: 7, cliVersion: "0.8.0", configurationSha256: "a".repeat(64),
+      providerIdentity: "managed-fixture", headSha: "b".repeat(40), baseSha: "0".repeat(40),
+      retryLineage: "review-job:settled", planSha256: "c".repeat(64),
+    };
+    const context = { currentReviewId: source, hostedReservationId: reservationId };
+    const runKey = await store.bindRun(identity, context);
+    await reconcileHostedReviewSpendFromReceipt(db, {
+      reservationId, repositoryId, reviewId: source, triggerSource: "unknown",
+      usage: [{ modelUsed: "fixture", promptTokens: 1, completionTokens: 1, costMicros: 100 }],
+      usageAccountingComplete: true,
+    });
+    const retained = async (successor = target) => {
+      expect(await claimReusableLargeReviewReservation(db, identity, successor)).toEqual({ kind: "none" });
+      expect((await pool.query("SELECT count(*)::int AS count FROM large_review_runs WHERE run_key=$1", [runKey])).rows[0].count).toBe(1);
+    };
+    await retained();
+    await pool.query("UPDATE reviews SET status='failed' WHERE id=$1", [source]);
+    const otherHead = Number((await pool.query(
+      "INSERT INTO reviews(repository_id,pr_number,head_sha,base_sha,status) VALUES ($1,7,$2,$3,'running') RETURNING id",
+      [repositoryId, "c".repeat(40), identity.baseSha],
+    )).rows[0].id);
+    await retained(otherHead);
+    const otherOrg = Number((await pool.query(
+      "INSERT INTO organizations(slug,name) VALUES ('settled-journal-other','Other') RETURNING id",
+    )).rows[0].id);
+    await pool.query("UPDATE hosted_usage_reservations SET org_id=$2 WHERE id=$1", [reservationId, otherOrg]);
+    await retained();
+    await pool.query("UPDATE hosted_usage_reservations SET org_id=$2 WHERE id=$1", [reservationId, orgId]);
+    await pool.query("UPDATE hosted_usage_reservations SET review_id=$2 WHERE id=$1", [reservationId, target]);
+    await retained();
+    await pool.query("UPDATE hosted_usage_reservations SET review_id=$2 WHERE id=$1", [reservationId, source]);
+    expect(await claimReusableLargeReviewReservation(db, identity, target)).toEqual({ kind: "none" });
+    expect((await pool.query("SELECT count(*)::int AS count FROM large_review_runs WHERE run_key=$1", [runKey])).rows[0].count).toBe(0);
+    await expect(store.deleteRun(runKey, context)).resolves.toBeUndefined();
+    expect((await pool.query("SELECT cost_micros::int AS cost FROM usage_events WHERE review_id=$1", [source])).rows).toEqual([{ cost: 100 }]);
   });
 
   test("transfers one active hosted hold to a replacement review", async () => {

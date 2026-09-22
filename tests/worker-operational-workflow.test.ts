@@ -8,6 +8,7 @@ import { createLocalGitHubServer } from "../scripts/run-review-locally";
 import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 import { closeDb, schema } from "@/lib/db";
 import { claimJob, enqueueJob } from "@/lib/queue";
+import { reconcileHostedReviewSpendFromReceipt } from "@/lib/hosted-usage-reservations";
 import {
   hashEffectiveReviewConfiguration, PostgresLargeReviewAttemptStore, providerIdentity,
 } from "@/lib/large-review-resume";
@@ -151,6 +152,124 @@ describeDb("operational recovery through the worker and CLI", () => {
         upstream.stop(true);
       }
     }, 30_000);
+  }
+
+  test("recovers a settled journal after process loss without replaying cached failure", async () => {
+    const prNumber = 3;
+    let providerCalls = 0;
+    const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+      providerCalls += 1;
+      return Response.json({ choices: [{ message: { content: "complete" } }] });
+    } });
+    const github = configureWorkflow(prNumber, upstream.port!);
+    const q = fixture.pool;
+    const db = drizzle(q, { schema });
+    const jobId = await enqueueJob(q, "review", workflowPayload(prNumber));
+    const sourceReviewId = Number((await q.query(
+      "INSERT INTO reviews(repository_id,pr_number,head_sha,base_sha,status) VALUES ($1,$2,$3,$4,'failed') RETURNING id",
+      [repositoryId, prNumber, headSha, baseSha],
+    )).rows[0].id);
+    const reservationId = (await q.query(
+      "INSERT INTO hosted_usage_reservations(org_id,review_id,operation,status,reserved_micros,expires_at) VALUES ($1,$2,'review','active',1000000,now()+interval '15 minutes') RETURNING id",
+      [orgId, sourceReviewId],
+    )).rows[0].id;
+    const store = new PostgresLargeReviewAttemptStore(db);
+    const runKey = await store.bindRun({
+      repositoryId, prNumber, cliVersion: "0.9.8", headSha, baseSha,
+      retryLineage: `review-job:${jobId}`, planSha256: planSha,
+      configurationSha256: await hashEffectiveReviewConfiguration(directory, []),
+      providerIdentity: providerIdentity({ apiBase: process.env.POSTIL_API_BASE!,
+        apiFormat: "openai-compatible", byok: false, apiKey, identityKey: sealingKey }),
+    }, { currentReviewId: sourceReviewId, hostedReservationId: reservationId });
+    const request = JSON.stringify({ model, messages: [{ role: "user", content: "review" }] });
+    const requestSha256 = new Bun.CryptoHasher("sha256").update(request).digest("hex");
+    const claim = await store.claimAttempt({
+      runKey, requestSha256, batchIdentity: "f".repeat(64), attempt: 1, model,
+    });
+    if (claim.kind !== "execute") throw new Error("fixture attempt was not acquired");
+    await store.completeAttempt({ ...claim, response: { status: 200, headers: {},
+      body: JSON.stringify({ choices: [{ message: { content: "unavailable" } }] }) } });
+    const expectedCost = calculateUsageCostMicrosForModel(model, 10, 5)!;
+    await reconcileHostedReviewSpendFromReceipt(db, {
+      reservationId, repositoryId, reviewId: sourceReviewId, triggerSource: "unknown",
+      usage: [{ modelUsed: model, promptTokens: 10, completionTokens: 5, costMicros: expectedCost }],
+      usageAccountingComplete: true,
+    });
+    // These committed rows are the restart boundary between settlement and retirement.
+    const settled = (await q.query("SELECT * FROM hosted_usage_reservations WHERE id=$1", [reservationId])).rows;
+    expect((await q.query("SELECT count(*)::int AS count FROM large_review_attempts WHERE run_key=$1", [runKey])).rows[0].count).toBe(1);
+    await q.query("UPDATE jobs SET attempts=1 WHERE id=$1", [jobId]);
+    try {
+      const job = await claimJob(q, "workflow-restart", ["review"]);
+      expect(job?.id).toBe(jobId);
+      expect(job?.attempts).toBe(2);
+      await runClaimedJob(job!, "workflow-restart");
+      const terminal = (await q.query("SELECT status,attempts,payload FROM jobs WHERE id=$1", [jobId])).rows[0];
+      expect(terminal.status).toBe("done");
+      expect(terminal.attempts).toBe(2);
+      expect(Number(terminal.payload.recoveryReviewId)).not.toBe(sourceReviewId);
+      expect(providerCalls).toBe(1);
+      expect((await q.query("SELECT * FROM hosted_usage_reservations WHERE id=$1", [reservationId])).rows).toEqual(settled);
+      expect((await q.query("SELECT count(*)::int AS count FROM large_review_attempts WHERE run_key=$1", [runKey])).rows[0].count).toBe(0);
+      expect((await q.query("SELECT cost_micros::int AS cost FROM usage_events WHERE review_id IN ($1,$2) ORDER BY review_id", [sourceReviewId, terminal.payload.recoveryReviewId])).rows).toEqual([{ cost: expectedCost }, { cost: expectedCost }]);
+    } finally {
+      github.stop();
+      upstream.stop(true);
+    }
+  }, 30_000);
+
+  test("supersession during inference finishes neutral after the CLI's late failure", async () => {
+    const prNumber = 4;
+    const { supersedeActiveReviews } = await import("@/worker/review");
+    const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+      expect(await supersedeActiveReviews({
+        repositoryId, prNumber, newHeadSha: "e".repeat(40),
+        repoFullName: "workflow/repo", githubInstallationId: 990001,
+      })).toBe(1);
+      return Response.json({ choices: [{ message: { content: "unavailable" } }] });
+    } });
+    const github = configureWorkflow(prNumber, upstream.port!);
+    const q = fixture.pool;
+    const jobId = await enqueueJob(q, "review", workflowPayload(prNumber));
+    try {
+      const job = await claimJob(q, "workflow-superseded", ["review"]);
+      expect(job?.id).toBe(jobId);
+      await runClaimedJob(job!, "workflow-superseded");
+      const terminal = (await q.query("SELECT status,attempts,payload FROM jobs WHERE id=$1", [jobId])).rows[0];
+      expect(terminal.status).toBe("done");
+      expect(terminal.attempts).toBe(1);
+      expect(terminal.payload.recoveryReviewId).toBeUndefined();
+      const review = (await q.query("SELECT id,status,advisory_check_run_id,gate_check_run_id FROM reviews WHERE repository_id=$1 AND pr_number=$2", [repositoryId, prNumber])).rows[0];
+      expect(review.status).toBe("stale");
+      const advisory = github.events.filter((event) => event.type === "check-completed" && event.id === Number(review.advisory_check_run_id));
+      expect(advisory.map((event) => event.type === "check-completed" && event.conclusion)).toEqual(["neutral", "failure", "neutral"]);
+      const gate = github.events.filter((event) => event.type === "check-completed" && event.id === Number(review.gate_check_run_id));
+      expect(gate.at(-1)).toMatchObject({ conclusion: "neutral" });
+      expect((await q.query("SELECT status,actual_micros::int AS cost FROM hosted_usage_reservations WHERE review_id=$1", [review.id])).rows).toEqual([{ status: "reconciled", cost: calculateUsageCostMicrosForModel(model, 10, 5) }]);
+      expect((await q.query("SELECT count(*)::int AS count FROM large_review_runs WHERE current_review_id=$1", [review.id])).rows[0].count).toBe(0);
+    } finally {
+      github.stop();
+      upstream.stop(true);
+    }
+  }, 30_000);
+
+  function workflowPayload(prNumber: number) {
+    return { installationId: 990001, sourceInstallationId: installationId, sourceOrgId: orgId,
+      githubRepoId: 990002, repoFullName: "workflow/repo", prNumber, headSha, baseSha };
+  }
+
+  function configureWorkflow(prNumber: number, upstreamPort: number) {
+    const github = createLocalGitHubServer({
+      repoPath: directory, repoFullName: "workflow/repo", prNumber, diffText: "", headSha, baseSha,
+      pullRequestTitle: "Review workflow", repositorySource: { kind: "working-tree" },
+      baseRepositorySource: { kind: "working-tree" },
+    });
+    process.env.POSTIL_API_BASE = `http://127.0.0.1:${upstreamPort}/v1`;
+    process.env.GITHUB_API_URL = github.origin;
+    process.env.POSTIL_PUBLIC_URL = github.origin;
+    process.env.POSTIL_FIXTURE_COUNT_PATH = join(directory, `invocations-${prNumber}`);
+    process.env.POSTIL_FIXTURE_FOREIGN_PLAN = "0";
+    return github;
   }
 });
 

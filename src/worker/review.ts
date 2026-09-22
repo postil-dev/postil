@@ -2209,6 +2209,22 @@ export async function runReviewJob(
       return rows;
     });
     await reconcileInterruptedSpend();
+    if (failedRows.length === 0) {
+      const terminal = (await db.select({ status: schema.reviews.status })
+        .from(schema.reviews).where(eq(schema.reviews.id, reviewId)).limit(1))[0];
+      if (terminal?.status === "stale") {
+        await neutralizeSupersededCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? null,
+          gateCheckRunId ?? null,
+          "superseded by a newer review",
+          detailsUrl,
+        );
+        reviewLog.line("forge check-runs restored to neutral after supersession");
+        return;
+      }
+    }
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).
