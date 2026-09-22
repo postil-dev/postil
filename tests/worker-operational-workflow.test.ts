@@ -138,8 +138,14 @@ describeDb("operational recovery through the worker and CLI", () => {
         expect(firstJob.attempts).toBe(1);
         expect(firstJob.max_attempts).toBe(3);
         expect(firstJob.payload.recoveryReviewId).toBeUndefined();
-        const failed = (await q.query("SELECT id,status,envelope FROM reviews WHERE repository_id=$1 AND pr_number=$2 AND status='failed'", [repositoryId, prNumber])).rows[0];
+        const failed = (await q.query("SELECT id,status,envelope,advisory_check_run_id,gate_check_run_id FROM reviews WHERE repository_id=$1 AND pr_number=$2 AND status='failed'", [repositoryId, prNumber])).rows[0];
         expect(failed.envelope.findings[0].path).toBe(foreignPlan ? ".postil/model-output" : ".postil/provider");
+        const failedCheckIds = [Number(failed.advisory_check_run_id), Number(failed.gate_check_run_id)];
+        for (const id of failedCheckIds) {
+          const completions = github.events.filter((event) => event.type === "check-completed" && event.id === id);
+          expect(completions.at(-1)).toMatchObject({ conclusion: "failure" });
+          expect(completions.some((event) => event.type === "check-completed" && event.conclusion === "success")).toBe(false);
+        }
         expect((await q.query("SELECT count(*)::int AS count FROM review_publication_receipts WHERE review_id=$1", [failed.id])).rows[0].count).toBe(0);
         expect((await q.query("SELECT count(*)::int AS count FROM large_review_runs WHERE current_review_id=$1", [failed.id])).rows[0].count).toBe(0);
         const expectedCost = calculateUsageCostMicrosForModel(model, 10, 5);
@@ -169,6 +175,9 @@ describeDb("operational recovery through the worker and CLI", () => {
           expect(finalJob.payload.reviewFeedback).toEqual(reviewFeedback);
         }
         expect(github.events.some((event) => event.type === "check-completed" && event.id === Number(completed.advisory_check_run_id) && event.conclusion === "success")).toBe(true);
+        for (const id of failedCheckIds) {
+          expect(github.events.some((event) => event.type === "check-completed" && event.id === id && event.conclusion === "success")).toBe(false);
+        }
         if (foreignKey) {
           expect((await q.query("SELECT * FROM large_review_runs WHERE run_key=$1", [foreignKey])).rows).toEqual(foreignSnapshot);
         }

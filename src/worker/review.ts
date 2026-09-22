@@ -1841,7 +1841,10 @@ export async function runReviewJob(
     receiptUsageForRace = receiptUsage;
     usageAccountingCompleteForRace = ingested.usageAccountingComplete;
     failedAttemptEnvelope = ingested.envelope;
-    if (isEnvelopeOperationallyUnavailable(ingested.envelope)) {
+    const advisoryConclusion = isEnvelopeOperationallyUnavailable(ingested.envelope)
+      ? "failure"
+      : "success";
+    if (advisoryConclusion === "failure") {
       throw new OperationalError("review unavailable: provider or model output failed; see retained review diagnostics");
     }
     let publicationReceipt: PublicationReceipt | undefined;
@@ -1940,7 +1943,7 @@ export async function runReviewJob(
           name: ADVISORY_CHECK_NAME,
           externalId: advisoryCheckExternalId,
           headSha: payload.headSha,
-          conclusion: "success",
+          conclusion: advisoryConclusion,
           requireOutput: true,
           detailsUrl,
         },
