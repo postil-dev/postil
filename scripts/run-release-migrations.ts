@@ -129,8 +129,9 @@ export function checkedInReleaseMigrations(): ManagedReleaseMigrationIdentity[] 
 }
 
 async function defaultPrepareAndVerifyCompatibleRelease(
-  environment: Environment,
+  inputEnvironment: Environment,
 ): Promise<void> {
+  const environment = releaseMigrationEnvironment(inputEnvironment);
   const pool = new Pool({ connectionString: environment.DATABASE_URL });
   try {
     await prepareReviewedAdditiveMigration(environment, false, pool);
