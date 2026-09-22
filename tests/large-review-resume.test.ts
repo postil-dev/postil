@@ -792,7 +792,7 @@ describe("durable large-review provider proxy", () => {
           expect(proxy.billingOutcome()).toBe("ambiguous");
         }
         expect(store.attempts.size).toBe(1);
-        expect([...store.attempts.values()][0].response?.body).toBe(successfulBody);
+        expect([...store.attempts.values()][0]?.response?.body).toBe(successfulBody);
       } finally {
         proxy.close();
       }
