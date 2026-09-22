@@ -4,13 +4,14 @@ import { join } from "node:path";
 
 import { Client, Pool } from "pg";
 
-import { checkedInReleaseMigrations } from "../scripts/run-release-migrations";
+import { checkedInReleaseMigrations, runReleaseMigrations } from "../scripts/run-release-migrations";
 import {
   COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS,
   COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
   HOSTED_INFERENCE_LOCK,
   PRIVATE_REVIEW_AUTHOR_CAPABILITY,
   RELEASE_V1_JOBS_CAPABILITY,
+  applyReviewedManagedReleaseMigration,
   compatibleManagedReleaseProtocolCapability,
   hostedInferenceCapability,
   prepareCompatibleManagedRelease,
@@ -23,6 +24,26 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDatabase = TEST_URL ? describe : describe.skip;
 
 describe("compatible managed release identity", () => {
+  test("rejects malformed full migration lists before opening any database transaction", async () => {
+    const migrations = checkedInReleaseMigrations();
+    const latest = migrations.at(-1)!;
+    const source = await readFile(join(import.meta.dir, "..", "drizzle", "0061_review_feedback_reconciliation.sql"), "utf8");
+    let connected = false;
+    const pool = { connect() { connected = true; throw new Error("database must not be contacted"); } } as unknown as Pool;
+    for (const dryRun of [true, false]) {
+      for (const identities of [
+        [...migrations, latest],
+        [...migrations, { folderMillis: latest.folderMillis + 1, hash: "invalid" }],
+        [...migrations, { folderMillis: -1, hash: latest.hash }],
+        [...migrations, { folderMillis: Number.MAX_SAFE_INTEGER + 1, hash: latest.hash }],
+      ]) {
+        await expect(applyReviewedManagedReleaseMigration(pool, "a".repeat(40), "b".repeat(40),
+          COMPATIBLE_MANAGED_RELEASE_PROTOCOL, identities, source, { dryRun })).rejects.toThrow("identities are invalid");
+      }
+    }
+    expect(connected).toBe(false);
+  });
+
   test("requires exact lowercase 40-character release SHAs", () => {
     expect(
       compatibleManagedReleaseProtocolCapability("a".repeat(40)),
@@ -62,7 +83,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       const migration = new Client({ connectionString: url.toString() });
       await migration.connect();
       for (const file of (await readdir(join(import.meta.dir, "..", "drizzle")))
-        .filter((name) => /^\d{4}_.*\.sql$/.test(name))
+        .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !name.startsWith("0061_"))
         .sort()) {
         const source = await readFile(
           join(import.meta.dir, "..", "drizzle", file),
@@ -78,7 +99,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
         hash text NOT NULL,
         created_at bigint
       )`);
-      for (const identity of migrations) {
+      for (const identity of migrations.slice(0, -1)) {
         await migration.query(
           `INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
            VALUES ($1, $2)`,
@@ -103,8 +124,95 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
 
     afterAll(async () => {
       await pool?.end();
-      await admin?.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      if (process.env.POSTIL_KEEP_TEST_DATABASE === "1") {
+        console.error(`Preserved test database ${databaseName}`);
+      } else {
+        await admin?.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      }
       await admin?.end();
+    }, 30_000);
+
+    test("applies only the reviewed additive migration atomically without retiring the source", async () => {
+      const source = await readFile(join(import.meta.dir, "..", "drizzle", "0061_review_feedback_reconciliation.sql"), "utf8");
+      const latest = migrations.at(-1)!;
+      const previous = migrations.at(-2)!;
+      const capabilities = async () => (await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows;
+      const before = await capabilities();
+      const apply = (dryRun = false, identities = migrations, sql = source) =>
+        applyReviewedManagedReleaseMigration(pool, sourceRelease, targetRelease,
+          COMPATIBLE_MANAGED_RELEASE_PROTOCOL, identities, sql, { dryRun });
+      const unchanged = async () => {
+        expect((await pool.query("SELECT to_regclass('public.review_feedback_polls') AS relation")).rows[0].relation).toBeNull();
+        expect((await pool.query("SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations WHERE created_at=$1", [latest.folderMillis])).rows[0].count).toBe(0);
+        expect(await capabilities()).toEqual(before);
+      };
+      await expect(verifyCompatibleManagedRelease(pool, sourceRelease, targetRelease,
+        COMPATIBLE_MANAGED_RELEASE_PROTOCOL, migrations)).rejects.toThrow("pending migrations");
+      expect(await apply(true)).toBe(true);
+      await unchanged();
+      await expect(apply(false, migrations, source + "\n")).rejects.toThrow("reviewed identity");
+      await expect(apply(true, [...migrations, latest])).rejects.toThrow("identities are invalid");
+      await expect(apply(false, [...migrations, { folderMillis: latest.folderMillis + 1, hash: "a".repeat(64) }])).rejects.toThrow("unapproved pending");
+      await unchanged();
+
+      const unknown = await pool.query("INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2) RETURNING id", ["a".repeat(64), latest.folderMillis + 1]);
+      try { await expect(apply()).rejects.toThrow("unknown migrations"); }
+      finally { await pool.query("DELETE FROM drizzle.__drizzle_migrations WHERE id=$1", [unknown.rows[0].id]); }
+      await pool.query("UPDATE drizzle.__drizzle_migrations SET hash=$1 WHERE created_at=$2", ["b".repeat(64), previous.folderMillis]);
+      try { await expect(apply()).rejects.toThrow("journal mismatch"); }
+      finally { await pool.query("UPDATE drizzle.__drizzle_migrations SET hash=$1 WHERE created_at=$2", [previous.hash, previous.folderMillis]); }
+      await pool.query("DELETE FROM drizzle.__drizzle_migrations WHERE created_at=$1", [previous.folderMillis]);
+      try { await expect(apply()).rejects.toThrow("pending migrations"); }
+      finally { await pool.query("INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2)", [previous.hash, previous.folderMillis]); }
+      await pool.query("DELETE FROM deployment_capabilities WHERE name=$1", [hostedInferenceCapability(sourceRelease)]);
+      try { await expect(apply()).rejects.toThrow("active hosted release capability"); }
+      finally { await pool.query("INSERT INTO deployment_capabilities(name) VALUES($1)", [hostedInferenceCapability(sourceRelease)]); }
+      await unchanged();
+
+      const holder = await pool.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query("LOCK TABLE drizzle.__drizzle_migrations IN SHARE ROW EXCLUSIVE MODE");
+        await expect(apply()).rejects.toMatchObject({ code: "55P03" });
+      } finally {
+        await holder.query("ROLLBACK");
+        holder.release();
+      }
+      await unchanged();
+
+      await pool.query(`CREATE FUNCTION reject_reviewed_journal_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.created_at = ${latest.folderMillis} THEN RAISE EXCEPTION 'injected journal insertion failure'; END IF; RETURN NEW; END $$;
+        CREATE TRIGGER reject_reviewed_journal_insert BEFORE INSERT ON drizzle.__drizzle_migrations
+        FOR EACH ROW EXECUTE FUNCTION reject_reviewed_journal_insert()`);
+      await expect(apply()).rejects.toThrow("injected journal insertion failure");
+      await unchanged();
+      await pool.query("ALTER TABLE drizzle.__drizzle_migrations DISABLE TRIGGER reject_reviewed_journal_insert");
+
+      const oldWriter = async (prNumber: number) => withHostedInferenceReleaseActive(pool, sourceRelease, async () => {
+        const result = await pool.query("INSERT INTO jobs(kind,payload) VALUES('review',$1::jsonb) RETURNING kind,status", [JSON.stringify({ githubRepoId: 123, repoFullName: "fixture/repository", prNumber, headSha: "d".repeat(40) })]);
+        expect(result.rows).toEqual([{ kind: "review", status: "queued" }]);
+      });
+      await oldWriter(1);
+      const older = migrations[7]!;
+      await pool.query("DELETE FROM drizzle.__drizzle_migrations WHERE created_at=$1", [older.folderMillis]);
+      try {
+        const commands: string[][] = [];
+        const url = new URL(TEST_URL!); url.pathname = `/${databaseName}`;
+        await runReleaseMigrations({ DATABASE_URL: url.toString(), POSTIL_MANAGED_RELEASE: "1",
+          POSTIL_RELEASE_SHA: targetRelease, POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA: sourceRelease,
+          POSTIL_RELEASE_PROTOCOL: COMPATIBLE_MANAGED_RELEASE_PROTOCOL },
+          (command) => { commands.push([...command]); return { exited: Promise.resolve(0) }; },
+          undefined, async () => true);
+        expect(commands).toEqual([["bun", "run", "hosted:verify-provider"]]);
+        expect(await apply()).toBe(false);
+        expect(await apply(true)).toBe(false);
+        expect(await capabilities()).toEqual(before);
+        expect((await pool.query("SELECT to_regclass('public.review_feedback_polls') AS relation")).rows[0].relation).toBe("review_feedback_polls");
+        expect((await pool.query("SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at=$1", [latest.folderMillis])).rows).toEqual([{ hash: latest.hash }]);
+        await oldWriter(2);
+      } finally {
+        await pool.query("INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2)", [older.hash, older.folderMillis]);
+      }
     }, 30_000);
 
     test("bootstraps the reviewed protocol and authorizes old and new releases together", async () => {

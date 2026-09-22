@@ -34,7 +34,7 @@ function fleet() {
 }
 
 function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = secretMetadata,
-  afterExecSecrets?: typeof secretMetadata, statusMachines = machines) {
+  afterExecSecrets?: typeof secretMetadata, statusMachines = machines, afterUpdateMachines?: ReturnType<typeof fleet>) {
   const directory = mkdtempSync(join(tmpdir(), "postil-deploy-test-"));
   try {
     writeFileSync(join(directory, "machines.json"), JSON.stringify(machines));
@@ -42,13 +42,20 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
     writeFileSync(join(directory, "postil-source-secrets.json"), JSON.stringify(secretMetadata));
     writeFileSync(join(directory, "secrets.json"), JSON.stringify(secrets));
     writeFileSync(join(directory, "status-machines.json"), JSON.stringify(statusMachines));
+    if (afterUpdateMachines) writeFileSync(join(directory, "after-update-machines.json"), JSON.stringify(afterUpdateMachines));
     if (afterExecSecrets) writeFileSync(join(directory, "after-exec-secrets.json"), JSON.stringify(afterExecSecrets));
     const script = steps.find((step) => step.id === id)?.run;
     if (!script) throw new Error(`missing workflow step ${id}`);
     const result = Bun.spawnSync(["bash", "-c", `
       flyctl() {
         case "$1 $2" in
-          "machine list") cat "$RUNNER_TEMP/machines.json" ;;
+          "machine list")
+            if [[ -f "$RUNNER_TEMP/list-observed" ]]; then
+              cat "$RUNNER_TEMP/status-machines.json"
+            else
+              touch "$RUNNER_TEMP/list-observed"
+              cat "$RUNNER_TEMP/machines.json"
+            fi ;;
           "secrets list") cat "$RUNNER_TEMP/secrets.json" ;;
           "deploy --remote-only") printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
@@ -61,14 +68,18 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
               return 1
             fi
             jq -er --arg id "$3" '.[] | select(.id == $id and .state != "stopped") | .release' "$RUNNER_TEMP/machines.json" ;;
-          "machine status") jq --arg id "$3" '.[] | select(.id == $id)' "$RUNNER_TEMP/status-machines.json" ;;
+          "machine status") echo 'Error: unknown flag: --json' >&2; return 64 ;;
           "machine update")
             printf '%s\\n' "$*" >> "$RUNNER_TEMP/updates"
             jq --arg id "$3" --arg image "$SOURCE_IMAGE" --arg sha "$SOURCE_RELEASE_SHA" '
               map(if .id == $id then .config.image = $image | .image_ref.digest = ($image | split("@")[1]) | .release = $sha | .state = "started" | .host_status = "ok" | (.checks[]?.status) = "passing" else . end)
             ' "$RUNNER_TEMP/machines.json" > "$RUNNER_TEMP/next.json"
             mv "$RUNNER_TEMP/next.json" "$RUNNER_TEMP/machines.json"
-            cp "$RUNNER_TEMP/machines.json" "$RUNNER_TEMP/status-machines.json" ;;
+            if [[ -f "$RUNNER_TEMP/after-update-machines.json" ]]; then
+              cp "$RUNNER_TEMP/after-update-machines.json" "$RUNNER_TEMP/status-machines.json"
+            else
+              cp "$RUNNER_TEMP/machines.json" "$RUNNER_TEMP/status-machines.json"
+            fi ;;
           *) return 98 ;;
         esac
       }
@@ -86,6 +97,28 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
 }
 
 describe("managed deployment contract", () => {
+  test.each(["missing", "duplicate"])("rejects a %s captured machine in the fresh list", (failure) => {
+    const observed = fleet();
+    if (failure === "missing") observed.shift();
+    else observed.push(structuredClone(observed[0]!));
+    const result = runStep("rollback", fleet(), fleet(), secretMetadata, undefined, observed);
+    expect(result.code).not.toBe(0);
+    expect(result.error).toContain("captured machine identity is not unique");
+    expect(result.updates).toBe("");
+  });
+
+  test.each(["missing", "duplicate"])("rejects a %s restored machine after update", (failure) => {
+    const machines = fleet();
+    machines[1]!.state = "stopped";
+    const observed = fleet();
+    if (failure === "missing") observed.splice(1, 1);
+    else observed.push(structuredClone(observed[1]!));
+    const result = runStep("rollback", machines, fleet(), secretMetadata, undefined, machines, observed);
+    expect(result.code).not.toBe(0);
+    expect(result.error).toContain("restored machine identity is not unique");
+    expect(result.updates.trim().split("\n")).toHaveLength(1);
+  });
+
   test("binds checkout, build, and verification to the triggering workflow SHA", () => {
     expect(workflow.jobs.deploy.env.TARGET_RELEASE_SHA).toBe("${{ github.event.workflow_run.head_sha || github.sha }}");
     const source = readFileSync(".github/workflows/deploy.yml", "utf8");

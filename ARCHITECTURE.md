@@ -38,11 +38,22 @@ or publishes the private dataset.
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
-Web, worker, and monitor processes use `DATABASE_URL`. The release migration subprocess
+Web, worker, and monitor processes use `DATABASE_URL`. Release preparation
 uses an optional `POSTIL_DIRECT_DATABASE_URL`, or derives the known Supabase
-session-pool endpoint from a port-6543 transaction-pool URL. Only the Drizzle
-child receives that value as `DATABASE_URL`; ordinary runtime connections keep
-the configured pooling mode.
+session-pool endpoint from a port-6543 transaction-pool URL. Managed preparation
+uses this direct connection in its database pool; unmanaged migration commands
+receive it as `DATABASE_URL`. Ordinary runtime connections keep the configured
+pooling mode.
+
+Managed release preparation applies only the exact hash-approved feedback
+reconciliation migration. The migration and journal entry share a transaction
+with a 5-second lock timeout and a 30-second statement timeout. Source release
+capabilities and the applied journal watermark remain prerequisites; older
+journal gaps below that watermark remain valid. Unknown or mismatched journal
+entries and unapproved pending migrations stop preparation. The existing strict
+journal verification runs before the new release receives capabilities.
+`bun run scripts/run-release-migrations.ts --inspect-additive` checks the same
+migration identity and source compatibility in a read-only transaction.
 
 The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling when the private monitor is disabled. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 

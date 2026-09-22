@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { Pool, PoolClient } from "pg";
 
@@ -456,6 +456,37 @@ export interface ManagedReleaseMigrationIdentity {
   hash: string;
 }
 
+const REVIEWED_ADDITIVE_MIGRATION = {
+  folderMillis: 1790035237566,
+  hash: "1844328bea9c5817896c9d6a56075879168781379c7d959022c8dd34bbce89da",
+} as const;
+
+/** Apply only the reviewed feedback migration while preserving source capabilities. */
+export async function applyReviewedManagedReleaseMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const identity = migrations.find(
+    (migration) => migration.folderMillis === REVIEWED_ADDITIVE_MIGRATION.folderMillis,
+  );
+  if (identity?.hash !== REVIEWED_ADDITIVE_MIGRATION.hash ||
+      createHash("sha256").update(source).digest("hex") !== REVIEWED_ADDITIVE_MIGRATION.hash) {
+    throw new Error("managed additive migration does not match its reviewed identity");
+  }
+  return withCompatibleManagedReleaseState(
+    pool, sourceReleaseSha, releaseSha, protocol, migrations,
+    { readOnly: options.dryRun === true, requirePreparedRelease: false,
+      lockLifecycle: options.dryRun !== true, reviewedMigration: source },
+    async (_client, state) => state.migrationApplied,
+  );
+}
+
 function requireCompatibleManagedReleaseProtocol(protocol: string): void {
   if (protocol !== COMPATIBLE_MANAGED_RELEASE_PROTOCOL) {
     throw new Error(
@@ -470,10 +501,9 @@ export function compatibleManagedReleaseProtocolCapability(
   return `${MANAGED_RELEASE_PROTOCOL_PREFIX}${normalizedManagedReleaseSha(releaseSha)}:${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}`;
 }
 
-async function assertManagedReleaseMigrationsCurrent(
-  client: PoolClient,
+function checkedMigrationIdentities(
   expected: readonly ManagedReleaseMigrationIdentity[],
-): Promise<void> {
+): Map<string, ManagedReleaseMigrationIdentity> {
   if (
     expected.length === 0 ||
     expected.some(
@@ -491,6 +521,14 @@ async function assertManagedReleaseMigrationsCurrent(
   if (expectedByCreatedAt.size !== expected.length) {
     throw new Error("checked-in managed release migration identities are invalid");
   }
+  return expectedByCreatedAt;
+}
+
+async function assertManagedReleaseMigrationsCurrent(
+  client: PoolClient,
+  expected: readonly ManagedReleaseMigrationIdentity[],
+): Promise<void> {
+  const expectedByCreatedAt = checkedMigrationIdentities(expected);
   const table = await client.query<{ present: boolean }>(
     `SELECT to_regclass('drizzle.__drizzle_migrations') IS NOT NULL AS present`,
   );
@@ -663,16 +701,18 @@ async function withCompatibleManagedReleaseState<T>(
     readOnly: boolean;
     requirePreparedRelease: boolean;
     lockLifecycle: boolean;
+    reviewedMigration?: string;
   },
   operation: (
     client: PoolClient,
-    state: { bootstrap: boolean },
+    state: { bootstrap: boolean; migrationApplied: boolean },
   ) => Promise<T>,
 ): Promise<T> {
   requireCompatibleManagedReleaseProtocol(protocol);
   const normalizedSourceRelease = normalizedManagedReleaseSha(sourceReleaseSha);
   const normalizedRelease = normalizedManagedReleaseSha(releaseSha);
   const client = await pool.connect();
+  let releaseError: Error | undefined;
   try {
     await client.query(
       options.readOnly
@@ -701,21 +741,57 @@ async function withCompatibleManagedReleaseState<T>(
         throw new Error("managed release hosted lifecycle lock is busy");
       }
     }
+    let migrationApplied = false;
+    let compatibleMigrations = migrations;
+    if (options.reviewedMigration !== undefined) {
+      // Serialize the journal decision with other writers, including Drizzle.
+      if (!options.readOnly) {
+        await client.query("LOCK TABLE drizzle.__drizzle_migrations IN SHARE ROW EXCLUSIVE MODE");
+      }
+      const applied = await client.query<{ present: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE created_at = $1) AS present",
+        [REVIEWED_ADDITIVE_MIGRATION.folderMillis],
+      );
+      if (!applied.rows[0]?.present) {
+        if (migrations.some((migration) => migration.folderMillis > REVIEWED_ADDITIVE_MIGRATION.folderMillis)) {
+          throw new Error("managed release has unapproved pending migrations");
+        }
+        compatibleMigrations = migrations.filter(
+          (migration) => migration.folderMillis < REVIEWED_ADDITIVE_MIGRATION.folderMillis,
+        );
+        migrationApplied = true;
+      }
+    }
     const state = await assertCompatibleManagedReleaseDatabaseState(
       client,
       normalizedSourceRelease,
       normalizedRelease,
-      migrations,
+      compatibleMigrations,
       options.requirePreparedRelease,
     );
-    const result = await operation(client, state);
+    if (migrationApplied && !options.readOnly) {
+      await client.query(options.reviewedMigration!);
+      await client.query(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+        [REVIEWED_ADDITIVE_MIGRATION.hash, REVIEWED_ADDITIVE_MIGRATION.folderMillis],
+      );
+      await assertCompatibleManagedReleaseDatabaseState(
+        client, normalizedSourceRelease, normalizedRelease, migrations, options.requirePreparedRelease,
+      );
+    }
+    const result = await operation(client, { ...state, migrationApplied });
     await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(rollbackError, "managed release rollback failed");
+      throw new AggregateError([error, releaseError], "managed release transaction and rollback failed");
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(releaseError);
   }
 }
 
