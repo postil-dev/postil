@@ -12,6 +12,7 @@ import type { ApiFormat } from "@/lib/byok-provider";
 import { isPrivateIpLiteral } from "@/lib/api-base";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
+import { reviewCoverageReceiptSchema, type ReviewCoverageReceipt } from "@/lib/envelope";
 import { HOSTED_REVIEW_RESERVATION_TTL_MS } from "@/lib/hosted-usage-reservations";
 import {
   providerResponseErrorDiagnostic,
@@ -917,6 +918,7 @@ export interface LargeReviewProviderProxy {
   discardCompletedRun(): Promise<void>;
   billingOutcome(): "unused" | "resumable" | "ambiguous";
   boundRunKey(): Promise<string | null>;
+  registeredCoverageReceipt(): ReviewCoverageReceipt | null;
 }
 
 interface PinnedUpstream {
@@ -1391,6 +1393,18 @@ export async function startLargeReviewProviderProxy(input: {
     async boundRunKey() {
       if (bindPromise) await bindPromise;
       return runKey ?? null;
+    },
+    registeredCoverageReceipt() {
+      if (!registeredPlan || !runKey) return null;
+      const plan = JSON.parse(registeredPlan);
+      const receipt = reviewCoverageReceiptSchema.safeParse({
+        planSha256: plan.planSha256,
+        totalHunks: plan.directHunks + plan.semanticHunks + plan.unreviewedHunks,
+        directHunks: plan.directHunks,
+        semanticHunks: plan.semanticHunks,
+        unreviewedHunks: plan.unreviewedHunks,
+      });
+      return receipt.success ? receipt.data : null;
     },
   };
 }

@@ -153,6 +153,7 @@ const TYPED_MODEL_INCIDENT_CATEGORIES = new Set([
 const MODEL_INCIDENT_CATEGORIES = new Set([
   ...TYPED_MODEL_INCIDENT_CATEGORIES,
   "operational",
+  "coverageCapacity",
 ]);
 const MODEL_INCIDENT_RECOVERIES = new Set(["repair", "fallback"]);
 const MODEL_INCIDENT_SOURCES = new Set([
@@ -160,6 +161,7 @@ const MODEL_INCIDENT_SOURCES = new Set([
   "provider_sentinel",
   "model_output_sentinel",
   "operational_sentinel",
+  "coverage_receipt",
 ]);
 
 export class ServerObservability {
@@ -725,7 +727,10 @@ function isValidModelIncidentTuple(incident: {
       incident.category === "invalidOutput") ||
     (incident.source === "operational_sentinel" &&
       incident.phase === "review" &&
-      incident.category === "operational")
+      incident.category === "operational") ||
+    (incident.source === "coverage_receipt" &&
+      incident.phase === "review" &&
+      incident.category === "coverageCapacity")
   );
 }
 
