@@ -130,7 +130,7 @@ describe("worker startup environment validation", () => {
       /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,
     );
     expect(deployWorkflow).toContain(
-      "always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outcome != 'skipped'",
+      "always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outputs.attempted == 'true'",
     );
     expect(deployWorkflow).not.toContain("flyctl machine start");
     expect(deployWorkflow).not.toContain("flyctl logs");
