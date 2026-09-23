@@ -39,6 +39,7 @@ common_git_directory=$(cd "$common_git_directory" 2>/dev/null && pwd -P) ||
 "$GIT_EXECUTABLE" remote get-url "$remote_name" >/dev/null 2>&1 ||
   fail_setup "remote is not configured: $remote_name"
 
+current_uid=$(/usr/bin/id -u) || fail_setup "could not identify evidence owner"
 umask 077
 temporary_root=$("$MKTEMP_EXECUTABLE" -d "/tmp/postil-pre-push.XXXXXX") ||
   fail_setup "could not create a private temporary directory"
@@ -145,6 +146,11 @@ validate_envelope() {
   ' "$output_file" >/dev/null 2>&1
 }
 
+owned_evidence_path() {
+  evidence_owner_path=$(/usr/bin/find "$1" -prune -user "$current_uid" -print 2>/dev/null) || return 1
+  [ "$evidence_owner_path" = "$1" ]
+}
+
 ensure_review_cache_directory() {
   review_cache_directory=$common_git_directory/postil-local-review
   if [ -e "$review_cache_directory" ] || [ -L "$review_cache_directory" ]; then
@@ -152,11 +158,41 @@ ensure_review_cache_directory() {
       fail_setup "local review cache must be a non-symlink directory"
     fi
   else
-    /bin/mkdir -m 700 "$review_cache_directory" ||
+    /bin/mkdir -m 700 "$review_cache_directory" 2>/dev/null ||
+      { [ -d "$review_cache_directory" ] && [ ! -L "$review_cache_directory" ]; } ||
       fail_setup "could not create the private local review cache"
   fi
+  owned_evidence_path "$review_cache_directory" || fail_setup "local review cache is owned by another user"
   /bin/chmod 700 "$review_cache_directory" ||
     fail_setup "local review cache must be owner-controlled with mode 0700"
+  archive_directory=$review_cache_directory/archive
+  if [ ! -e "$archive_directory" ] && [ ! -L "$archive_directory" ]; then
+    /bin/mkdir -m 700 "$archive_directory" 2>/dev/null || true
+  fi
+  [ -d "$archive_directory" ] && [ ! -L "$archive_directory" ] ||
+    fail_setup "local review archive must be a non-symlink directory"
+  owned_evidence_path "$archive_directory" || fail_setup "local review archive is owned by another user"
+  /bin/chmod 700 "$archive_directory" || fail_setup "could not protect local review archive"
+}
+
+archive_evidence() {
+  # Callers hold the exact-review lock. Rename retains bytes without following links.
+  archive_needed=0
+  for archive_source in "$@"; do
+    if [ -e "$archive_source" ] || [ -L "$archive_source" ]; then
+      validate_private_file "$archive_source" "local review evidence"
+      archive_needed=1
+    fi
+  done
+  [ "$archive_needed" -eq 1 ] || return 0
+  [ -d "$archive_directory" ] && [ ! -L "$archive_directory" ] || return 1
+  archive_batch=$("$MKTEMP_EXECUTABLE" -d "$archive_directory/superseded.XXXXXX") || return 1
+  for archive_source in "$@"; do
+    if [ -e "$archive_source" ]; then
+      /bin/mv -- "$archive_source" "$archive_batch/${archive_source##*/}" || return 1
+    fi
+  done
+  /bin/sync
 }
 
 acquire_cache_lock() {
@@ -176,6 +212,7 @@ validate_private_file() {
   if [ ! -f "$private_path" ] || [ -L "$private_path" ]; then
     fail_setup "$private_label must be a regular, non-symlink file"
   fi
+  owned_evidence_path "$private_path" || fail_setup "$private_label is owned by another user"
   /bin/chmod 600 "$private_path" ||
     fail_setup "$private_label must be owner-controlled with mode 0600"
 }
@@ -308,7 +345,7 @@ write_accepted_marker() {
   expected_review_digest=$4
   expected_disposition_digest=$5
   expected_target_digest=$6
-  marker_temporary=$("$MKTEMP_EXECUTABLE" "$review_cache_directory/.accepted.XXXXXX") || return 1
+  marker_temporary=$("$MKTEMP_EXECUTABLE" "$evidence_directory/.accepted.XXXXXX") || return 1
   # The marker contains digests and immutable identities, not finding prose.
   # shellcheck disable=SC2016
   if ! "$JQ_EXECUTABLE" -n --arg base "$expected_base" --arg head "$expected_head" \
@@ -323,19 +360,15 @@ write_accepted_marker() {
         targetDigest: $target
       }
     ' >"$marker_temporary"; then
-    /bin/rm -f -- "$marker_temporary"
     return 1
   fi
   /bin/chmod 600 "$marker_temporary" || {
-    /bin/rm -f -- "$marker_temporary"
     return 1
   }
   if [ -d "$marker_path" ] && [ ! -L "$marker_path" ]; then
-    /bin/rm -f -- "$marker_temporary"
     return 1
   fi
-  /bin/rm -f -- "$marker_path" || {
-    /bin/rm -f -- "$marker_temporary"
+  archive_evidence "$marker_path" || {
     return 1
   }
   /bin/mv -f -- "$marker_temporary" "$marker_path"
@@ -367,6 +400,10 @@ start_accepted_marker_observer() {
       remote_name=$8
       remote_ref=$9
       reviewed_head=${10}
+      archive_directory=${11}
+      mktemp_executable=${12}
+      current_uid=${13}
+      umask 077
       for observer_delay in 0 1 1 2 3 5 8 13 21 34 55 60 60; do
         if [ "$observer_delay" -gt 0 ]; then
           /bin/sleep "$observer_delay"
@@ -379,9 +416,20 @@ start_accepted_marker_observer() {
             if [ -f "$marker_path" ] && [ ! -L "$marker_path" ]; then
               observed_digest=$("$git_executable" hash-object "$marker_path" 2>/dev/null || true)
               if [ "$observed_digest" = "$expected_marker_digest" ]; then
-                consumed_path=$marker_path.consumed.$$
-                if /bin/mv -- "$marker_path" "$consumed_path"; then
-                  /bin/rm -f -- "$cache_path" "$template_path" "$consumed_path"
+                if [ -d "$archive_directory" ] && [ ! -L "$archive_directory" ] &&
+                  [ -f "$cache_path" ] && [ ! -L "$cache_path" ] &&
+                  [ -f "$template_path" ] && [ ! -L "$template_path" ]; then
+                  for evidence_path in "$archive_directory" "$cache_path" "$template_path" "$marker_path"; do
+                    [ "$(/usr/bin/find "$evidence_path" -prune -user "$current_uid" -print 2>/dev/null)" = "$evidence_path" ] || { /bin/rmdir "$lock_path"; exit 2; }
+                  done
+                  consumed_directory=$("$mktemp_executable" -d "$archive_directory/consumed.XXXXXX") || { /bin/rmdir "$lock_path"; exit 2; }
+                  # Retire authorization first; interrupted archival leaves evidence
+                  # available for a fresh review without an active stale marker.
+                  /bin/chmod 600 "$cache_path" "$template_path" "$marker_path" &&
+                    /bin/mv -- "$marker_path" "$consumed_directory/${marker_path##*/}" &&
+                    /bin/mv -- "$cache_path" "$consumed_directory/${cache_path##*/}" &&
+                    /bin/mv -- "$template_path" "$consumed_directory/${template_path##*/}" &&
+                    /bin/sync
                 fi
               fi
             fi
@@ -393,7 +441,7 @@ start_accepted_marker_observer() {
     ' postil-marker-observer "$repository_root" "$GIT_EXECUTABLE" \
       "$observer_marker_path" "$observer_marker_digest" "$observer_cache_path" \
       "$observer_template_path" "$observer_lock_path" "$observer_remote_name" \
-      "$observer_remote_ref" "$observer_head_sha" </dev/null >/dev/null 2>&1 &
+      "$observer_remote_ref" "$observer_head_sha" "$archive_directory" "$MKTEMP_EXECUTABLE" "$current_uid" </dev/null >/dev/null 2>&1 &
   )
 }
 
@@ -414,13 +462,12 @@ write_review_cache_and_template() {
   expected_head=$3
   cache_path=$4
   template_path=$5
-  cache_temporary=$("$MKTEMP_EXECUTABLE" "$review_cache_directory/.review.XXXXXX") || return 1
-  template_temporary=$("$MKTEMP_EXECUTABLE" "$review_cache_directory/.dispositions.XXXXXX") || {
-    /bin/rm -f -- "$cache_temporary"
+  cache_temporary=$("$MKTEMP_EXECUTABLE" "$evidence_directory/.review.XXXXXX") || return 1
+  template_temporary=$("$MKTEMP_EXECUTABLE" "$evidence_directory/.dispositions.XXXXXX") || {
     return 1
   }
-  # Persist only stable identity and location data. Model prose, usage, and
-  # credentials never enter the durable local cache.
+  # The authorization cache contains only stable identity and location data.
+  # Full output remains separate in the private evidence archive.
   # shellcheck disable=SC2016
   if ! "$JQ_EXECUTABLE" -e --arg base "$expected_base" --arg head "$expected_head" '
     (.findings | map(.id)) as $ids |
@@ -436,15 +483,12 @@ write_review_cache_and_template() {
       error("findings require unique stable IDs")
     end
   ' "$review_input" >"$cache_temporary"; then
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
     return 1
   fi
   /bin/chmod 600 "$cache_temporary" "$template_temporary" || {
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
     return 1
   }
   cache_digest=$(file_digest "$cache_temporary") || {
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
     return 1
   }
   # shellcheck disable=SC2016
@@ -457,35 +501,30 @@ write_review_cache_and_template() {
       findings: (.findings | map({key: .id, value: {path, line, reason: ""}}) | from_entries)
     }
   ' "$cache_temporary" >"$template_temporary"; then
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
     return 1
   fi
   /bin/chmod 600 "$template_temporary" || {
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
     return 1
   }
   if [ -d "$cache_path" ] && [ ! -L "$cache_path" ]; then
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
     return 1
   fi
-  /bin/rm -f -- "$cache_path" || {
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
+  archive_evidence "$cache_path" || {
     return 1
   }
   /bin/mv -f -- "$cache_temporary" "$cache_path" || {
-    /bin/rm -f -- "$cache_temporary" "$template_temporary"
     return 1
   }
   if [ -d "$template_path" ] && [ ! -L "$template_path" ]; then
-    /bin/rm -f -- "$cache_path" "$template_temporary"
+    archive_evidence "$cache_path" "$template_temporary"
     return 1
   fi
-  /bin/rm -f -- "$template_path" || {
-    /bin/rm -f -- "$cache_path" "$template_temporary"
+  archive_evidence "$template_path" || {
+    archive_evidence "$cache_path" "$template_temporary"
     return 1
   }
   /bin/mv -f -- "$template_temporary" "$template_path" || {
-    /bin/rm -f -- "$cache_path" "$template_temporary"
+    archive_evidence "$cache_path" "$template_temporary"
     return 1
   }
 }
@@ -556,6 +595,10 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     fail_setup "pushed commit has no merge base with $remote_name/$base_branch"
 
   ensure_review_cache_directory
+  evidence_directory=$("$MKTEMP_EXECUTABLE" -d "$archive_directory/attempt.XXXXXX") ||
+    fail_setup "could not create private retained review evidence"
+  printf '%s\n%s\n' "$merge_base_sha" "$head_sha" >"$evidence_directory/revisions" ||
+    fail_setup "could not retain review identity"
   review_cache_key=$merge_base_sha-$head_sha
   review_cache_path=$review_cache_directory/review-$review_cache_key.json
   disposition_template_path=$review_cache_directory/dispositions-$review_cache_key.json
@@ -566,6 +609,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
   # and observed remote tip while keeping a credential-bearing URL in memory.
   target_digest=$(push_target_digest "$remote_name" "$remote_url" "$remote_ref" "$remote_sha") ||
     fail_setup "could not verify the push target digest"
+  printf '%s\n' "$target_digest" >"$evidence_directory/target-digest" || fail_setup "could not retain push target digest"
   accepted_marker_path=$review_cache_directory/accepted-$review_cache_key-$target_digest.json
   reject_conflicting_accepted_marker "$accepted_marker_path"
   dispositions_file=
@@ -573,7 +617,7 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     [ "$dispositions_source" = "$disposition_template_path" ] ||
       fail_setup "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE does not match the exact generated template for these SHAs"
     validate_private_file "$dispositions_source" "POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE"
-    dispositions_file=$temporary_root/dispositions.json
+    dispositions_file=$evidence_directory/dispositions.json
     /bin/cat -- "$dispositions_source" >"$dispositions_file" ||
       fail_setup "could not snapshot POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE"
     /bin/chmod 600 "$dispositions_file" || fail_setup "could not protect the disposition snapshot"
@@ -648,8 +692,8 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     fail_setup "could not create a detached worktree for $head_sha"
   validate_config_artifacts "$worktree_path"
 
-  output_file=$temporary_root/review.json
-  /bin/rm -f -- "$output_file"
+  output_file=$evidence_directory/review.json
+  echo "postil pre-push: full review output retained privately at $output_file" >&2
   openrouter_api_key=$cached_openrouter_api_key
   if [ -z "$openrouter_api_key" ] && [ -z "$CREDENTIAL_WRAPPER" ]; then
     [ -n "$SECRETS_EXECUTABLE" ] ||
@@ -698,6 +742,11 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
       ') >"$output_file"
   fi
   review_status=$?
+  printf '%s\n' "$review_status" >"$evidence_directory/exit-status" ||
+    fail_setup "could not retain local review exit status"
+  /bin/chmod 600 "$output_file" "$evidence_directory/exit-status" ||
+    fail_setup "could not protect retained review output"
+  /bin/sync || fail_setup "could not sync retained review evidence"
 
   [ "$review_status" -le 1 ] || fail_setup "local review did not complete for $local_ref ($local_sha)"
   [ -s "$output_file" ] || fail_setup "local review produced no result"
@@ -710,11 +759,11 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     "$output_file") || fail_setup "could not classify local review findings"
   acquire_cache_lock
   reject_conflicting_accepted_marker "$accepted_marker_path"
-  /bin/rm -f -- "$review_cache_path" "$disposition_template_path" ||
-    fail_setup "could not clear the superseded exact-review cache"
+  archive_evidence "$review_cache_path" "$disposition_template_path" ||
+    fail_setup "could not retain the superseded exact-review cache"
   if [ "$finding_count" -gt 0 ]; then
     if [ "$non_dispositionable_count" -gt 0 ]; then
-      /bin/rm -f -- "$review_cache_path" "$disposition_template_path"
+      archive_evidence "$review_cache_path" "$disposition_template_path"
       echo "postil pre-push: provider, setup, and truncated-review findings cannot be dispositioned" >&2
       "$JQ_EXECUTABLE" -r \
         '.findings[] | select(.path == ".postil/provider" or .path == ".postil/model-output" or .path == ".postil/diff") | "  \(.severity)/\(.kind) \(.path):\(.line) \(.title)"' \
@@ -731,8 +780,8 @@ while IFS=' ' read -r local_ref local_sha remote_ref remote_sha extra; do
     exit 1
   else
     [ "$review_status" -eq 0 ] || fail_setup "local review failed without structured findings"
-    /bin/rm -f -- "$review_cache_path" "$disposition_template_path" ||
-      fail_setup "could not remove stale exact-review cache files"
+    archive_evidence "$review_cache_path" "$disposition_template_path" ||
+      fail_setup "could not retain stale exact-review cache files"
   fi
 
   "$GIT_EXECUTABLE" -C "$repository_root" -c core.hooksPath="$temporary_root/empty-hooks" \

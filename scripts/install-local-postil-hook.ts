@@ -214,14 +214,23 @@ async function run(
 if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
-    const unknown = args.filter(
-      (arg) => arg !== "--force" && arg !== "--allow-delegated-hooks-path",
-    );
-    if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`);
-    const target = await installLocalPostilHook(process.cwd(), {
-      force: args.includes("--force"),
-      allowDelegatedHooksPath: args.includes("--allow-delegated-hooks-path"),
-    });
+    let repositoryPath = process.cwd();
+    const options: InstallOptions = {};
+    let targetSpecified = false;
+    for (let index = 0; index < args.length; index++) {
+      const argument = args[index];
+      if (argument === "--repo-path") {
+        const value = args[++index];
+        if (targetSpecified || !value || value.startsWith("--") || value.includes("\0")) {
+          throw new Error("--repo-path requires one explicit filesystem path and may appear only once");
+        }
+        repositoryPath = await resolveDirectory(resolve(value), "--repo-path");
+        targetSpecified = true;
+      } else if (argument === "--force") options.force = true;
+      else if (argument === "--allow-delegated-hooks-path") options.allowDelegatedHooksPath = true;
+      else throw new Error(`unknown argument: ${argument}`);
+    }
+    const target = await installLocalPostilHook(repositoryPath, options);
     console.log(`postil: installed trusted local pre-push hook at ${target}`);
     if (!process.env.POSTIL_LOCAL_CREDENTIAL_WRAPPER) {
       console.log(

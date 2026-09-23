@@ -30,7 +30,9 @@ budgets are bounded at 120 and 300 seconds.
 Replace `origin/main` when the pull request targets another branch. A missing
 binary or credential, provider failure, malformed response, or any surviving
 finding blocks handoff and push. Install the trusted common-directory hook with
-`bun run review:install-hook`; review an existing hook before using `--force`.
+`bun run review:install-hook`; `--repo-path <path>` selects another worktree
+while the tracked service template remains the source. Review an existing hook
+before using `--force`.
 When Git uses a global hook that delegates to the common Git directory, verify
 that wrapper first and pass `--allow-delegated-hooks-path` during installation.
 When no model key is exported, the harness and installed hook load only
@@ -48,7 +50,12 @@ model-output, and truncated-diff findings cannot be dispositioned. Accepted
 evidence creates a private marker bound to the reviewed SHAs, configured
 remote, destination ref, and observed remote tip. A dry run or failed
 transport leaves the handoff intact. The marker is claimed atomically and its
-cache and generated template are removed only after the exact remote ref
-reports the reviewed head. Unaccepted records contain only finding IDs and
-locations and remain under `.git/postil-local-review` until the matching retry
-succeeds or the repository owner removes them.
+cache and generated template move into a private archive only after the exact
+remote ref reports the reviewed head. Authorization caches contain only finding
+IDs and locations. Full review output, disposition snapshots, superseded caches,
+and consumed markers remain under `.git/postil-local-review/archive`, with
+mode-0700 directories and mode-0600 files. Full output can contain source-derived
+sensitive prose; access is limited to the local owner, not encrypted by the hook,
+and never published automatically. Credential staging files and credential-bearing
+remote URLs are not archived. There is no
+automatic evidence expiry; removal requires the repository owner's approval.
