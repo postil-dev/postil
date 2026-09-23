@@ -344,6 +344,7 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
+          source scripts/probe-managed-runtime.sh
           machines=$(flyctl machine list --app postil-web --json)
           if ! jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}" >/dev/null; then
             echo "::error::Release verification failed: fleet image, process, or hosted-inference configuration is inconsistent."
@@ -375,9 +376,8 @@ jobs:
              .config.metadata.fly_process_group == "monitor")
           ) | .id' <<<"${machines}")
           for id in "${machine_ids[@]}"; do
-            if ! release_contract=$(flyctl machine exec "${id}" \
-              "bun -e 'const contract = [process.env.POSTIL_RELEASE_SHA, process.env.POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA, process.env.POSTIL_RELEASE_PROTOCOL, process.env.POSTIL_MANAGED_RELEASE]; process.stdout.write(JSON.stringify(contract))'" \
-              --app postil-web --timeout 15 2>/dev/null); then
+            if ! release_contract=$(probe_managed_runtime "${id}" \
+              "bun -e 'const contract = [process.env.POSTIL_RELEASE_SHA, process.env.POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA, process.env.POSTIL_RELEASE_PROTOCOL, process.env.POSTIL_MANAGED_RELEASE]; process.stdout.write(JSON.stringify(contract))'"); then
               echo "::error::A managed machine did not report its release contract."
               exit 1
             fi
@@ -436,6 +436,7 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
+          source scripts/probe-managed-runtime.sh
           # If the local timer is due, leave recovery to that independently armed owner.
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
@@ -506,9 +507,8 @@ jobs:
             ' "${RUNNER_TEMP}/postil-before-update.json" >/dev/null; then
               continue
             fi
-            if ! release=$(flyctl machine exec "${id}" \
-              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
-              --app postil-web --timeout 15 2>/dev/null); then
+            if ! release=$(probe_managed_runtime "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'"); then
               if jq -e '
                 .state == "started" and .host_status == "ok" and
                 all(.checks[]?; .status == "passing")
@@ -585,9 +585,8 @@ jobs:
             exit 1
           fi
           while IFS= read -r id; do
-            if ! release=$(flyctl machine exec "${id}" \
-              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'" \
-              --app postil-web --timeout 15 2>/dev/null); then
+            if ! release=$(probe_managed_runtime "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_RELEASE_SHA ?? \"\")'"); then
               echo "::error::A restored machine did not report its release SHA."
               exit 1
             fi
