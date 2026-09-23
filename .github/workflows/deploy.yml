@@ -167,6 +167,31 @@ jobs:
           install -m 0755 "${tmp}/flyctl" "${RUNNER_TEMP}/flyctl"
           echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
           "${RUNNER_TEMP}/flyctl" version
+      - name: Admit target-bound rollout
+        id: admission
+        run: |
+          set -euo pipefail
+          if [[ ! "${TARGET_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ||
+                ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ ||
+                "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
+            echo "::error::An exact target-bound rollback deadline is required."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2400 )); then
+            echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            $ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5
+          ' <<<"null" >/dev/null; then
+            echo "::error::Exactly five distinct approved Machine IDs are required."
+            exit 1
+          fi
       - name: Verify compatible source fleet
         id: source-fleet
         timeout-minutes: 5

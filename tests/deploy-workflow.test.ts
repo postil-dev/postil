@@ -196,6 +196,32 @@ describe("managed deployment contract", () => {
     expect(workflow.jobs.deploy.steps.find((step: any) => step.id === "rollback").if).toContain("steps.deploy.outputs.attempted == 'true'");
   });
 
+  test("a stale dispatch target fails admission before feedback staging", () => {
+    const ids = steps.map(step => step.id);
+    expect(ids.indexOf("admission")).toBeLessThan(ids.indexOf("source-fleet"));
+    expect(ids.indexOf("admission")).toBeLessThan(ids.indexOf("stage-feedback"));
+    expect(runStep("admission").code).toBe(0);
+    const result = runStep("admission", fleet(), fleet(), secretMetadata, undefined,
+      fleet(), undefined, { ROLLBACK_TARGET_SHA: "b".repeat(40) }, secretMetadata);
+    expect(result.code).not.toBe(0);
+    expect(result.updates).toBe("");
+    expect(result.stagedInput).toBe("");
+    expect(result.observedSecrets).toEqual(secretMetadata);
+  });
+
+  test("admission rejects stale deadlines and invalid approved IDs before staging", () => {
+    for (const environment of [
+      { ROLLBACK_DEADLINE_EPOCH: "1800002399" },
+      { APPROVED_MACHINE_IDS: JSON.stringify(approvedMachineIds.slice(0, 4)) },
+    ] as Record<string, string>[]) {
+      const result = runStep("admission", fleet(), fleet(), secretMetadata, undefined,
+        fleet(), undefined, environment, secretMetadata);
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.stagedInput).toBe("");
+    }
+  });
+
   test.each(["monitor-volume", "deploy", "activate", "rollback"])("%s rejects invalid or stale admission without mutation", (id) => {
     const rejected: Record<string, string>[] = [
       { ROLLBACK_DEADLINE_EPOCH: "" }, { ROLLBACK_DEADLINE_EPOCH: "yesterday" },
