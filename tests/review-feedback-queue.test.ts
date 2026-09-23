@@ -511,6 +511,74 @@ describeDb("durable review feedback admission", () => {
     }, 15_000);
   }
 
+  test("scheduler selection and insertion serialize with feedback disable", async () => {
+    const pool = database.pool;
+    const prNumber = 188;
+    const review = await pool.query(`INSERT INTO reviews
+      (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+       source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, finished_at)
+      VALUES ($1, $2, $3, 81, 71, 'octo/repository', $4, $5, $6, 'completed', 51, 'maintainer', now()) RETURNING id`,
+    [repositoryId, orgId, installationId, prNumber, headSha, baseSha]);
+    await pool.query(`INSERT INTO finding_publications
+      (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      VALUES ($1, 'scheduler-race', true, 'inline', 'resolved', $2)`, [review.rows[0].id, String(rootId)]);
+    await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+
+    let selectionStarted!: () => void;
+    const selecting = new Promise<void>((resolve) => { selectionStarted = resolve; });
+    let resumeSelection!: () => void;
+    const selectionMayContinue = new Promise<void>((resolve) => { resumeSelection = resolve; });
+    const gateQuery = async (query: (...args: unknown[]) => Promise<unknown>, args: unknown[]) => {
+      if (typeof args[0] === "string" && args[0].includes("WITH candidates AS MATERIALIZED")) {
+        selectionStarted();
+        await selectionMayContinue;
+      }
+      return query(...args);
+    };
+    const gatedPool = new Proxy(pool, {
+      get(target, property) {
+        if (property === "query") return (...args: unknown[]) =>
+          gateQuery(target.query.bind(target) as (...args: unknown[]) => Promise<unknown>, args);
+        if (property === "connect") return async () => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(connection, key) {
+              if (key === "query") return (...args: unknown[]) =>
+                gateQuery(connection.query.bind(connection) as (...args: unknown[]) => Promise<unknown>, args);
+              const value = Reflect.get(connection, key);
+              return typeof value === "function" ? value.bind(connection) : value;
+            },
+          });
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    let scheduling: Promise<number> | undefined;
+    let disabling: Promise<unknown> | undefined;
+    try {
+      scheduling = scheduleReviewFeedbackReconciliationJobs(gatedPool);
+      await selecting;
+      let disabled = false;
+      disabling = controlReviewFeedbackMode(pool, "enabled", "disabled", true).then((result) => {
+        disabled = true;
+        return result;
+      });
+      await Bun.sleep(100);
+      expect(disabled).toBe(false);
+      resumeSelection();
+      expect(await scheduling).toBeGreaterThanOrEqual(1);
+      expect(await disabling).toBe("confirmed");
+      const jobs = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback-reconciliation' AND payload->>'prNumber' = $1", [String(prNumber)]);
+      expect(jobs.rows[0].count).toBe(1);
+    } finally {
+      resumeSelection();
+      await Promise.allSettled([scheduling, disabling].filter((value) => value !== undefined));
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  }, 15_000);
+
   test("full feedback admission does not exhaust a single-connection queue pool", async () => {
     const prNumber = 182;
     const review = await database.pool.query(`INSERT INTO reviews

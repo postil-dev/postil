@@ -109,16 +109,17 @@ export function feedbackModeEnabled(rows: { mode: string }[]): boolean {
 /** Hold the control row until the admitted job has committed. A mode update
  * waits for this transaction, so a confirmed disable excludes later inserts.
  */
-async function withFeedbackAdmission(
+async function withFeedbackAdmission<T>(
   pool: Pool,
-  enqueue: (client: PoolClient) => Promise<boolean>,
-): Promise<boolean> {
+  enqueue: (client: PoolClient) => Promise<T>,
+  disabledValue: T,
+): Promise<T> {
   let client: PoolClient;
   try {
     client = await pool.connect();
   } catch {
     console.warn("Review feedback control connection failed; admission remains disabled");
-    return false;
+    return disabledValue;
   }
   try {
     await client.query("BEGIN");
@@ -131,11 +132,11 @@ async function withFeedbackAdmission(
     } catch {
       console.warn("Review feedback control read failed; admission remains disabled");
       await client.query("ROLLBACK");
-      return false;
+      return disabledValue;
     }
     if (!enabled) {
       await client.query("ROLLBACK");
-      return false;
+      return disabledValue;
     }
     const inserted = await enqueue(client);
     await client.query("COMMIT");
@@ -256,24 +257,26 @@ export async function admitReviewFeedbackEvent(input: ReviewFeedbackJobPayload &
 }
 
 async function enqueueReviewFeedbackJob(pool: Pool, payload: ReviewFeedbackJobPayload): Promise<boolean> {
-  return withFeedbackAdmission(pool, async (client) => {
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+  return withFeedbackAdmission(pool, (client) => enqueueReviewFeedbackJobOnClient(client, payload), false);
+}
+
+async function enqueueReviewFeedbackJobOnClient(client: PoolClient, payload: ReviewFeedbackJobPayload): Promise<boolean> {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:feedback-poll:${payload.githubRepoId}:${payload.prNumber}`,
-    ]);
-    const result = await client.query(`
+  ]);
+  const result = await client.query(`
       INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
       SELECT $1, $2::jsonb, 'queued', now() + interval '10 seconds', 5
        WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND status IN ('queued', 'running')
                            AND payload->>'githubRepoId' = $3 AND payload->>'prNumber' = $4)
       RETURNING id`, [REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND, JSON.stringify(payload), String(payload.githubRepoId), String(payload.prNumber)]);
-    return (result.rowCount ?? 0) > 0;
-  });
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** Bound each watchdog pass to twenty due pull requests, independent of webhook subscriptions. */
 export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now = new Date()): Promise<number> {
-  if (!await reviewFeedbackEnabled(pool)) return 0;
-  const result = await pool.query<ReviewFeedbackJobPayload>(`
+  return withFeedbackAdmission(pool, async (client) => {
+    const result = await client.query<ReviewFeedbackJobPayload>(`
     WITH candidates AS MATERIALIZED (
       SELECT DISTINCT ON (review.repository_id, review.pr_number)
              review.repository_id, review.pr_number, repository.github_repo_id,
@@ -298,13 +301,14 @@ export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now =
     SELECT github_repo_id AS "githubRepoId", pr_number AS "prNumber", github_installation_id AS "installationId"
       FROM candidates ORDER BY due_at, repository_id, pr_number LIMIT 20
     `, [now, REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND]);
-  let scheduled = 0;
-  for (const row of result.rows) {
-    if (await enqueueReviewFeedbackJob(pool, {
-      githubRepoId: Number(row.githubRepoId), prNumber: Number(row.prNumber), installationId: Number(row.installationId),
-    })) scheduled += 1;
-  }
-  return scheduled;
+    let scheduled = 0;
+    for (const row of result.rows) {
+      if (await enqueueReviewFeedbackJobOnClient(client, {
+        githubRepoId: Number(row.githubRepoId), prNumber: Number(row.prNumber), installationId: Number(row.installationId),
+      })) scheduled += 1;
+    }
+    return scheduled;
+  }, 0);
 }
 
 /** Poll live human evidence, then use the existing review queue and publication pipeline. */
