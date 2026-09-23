@@ -260,6 +260,14 @@ jobs:
           echo "Compatible source fleet verified."
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Stage feedback compatibility mode
+        id: stage-feedback
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'POSTIL_REVIEW_FEEDBACK_ENABLED=0' | flyctl secrets import --stage --app postil-web >/dev/null
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Verify runtime secret contract
         id: secret-contract
         timeout-minutes: 2
@@ -272,10 +280,11 @@ jobs:
             all(.[];
               (.name | type == "string" and length > 0) and
               (.digest | type == "string" and length > 0) and
-              (.status == "Deployed" or
-                (.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Staged"))) and
+              ((.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Staged") or
+                (.name != "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Deployed"))) and
             ($names | unique | length) == ($names | length) and
             ($names | index("DATABASE_URL") != null) and
+            ($names | index("POSTIL_REVIEW_FEEDBACK_ENABLED") != null) and
             all($names[];
               test("^(POSTIL_RELEASE_SHA|POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA|POSTIL_RELEASE_PROTOCOL|POSTIL_MANAGED_RELEASE|POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE)$") | not)
           ' <<<"${fly_secrets}" >/dev/null; then

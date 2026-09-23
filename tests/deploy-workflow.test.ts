@@ -15,6 +15,8 @@ const sourceImage = `registry.fly.io/postil-web@${digest}`;
 const secretMetadata = [{ name: "DATABASE_URL", digest: "fixture-digest", status: "Deployed" }];
 const stagedFeedback = { name: "POSTIL_REVIEW_FEEDBACK_ENABLED", digest: "feedback-digest", status: "Staged" };
 const deployedFeedback = { ...stagedFeedback, status: "Deployed" };
+const stagedSecrets = [...secretMetadata, stagedFeedback];
+const deployedSecrets = [...secretMetadata, deployedFeedback];
 const approvedMachineIds = ["a0", "a1", "a2", "a3", "a4"];
 const binding = {
   POSTIL_MANAGED_RELEASE: "1",
@@ -36,8 +38,8 @@ function fleet() {
   }));
 }
 
-function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = secretMetadata,
-  afterExecSecrets?: typeof secretMetadata, statusMachines = machines, afterUpdateMachines?: ReturnType<typeof fleet>, deadlineEnvironment: Record<string, string> = {}, sourceSecrets = secretMetadata) {
+function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = id === "verify" ? deployedSecrets : stagedSecrets,
+  afterExecSecrets?: typeof secretMetadata, statusMachines = machines, afterUpdateMachines?: ReturnType<typeof fleet>, deadlineEnvironment: Record<string, string> = {}, sourceSecrets = stagedSecrets) {
   const directory = mkdtempSync(join(tmpdir(), "postil-deploy-test-"));
   try {
     writeFileSync(join(directory, "machines.json"), JSON.stringify(machines));
@@ -68,6 +70,16 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
               cat "$RUNNER_TEMP/machines.json"
             fi ;;
           "secrets list") cat "$RUNNER_TEMP/secrets.json" ;;
+          "secrets import")
+            [[ "$*" == "secrets import --stage --app postil-web" ]] || return 98
+            cat > "$RUNNER_TEMP/staged-input"
+            printf 'stage-feedback\n' >> "$RUNNER_TEMP/updates"
+            if [[ "\${TEST_STAGE_FAILURE:-0}" == "1" ]]; then return 1; fi
+            jq --arg name POSTIL_REVIEW_FEEDBACK_ENABLED \
+              'map(select(.name != $name)) + [{name: $name, digest: "feedback-digest", status: "Staged"}]' \
+              "$RUNNER_TEMP/secrets.json" > "$RUNNER_TEMP/next-secrets.json"
+            mv "$RUNNER_TEMP/next-secrets.json" "$RUNNER_TEMP/secrets.json"
+            printf 'staged\n' ;;
           "deploy --remote-only") printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
             if [[ "$4" == "bun run jobs:activate-release" ]]; then printf 'activate' >> "$RUNNER_TEMP/updates"; return 0; fi
@@ -112,7 +124,7 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
       stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
     const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
-    return { code: result.exitCode, error: result.stderr.toString(), stdout: result.stdout.toString(), output: read("output"), calls: read("exec-calls"), sleeps: read("sleeps"), updates: read("updates"), machines: JSON.parse(read("machines.json")) };
+    return { code: result.exitCode, error: result.stderr.toString(), stdout: result.stdout.toString(), output: read("output"), calls: read("exec-calls"), sleeps: read("sleeps"), updates: read("updates"), stagedInput: read("staged-input"), capturedSecrets: read("postil-source-secrets.json"), observedSecrets: JSON.parse(read("secrets.json")), machines: JSON.parse(read("machines.json")) };
   } finally {
     rmSync(directory, { recursive: true });
   }
@@ -125,7 +137,7 @@ describe("managed deployment contract", () => {
       machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
       machines[1]!.release = targetSha;
     }
-    const execute = (environment: Record<string, string>) => runStep(id, structuredClone(machines), fleet(), secretMetadata,
+    const execute = (environment: Record<string, string>) => runStep(id, structuredClone(machines), fleet(), id === "verify" ? deployedSecrets : stagedSecrets,
       undefined, structuredClone(machines), undefined, environment);
     const recovered = execute({ TEST_EXEC_FAILURES: "2" });
     expect(recovered.code, recovered.error).toBe(0);
@@ -148,7 +160,7 @@ describe("managed deployment contract", () => {
     const machines = fleet();
     machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
     machines[1]!.release = targetSha;
-    const result = runStep("rollback", machines, fleet(), secretMetadata, undefined, machines, undefined,
+    const result = runStep("rollback", machines, fleet(), stagedSecrets, undefined, machines, undefined,
       { TEST_FAIL_RESTORED: "1" });
     expect(result.code).not.toBe(0);
     expect(result.stdout).toContain("A restored machine did not report its release SHA");
@@ -184,7 +196,7 @@ describe("managed deployment contract", () => {
       { ROLLBACK_TARGET_SHA: "b".repeat(40) }, { TEST_NOW_EPOCH: "invalid" },
     ];
     for (const environment of rejected) {
-      const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined, environment);
+      const result = runStep(id, fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined, environment);
       expect(result.code).not.toBe(0);
       expect(result.updates).toBe("");
       expect(result.output).not.toContain("attempted=true");
@@ -193,7 +205,7 @@ describe("managed deployment contract", () => {
 
   test.each([["monitor-volume", 2400], ["deploy", 2100], ["activate", 1200], ["rollback", 900]] as const)("%s enforces its complete boundary", (id, window) => {
     for (const offset of [-1, 0, 1]) {
-      const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+      const result = runStep(id, fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
         { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + window + offset) });
       expect(result.code, result.error).toBe(offset < 0 ? 1 : 0);
       expect(result.updates).toBe(offset >= 0 && ["deploy", "activate"].includes(id) ? id : "");
@@ -202,7 +214,7 @@ describe("managed deployment contract", () => {
   });
 
   test.each([["activate", 1200], ["rollback", 900]] as const)("%s rejects a depleted recovery window", (id, window) => {
-    const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+    const result = runStep(id, fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
       { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + window - 1) });
     expect(result.code).toBe(1);
     expect(result.updates).toBe("");
@@ -217,7 +229,7 @@ describe("managed deployment contract", () => {
     const script = steps.find(step => step.id === "deploy")!.run!;
     expect(script.indexOf("now=$(date -u +%s)")).toBeGreaterThan(script.indexOf("flyctl secrets list"));
     expect(script.indexOf("now=$(date -u +%s)")).toBeLessThan(script.indexOf("flyctl deploy"));
-    const result = runStep("deploy", fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+    const result = runStep("deploy", fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
       { ROLLBACK_DEADLINE_EPOCH: "1800004000", TEST_NOW_EPOCH: "1800002000" });
     expect(result.code).toBe(1);
     expect(result.updates).toBe("");
@@ -227,7 +239,7 @@ describe("managed deployment contract", () => {
     const observed = fleet();
     if (failure === "missing") observed.shift();
     else observed.push(structuredClone(observed[0]!));
-    const result = runStep("rollback", fleet(), fleet(), secretMetadata, undefined, observed);
+    const result = runStep("rollback", fleet(), fleet(), stagedSecrets, undefined, observed);
     expect(result.code).not.toBe(0);
     expect(result.error).toContain("captured machine identity is not unique");
     expect(result.updates).toBe("");
@@ -239,7 +251,7 @@ describe("managed deployment contract", () => {
     const observed = fleet();
     if (failure === "missing") observed.splice(1, 1);
     else observed.push(structuredClone(observed[1]!));
-    const result = runStep("rollback", machines, fleet(), secretMetadata, undefined, machines, observed);
+    const result = runStep("rollback", machines, fleet(), stagedSecrets, undefined, machines, observed);
     expect(result.code).not.toBe(0);
     expect(result.error).toContain("restored machine identity is not unique");
     expect(result.updates.trim().split("\n")).toHaveLength(1);
@@ -250,7 +262,8 @@ describe("managed deployment contract", () => {
     const source = readFileSync(".github/workflows/deploy.yml", "utf8");
     expect(source).not.toContain("${GITHUB_SHA}");
     expect(source).not.toContain("--skip-release-command");
-    expect(source).not.toMatch(/flyctl secrets (import|unset|set)/);
+    expect(source.match(/flyctl secrets import --stage --app postil-web/g)).toHaveLength(1);
+    expect(source).not.toMatch(/flyctl secrets (unset|set)/);
     expect(source).not.toContain("Infisical/secrets-action");
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(source).not.toContain("flyctl machine start");
@@ -268,7 +281,7 @@ describe("managed deployment contract", () => {
       JSON.stringify([...approvedMachineIds.slice(0, 4), "A4"]),
       JSON.stringify([...approvedMachineIds, "a5"])]) {
       for (const id of ["source-fleet", "deploy"]) {
-        const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+        const result = runStep(id, fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
           { APPROVED_MACHINE_IDS: approved });
         expect(result.code).not.toBe(0);
         expect(result.updates).toBe("");
@@ -294,10 +307,32 @@ describe("managed deployment contract", () => {
     expect(deployScript.lastIndexOf("flyctl machine list")).toBeLessThan(deployScript.indexOf("flyctl deploy"));
   });
 
+  test("stages feedback OFF after source fleet verification and before capturing its digest", () => {
+    const ids = steps.map((step) => step.id);
+    expect(ids.indexOf("source-fleet")).toBeLessThan(ids.indexOf("stage-feedback"));
+    expect(ids.indexOf("stage-feedback")).toBeLessThan(ids.indexOf("secret-contract"));
+    const staged = runStep("stage-feedback", fleet(), fleet(), secretMetadata);
+    expect(staged.code).toBe(0);
+    expect(staged.stagedInput).toBe("POSTIL_REVIEW_FEEDBACK_ENABLED=0\n");
+    expect(staged.stdout).toBe("");
+    expect(staged.observedSecrets).toEqual([...secretMetadata, stagedFeedback]);
+    const captured = runStep("secret-contract", fleet(), fleet(), staged.observedSecrets);
+    expect(captured.code).toBe(0);
+    expect(JSON.parse(captured.capturedSecrets)).toEqual([...secretMetadata, stagedFeedback]);
+    const failed = runStep("stage-feedback", fleet(), fleet(), secretMetadata, undefined,
+      fleet(), undefined, { TEST_STAGE_FAILURE: "1" }, secretMetadata);
+    expect(failed.code).not.toBe(0);
+    expect(failed.stagedInput).toBe("POSTIL_REVIEW_FEEDBACK_ENABLED=0\n");
+    expect(failed.observedSecrets).toEqual(secretMetadata);
+    expect(failed.capturedSecrets).toBe(JSON.stringify(secretMetadata));
+  });
+
   test("captures deployed secret metadata and rejects staged, partial, unknown, or missing proof", () => {
     expect(runStep("secret-contract").code).toBe(0);
     expect(runStep("secret-contract", fleet(), fleet(), [...secretMetadata, stagedFeedback]).code).toBe(0);
     for (const secrets of [
+      secretMetadata,
+      deployedSecrets,
       [{ ...secretMetadata[0]!, status: "Staged" }],
       [...secretMetadata, { name: "ANOTHER_SETTING", digest: "other-digest", status: "Staged" }],
       [...secretMetadata, { ...stagedFeedback, status: "Partial" }],
@@ -421,7 +456,7 @@ describe("managed deployment contract", () => {
     }
     const changedAfterList = fleet();
     changedAfterList[0]!.config.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
-    const result = runStep("rollback", fleet(), fleet(), secretMetadata, undefined, changedAfterList);
+    const result = runStep("rollback", fleet(), fleet(), stagedSecrets, undefined, changedAfterList);
     expect(result.code).not.toBe(0);
     expect(result.updates).toBe("");
   });
