@@ -15,5 +15,5 @@ END;
 $$;
 --> statement-breakpoint
 CREATE TRIGGER clear_private_monitor_delivery_receipt
-BEFORE UPDATE OF last_notified_at ON private_monitor_incidents
+BEFORE UPDATE OF last_notified_at, pending_notification_key ON private_monitor_incidents
 FOR EACH ROW EXECUTE FUNCTION clear_private_monitor_delivery_receipt();

@@ -780,6 +780,24 @@ describeDb("private monitoring durability", () => {
       .toMatchObject({ notificationKey: reminders[0]!.notificationKey, acceptedAt: retryAt.toISOString() });
   });
 
+  test("pending-key-only acknowledgment clears provenance without erasing it during scheduling", async () => {
+    const opening = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, opening, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev",
+      transport: receiptTransport, now: NOW,
+    });
+    const accepted = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    await pool.query(`UPDATE private_monitor_incidents SET pending_notification_key='next-reminder',
+      pending_notification_kind='reminder' WHERE key='public-site'`);
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt)
+      .toEqual(accepted.lastDeliveryReceipt);
+    await pool.query(`UPDATE private_monitor_incidents SET pending_notification_key=NULL,
+      pending_notification_kind=NULL WHERE key='public-site'`);
+    const acknowledged = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    expect(acknowledged.lastNotifiedAt).toEqual(NOW);
+    expect(acknowledged.lastDeliveryReceipt).toBeNull();
+  });
+
   test("receipt write failure rolls back acknowledgment and leaves notification retryable", async () => {
     const notification = await openReceiptNotification();
     const client = await pool.connect();

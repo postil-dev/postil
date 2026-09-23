@@ -463,7 +463,7 @@ const REVIEWED_ADDITIVE_MIGRATION = {
 
 const REVIEWED_MONITOR_DELIVERY_MIGRATION = {
   folderMillis: 1790162457485,
-  hash: "a2bd9d417ccb74e31efebf0268647a47f75c97934ca8018762dbba70c563e074",
+  hash: "210d4d77736bc55ffd6975b72967c4d0ba91ebffcba80e5242600e895cfd908e",
 } as const;
 
 /** Apply only the reviewed delivery receipt transition from the feedback schema. */
