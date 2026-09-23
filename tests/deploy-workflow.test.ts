@@ -75,6 +75,7 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
             cat > "$RUNNER_TEMP/staged-input"
             printf 'stage-feedback\n' >> "$RUNNER_TEMP/updates"
             if [[ "\${TEST_STAGE_FAILURE:-0}" == "1" ]]; then return 1; fi
+            if [[ "\${TEST_IDENTICAL_OFF_STAGE:-0}" == "1" ]]; then return 0; fi
             jq --arg name POSTIL_REVIEW_FEEDBACK_ENABLED \
               'map(select(.name != $name)) + [{name: $name, digest: "feedback-digest", status: "Staged"}]' \
               "$RUNNER_TEMP/secrets.json" > "$RUNNER_TEMP/next-secrets.json"
@@ -98,6 +99,14 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
             fi
             if jq -e --arg id "$3" '.[] | select(.id == $id and (.state == "stopped" or .exec_unavailable == true))' "$RUNNER_TEMP/machines.json" >/dev/null; then
               return 1
+            fi
+            if [[ "$4" == *'POSTIL_REVIEW_FEEDBACK_ENABLED'* ]]; then
+              if jq -e --arg id "$3" '.[] | select(.id == $id and .feedback_runtime_on == true)' "$RUNNER_TEMP/machines.json" >/dev/null; then
+                printf 'false'
+              else
+                printf 'true'
+              fi
+              return 0
             fi
             jq -er --arg id "$3" '.[] | select(.id == $id and .state != "stopped") | .release' "$RUNNER_TEMP/machines.json" ;;
           "machine status") echo 'Error: unknown flag: --json' >&2; return 64 ;;
@@ -143,7 +152,7 @@ describe("managed deployment contract", () => {
     expect(recovered.code, recovered.error).toBe(0);
     expect(recovered.sleeps.trim().split("\n").every(value => value === "2")).toBe(true);
     expect(recovered.stdout).not.toContain("partial failed output");
-    expect(recovered.calls.trim().split("\n").filter(value => value === "a1").length).toBe(id === "verify" ? 3 : 4);
+    expect(recovered.calls.trim().split("\n").filter(value => value === "a1").length).toBe(4);
     const unavailable = execute({ TEST_EXEC_FAILURES: "99" });
     expect(unavailable.code).not.toBe(0);
     expect(unavailable.calls.trim().split("\n")).toHaveLength(3);
@@ -307,6 +316,25 @@ describe("managed deployment contract", () => {
     expect(deployScript.lastIndexOf("flyctl machine list")).toBeLessThan(deployScript.indexOf("flyctl deploy"));
   });
 
+  test("source feedback preflight checks every approved running Machine before staging", () => {
+    const ids = steps.map((step) => step.id);
+    expect(ids.indexOf("source-fleet")).toBeLessThan(ids.indexOf("feedback-preflight"));
+    expect(ids.indexOf("feedback-preflight")).toBeLessThan(ids.indexOf("stage-feedback"));
+    const accepted = runStep("feedback-preflight");
+    expect(accepted.code, accepted.error).toBe(0);
+    expect(accepted.calls.trim().split("\n")).toEqual(approvedMachineIds);
+    for (const change of [
+      (machines: ReturnType<typeof fleet>) => { Object.assign(machines[2]!, { feedback_runtime_on: true }); },
+      (machines: ReturnType<typeof fleet>) => { Object.assign(machines[2]!, { exec_unavailable: true }); },
+      (machines: ReturnType<typeof fleet>) => { machines[2]!.id = "a5"; },
+    ]) {
+      const machines = fleet(); change(machines);
+      const result = runStep("feedback-preflight", machines);
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+    }
+  });
+
   test("stages feedback OFF after source fleet verification and before capturing its digest", () => {
     const ids = steps.map((step) => step.id);
     expect(ids.indexOf("source-fleet")).toBeLessThan(ids.indexOf("stage-feedback"));
@@ -327,12 +355,24 @@ describe("managed deployment contract", () => {
     expect(failed.capturedSecrets).toBe(JSON.stringify(secretMetadata));
   });
 
+  test("an identical OFF stage may remain deployed, with runtime proof required after deploy", () => {
+    const staged = runStep("stage-feedback", fleet(), fleet(), deployedSecrets, undefined,
+      fleet(), undefined, { TEST_IDENTICAL_OFF_STAGE: "1" }, deployedSecrets);
+    expect(staged.code).toBe(0);
+    expect(staged.observedSecrets).toEqual(deployedSecrets);
+    expect(runStep("secret-contract", fleet(), fleet(), deployedSecrets).code).toBe(0);
+    expect(runStep("deploy", fleet(), fleet(), deployedSecrets, undefined, fleet(), undefined, {}, deployedSecrets).updates).toBe("deploy");
+    expect(runStep("verify", fleet(), fleet(), deployedSecrets, undefined, fleet(), undefined, {}, deployedSecrets).code).toBe(0);
+    const enabled = fleet(); Object.assign(enabled[3]!, { feedback_runtime_on: true });
+    const rejected = runStep("verify", enabled, fleet(), deployedSecrets, undefined, enabled, undefined, {}, deployedSecrets);
+    expect(rejected.code).not.toBe(0);
+  });
+
   test("captures deployed secret metadata and rejects staged, partial, unknown, or missing proof", () => {
     expect(runStep("secret-contract").code).toBe(0);
     expect(runStep("secret-contract", fleet(), fleet(), [...secretMetadata, stagedFeedback]).code).toBe(0);
     for (const secrets of [
       secretMetadata,
-      deployedSecrets,
       [{ ...secretMetadata[0]!, status: "Staged" }],
       [...secretMetadata, { name: "ANOTHER_SETTING", digest: "other-digest", status: "Staged" }],
       [...secretMetadata, { ...stagedFeedback, status: "Partial" }],
@@ -378,6 +418,17 @@ describe("managed deployment contract", () => {
     ]) {
       const result = runStep("verify", fleet(), fleet(), changed, undefined, fleet(), undefined, {}, sourceSecrets);
       expect(result.code).not.toBe(0);
+    }
+  });
+
+  test("verification and activation reject deployed Machine identity drift", () => {
+    const changed = fleet(); changed[4]!.id = "a5";
+    for (const id of ["verify", "activate"]) {
+      const result = runStep(id, changed, fleet(), deployedSecrets);
+      expect(result.code).not.toBe(0);
+      expect(result.calls).toBe("");
+      expect(result.stdout).toContain("differs from the five approved Machine IDs");
+      expect(result.updates).toBe("");
     }
   });
 

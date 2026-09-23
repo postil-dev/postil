@@ -260,6 +260,35 @@ jobs:
           echo "Compatible source fleet verified."
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Verify source feedback runtime is off
+        id: feedback-preflight
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The source fleet changed before feedback preflight."
+            exit 1
+          fi
+          mapfile -t machine_ids < <(jq -r '.[].id' <<<"${machines}")
+          for id in "${machine_ids[@]}"; do
+            if ! feedback_off=$(flyctl machine exec "${id}" \
+              "bun -e 'const value = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED; process.stdout.write(value === undefined || value === \"0\" ? \"true\" : \"false\")'" \
+              --app postil-web --timeout 15 2>/dev/null) || [[ "${feedback_off}" != "true" ]]; then
+              echo "::error::A source machine did not prove feedback runtime is off."
+              exit 1
+            fi
+          done
+          echo "Source feedback runtime is off on all approved machines."
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Stage feedback compatibility mode
         id: stage-feedback
         timeout-minutes: 2
@@ -280,7 +309,7 @@ jobs:
             all(.[];
               (.name | type == "string" and length > 0) and
               (.digest | type == "string" and length > 0) and
-              ((.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Staged") or
+              ((.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and (.status == "Staged" or .status == "Deployed")) or
                 (.name != "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Deployed"))) and
             ($names | unique | length) == ($names | length) and
             ($names | index("DATABASE_URL") != null) and
@@ -386,6 +415,17 @@ jobs:
           set -euo pipefail
           source scripts/probe-managed-runtime.sh
           machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The deployed fleet differs from the five approved Machine IDs."
+            exit 1
+          fi
           if ! jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}" >/dev/null; then
             echo "::error::Release verification failed: fleet image, process, or hosted-inference configuration is inconsistent."
             exit 1
@@ -416,6 +456,11 @@ jobs:
              .config.metadata.fly_process_group == "monitor")
           ) | .id' <<<"${machines}")
           for id in "${machine_ids[@]}"; do
+            if ! feedback_off=$(probe_managed_runtime "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_REVIEW_FEEDBACK_ENABLED === \"0\" ? \"true\" : \"false\")'") || [[ "${feedback_off}" != "true" ]]; then
+              echo "::error::A target machine did not prove feedback runtime is off."
+              exit 1
+            fi
             if ! release_contract=$(probe_managed_runtime "${id}" \
               "bun -e 'const contract = [process.env.POSTIL_RELEASE_SHA, process.env.POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA, process.env.POSTIL_RELEASE_PROTOCOL, process.env.POSTIL_MANAGED_RELEASE]; process.stdout.write(JSON.stringify(contract))'"); then
               echo "::error::A managed machine did not report its release contract."
@@ -449,13 +494,25 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          machine_id=$(flyctl machine list --app postil-web --json | jq -er '
+          machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The deployed fleet differs from the five approved Machine IDs."
+            exit 1
+          fi
+          machine_id=$(jq -er '
             [.[] | select(
               .state == "started" and
               .config.metadata.fly_platform_version == "v2" and
               .config.metadata.fly_process_group == "worker"
             ) | .id] | if length >= 1 then .[0] else error("no managed worker is available") end
-          ')
+          ' <<<"${machines}")
           # Activation (5m), automatic rollback (10m), and margin (5m).
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
