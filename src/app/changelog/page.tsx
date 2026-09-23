@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.17",
+    date: "September 23, 2026",
+    summary:
+      "Hosted reviews keep blocking findings tied to the changes under review.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A new finding on unchanged code must cite an exact added or removed line as its cause before it can block a pull request. Complete diff evidence excludes new findings that predate the change; existing published findings keep their recorded state.",
+      },
+      {
+        label: "Fixed",
+        text: "Review summaries group duplicate suppressed copies separately and avoid repeating their inline finding text.",
+      },
+    ],
+  },
+  {
     version: "0.9.8",
     date: "September 11, 2026",
     summary:

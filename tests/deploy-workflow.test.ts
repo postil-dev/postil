@@ -34,7 +34,7 @@ function fleet() {
 }
 
 function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = secretMetadata,
-  afterExecSecrets?: typeof secretMetadata, statusMachines = machines, afterUpdateMachines?: ReturnType<typeof fleet>) {
+  afterExecSecrets?: typeof secretMetadata, statusMachines = machines, afterUpdateMachines?: ReturnType<typeof fleet>, deadlineEnvironment: Record<string, string> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "postil-deploy-test-"));
   try {
     writeFileSync(join(directory, "machines.json"), JSON.stringify(machines));
@@ -46,9 +46,16 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
     if (afterExecSecrets) writeFileSync(join(directory, "after-exec-secrets.json"), JSON.stringify(afterExecSecrets));
     const script = steps.find((step) => step.id === id)?.run;
     if (!script) throw new Error(`missing workflow step ${id}`);
+    const volumePredicate = script.match(/\(\.name \/\/ \.Name\) == "([^"]+)" and \(\.region \/\/ \.Region\) == "([^"]+)"/);
+    writeFileSync(join(directory, "volumes.json"), JSON.stringify(volumePredicate
+      ? [{ name: volumePredicate[1], region: volumePredicate[2], id: "vol_test" }]
+      : []));
     const result = Bun.spawnSync(["bash", "-c", `
+      date() { printf '%s\\n' "$TEST_NOW_EPOCH"; }
       flyctl() {
         case "$1 $2" in
+          "volumes list") cat "$RUNNER_TEMP/volumes.json" ;;
+          "volumes create") printf 'volume-create' >> "$RUNNER_TEMP/updates" ;;
           "machine list")
             if [[ -f "$RUNNER_TEMP/list-observed" ]]; then
               cat "$RUNNER_TEMP/status-machines.json"
@@ -59,6 +66,7 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
           "secrets list") cat "$RUNNER_TEMP/secrets.json" ;;
           "deploy --remote-only") printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
+            if [[ "$4" == "bun run jobs:activate-release" ]]; then printf 'activate' >> "$RUNNER_TEMP/updates"; return 0; fi
             if [[ -f "$RUNNER_TEMP/after-exec-secrets.json" ]]; then cp "$RUNNER_TEMP/after-exec-secrets.json" "$RUNNER_TEMP/secrets.json"; fi
             if [[ "$4" == *'JSON.stringify(contract)'* ]]; then
               jq -cn --arg target "$TARGET_RELEASE_SHA" --arg source "$SOURCE_RELEASE_SHA" '[$target, $source, "additive-publication-hosted-v1", "1"]'
@@ -86,17 +94,77 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
       ${script}
     `], {
       env: { ...process.env, RUNNER_TEMP: directory, GITHUB_OUTPUT: join(directory, "output"),
-        TARGET_RELEASE_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.4", MONITOR_VOLUME_ID: "vol_test" },
+        TARGET_RELEASE_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.4", MONITOR_VOLUME_ID: "vol_test", TEST_NOW_EPOCH: "1800000000",
+        ROLLBACK_DEADLINE_EPOCH: "1800004000", ROLLBACK_TARGET_SHA: targetSha, ...deadlineEnvironment },
       stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
     const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
-    return { code: result.exitCode, error: result.stderr.toString(), output: read("output"), updates: read("updates"), machines: JSON.parse(read("machines.json")) };
+    return { code: result.exitCode, error: result.stderr.toString(), stdout: result.stdout.toString(), output: read("output"), updates: read("updates"), machines: JSON.parse(read("machines.json")) };
   } finally {
     rmSync(directory, { recursive: true });
   }
 }
 
 describe("managed deployment contract", () => {
+  test("requires manual target-bound admission and never rolls back an unattempted deploy", () => {
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
+    for (const input of ["rollback_deadline_epoch", "rollback_target_sha"]) {
+      expect(workflow.on.workflow_dispatch.inputs[input]).toMatchObject({ required: true, type: "string" });
+    }
+    expect(workflow.jobs.deploy.if).toBe("vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'");
+    expect(workflow.jobs.deploy.env.ROLLBACK_DEADLINE_EPOCH).toBe("${{ inputs.rollback_deadline_epoch }}");
+    expect(workflow.jobs.deploy.env.ROLLBACK_TARGET_SHA).toBe("${{ inputs.rollback_target_sha }}");
+    expect(workflow.jobs.deploy.steps.find((step: any) => step.id === "rollback").if).toContain("steps.deploy.outputs.attempted == 'true'");
+  });
+
+  test.each(["monitor-volume", "deploy", "activate", "rollback"])("%s rejects invalid or stale admission without mutation", (id) => {
+    const rejected: Record<string, string>[] = [
+      { ROLLBACK_DEADLINE_EPOCH: "" }, { ROLLBACK_DEADLINE_EPOCH: "yesterday" },
+      { ROLLBACK_DEADLINE_EPOCH: "1800009999; exit 0" }, { ROLLBACK_DEADLINE_EPOCH: "01800004000" },
+      { ROLLBACK_DEADLINE_EPOCH: "1799999999" }, { ROLLBACK_DEADLINE_EPOCH: "1800000000" },
+      { ROLLBACK_DEADLINE_EPOCH: "99999999999999999999" }, { ROLLBACK_TARGET_SHA: "" },
+      { ROLLBACK_TARGET_SHA: "b".repeat(40) }, { TEST_NOW_EPOCH: "invalid" },
+    ];
+    for (const environment of rejected) {
+      const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined, environment);
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.output).not.toContain("attempted=true");
+    }
+  });
+
+  test.each([["monitor-volume", 2400], ["deploy", 2100], ["activate", 1200], ["rollback", 900]] as const)("%s enforces its complete boundary", (id, window) => {
+    for (const offset of [-1, 0, 1]) {
+      const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+        { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + window + offset) });
+      expect(result.code, result.error).toBe(offset < 0 ? 1 : 0);
+      expect(result.updates).toBe(offset >= 0 && ["deploy", "activate"].includes(id) ? id : "");
+      if (id === "deploy" && offset >= 0) expect(result.output).toContain("attempted=true");
+    }
+  });
+
+  test.each([["activate", 1200], ["rollback", 900]] as const)("%s rejects a depleted recovery window", (id, window) => {
+    const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+      { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + window - 1) });
+    expect(result.code).toBe(1);
+    expect(result.updates).toBe("");
+    expect(result.stdout).toContain("insufficient time");
+  });
+
+  test("deadline windows cover all mutation bounds and preserve margin after queuing", () => {
+    const minutes = (id: string) => workflow.jobs.deploy.steps.find((step: any) => step.id === id)["timeout-minutes"];
+    const downstream = ["deploy", "verify", "activate", "rollback"].reduce((sum, id) => sum + minutes(id), 0);
+    expect((downstream + 5) * 60).toBe(2100);
+    expect((downstream + minutes("monitor-volume") + 5) * 60).toBe(2400);
+    const script = steps.find(step => step.id === "deploy")!.run!;
+    expect(script.indexOf("now=$(date -u +%s)")).toBeGreaterThan(script.indexOf("flyctl secrets list"));
+    expect(script.indexOf("now=$(date -u +%s)")).toBeLessThan(script.indexOf("flyctl deploy"));
+    const result = runStep("deploy", fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+      { ROLLBACK_DEADLINE_EPOCH: "1800004000", TEST_NOW_EPOCH: "1800002000" });
+    expect(result.code).toBe(1);
+    expect(result.updates).toBe("");
+  });
+
   test.each(["missing", "duplicate"])("rejects a %s captured machine in the fresh list", (failure) => {
     const observed = fleet();
     if (failure === "missing") observed.shift();
@@ -120,7 +188,7 @@ describe("managed deployment contract", () => {
   });
 
   test("binds checkout, build, and verification to the triggering workflow SHA", () => {
-    expect(workflow.jobs.deploy.env.TARGET_RELEASE_SHA).toBe("${{ github.event.workflow_run.head_sha || github.sha }}");
+    expect(workflow.jobs.deploy.env.TARGET_RELEASE_SHA).toBe("${{ github.sha }}");
     const source = readFileSync(".github/workflows/deploy.yml", "utf8");
     expect(source).not.toContain("${GITHUB_SHA}");
     expect(source).not.toContain("--skip-release-command");

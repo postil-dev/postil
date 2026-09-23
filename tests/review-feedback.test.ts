@@ -139,6 +139,41 @@ describe("bounded review feedback context", () => {
     expect(result.threads).toEqual([]);
   });
 
+  test("recognizes configured GraphQL Bot identities only for stored publication roots", async () => {
+    for (const login of ["postil-dev", "POSTIL-DEV", "postil-dev[bot]", "POSTIL-DEV[BOT]"]) {
+      globalThis.fetch = (async () => response({ comments: { nodes: [
+        { databaseId: String(rootCommentId), author: { __typename: "Bot", login } },
+        { databaseId: String(rootCommentId + 1), author: human, body: "A human reply.", updatedAt: "2026-09-01T12:00:00Z" },
+      ], pageInfo: { hasNextPage: false } } })) as unknown as typeof fetch;
+      const result = await readGitHubReviewFeedback(crypto.randomUUID(), { id: 71, fullName: "octo/repository" },
+        17, new Set([rootCommentId]));
+      expect(result.threads).toHaveLength(1);
+      expect(result.threads[0]?.comments).toHaveLength(1);
+      expect((await readGitHubReviewFeedback(crypto.randomUUID(), { id: 71, fullName: "octo/repository" },
+        17, new Set([22]))).threads).toEqual([]);
+    }
+  });
+
+  test("rejects non-Bot, foreign and malformed publication root authors", async () => {
+    for (const author of [
+      { __typename: "User", login: "postil-dev" },
+      { __typename: "User", login: "postil-dev[bot]" },
+      { __typename: "Bot", login: "another-app" },
+      { __typename: "Bot", login: "postil-dev-extra" },
+      { __typename: "Bot", login: 42 },
+      { __typename: "Bot", login: null },
+      { __typename: "Bot" },
+      { login: "postil-dev" },
+      null,
+    ]) {
+      globalThis.fetch = (async () => response({ comments: { nodes: [
+        { databaseId: String(rootCommentId), author },
+      ], pageInfo: { hasNextPage: false } } })) as unknown as typeof fetch;
+      await expect(readGitHubReviewFeedback(crypto.randomUUID(), { id: 71, fullName: "octo/repository" },
+        17, new Set([rootCommentId]))).rejects.toThrow("review feedback published thread is incomplete");
+    }
+  });
+
   test("rejects incomplete reply pagination instead of dropping evidence", async () => {
     globalThis.fetch = (async () => response({ comments: { nodes: [
       { databaseId: rootCommentId, author: { __typename: "Bot", login: "postil-dev[bot]" } },

@@ -1,4 +1,5 @@
 import { apiBase } from "@/lib/github/app-auth";
+import { githubAppSlug } from "@/lib/github-app";
 import type { PublicationThreadObservation } from "@/lib/publication-receipt";
 import { isPostilBotLogin } from "./conversation";
 
@@ -191,7 +192,12 @@ export async function readGitHubReviewFeedback(
       const root = comments?.[0];
       const rootCommentId = Number(root?.databaseId);
       if (!Number.isSafeInteger(rootCommentId) || !rootCommentIds.has(rootCommentId)) continue;
-      if (!isPostilBotLogin(root?.author?.login) || typeof thread.isResolved !== "boolean" ||
+      const rootAuthor = root?.author;
+      const isPublishedBot = rootAuthor?.__typename === "Bot" &&
+        typeof rootAuthor.login === "string" &&
+        (rootAuthor.login.toLowerCase() === githubAppSlug().toLowerCase() ||
+          isPostilBotLogin(rootAuthor.login));
+      if (!isPublishedBot || typeof thread.isResolved !== "boolean" ||
           thread.comments?.pageInfo?.hasNextPage !== false || !Array.isArray(comments)) {
         throw new Error("review feedback published thread is incomplete");
       }
