@@ -147,7 +147,7 @@ validate_envelope() {
 }
 
 owned_evidence_path() {
-  evidence_owner_path=$(/usr/bin/find "$1" -prune -user "$current_uid" -print 2>/dev/null) || return 1
+  evidence_owner_path=$(/usr/bin/find "$1" -prune -uid "$current_uid" -print 2>/dev/null) || return 1
   [ "$evidence_owner_path" = "$1" ]
 }
 
@@ -420,7 +420,7 @@ start_accepted_marker_observer() {
                   [ -f "$cache_path" ] && [ ! -L "$cache_path" ] &&
                   [ -f "$template_path" ] && [ ! -L "$template_path" ]; then
                   for evidence_path in "$archive_directory" "$cache_path" "$template_path" "$marker_path"; do
-                    [ "$(/usr/bin/find "$evidence_path" -prune -user "$current_uid" -print 2>/dev/null)" = "$evidence_path" ] || { /bin/rmdir "$lock_path"; exit 2; }
+                    [ "$(/usr/bin/find "$evidence_path" -prune -uid "$current_uid" -print 2>/dev/null)" = "$evidence_path" ] || { /bin/rmdir "$lock_path"; exit 2; }
                   done
                   consumed_directory=$("$mktemp_executable" -d "$archive_directory/consumed.XXXXXX") || { /bin/rmdir "$lock_path"; exit 2; }
                   # Retire authorization first; interrupted archival leaves evidence
