@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,9 +9,9 @@ import { runReleaseMigrations } from "../scripts/run-release-migrations";
 
 const workflow = parse(readFileSync(".github/workflows/deploy.yml", "utf8"));
 const steps = workflow.jobs.deploy.steps as Array<{ id?: string; name?: string; run?: string }>;
-const sourceSha = "35dd695af19e817bd7b87be5be808b45cefaa7a7";
-const targetSha = "a".repeat(40);
-const digest = `sha256:${"b".repeat(64)}`;
+const sourceSha = randomBytes(20).toString("hex");
+const targetSha = randomBytes(20).toString("hex");
+const digest = `sha256:${randomBytes(32).toString("hex")}`;
 const sourceImage = `registry.fly.io/postil-web@${digest}`;
 const secretMetadata = [{ name: "DATABASE_URL", digest: "fixture-digest", status: "Deployed" }];
 const stagedFeedback = { name: "POSTIL_REVIEW_FEEDBACK_ENABLED", digest: "feedback-digest", status: "Staged" };
@@ -131,6 +132,7 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
       env: { ...process.env, RUNNER_TEMP: directory, GITHUB_OUTPUT: join(directory, "output"),
         TARGET_RELEASE_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.4", MONITOR_VOLUME_ID: "vol_test", TEST_NOW_EPOCH: "1800000000",
         ROLLBACK_DEADLINE_EPOCH: "1800004000", ROLLBACK_TARGET_SHA: targetSha,
+        ROLLBACK_SOURCE_SHA: sourceSha, ROLLBACK_SOURCE_IMAGE: sourceImage,
         APPROVED_MACHINE_IDS: JSON.stringify(approvedMachineIds), ...deadlineEnvironment },
       stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
@@ -188,12 +190,14 @@ describe("managed deployment contract", () => {
 
   test("requires manual target-bound admission and never rolls back an unattempted deploy", () => {
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
-    for (const input of ["machine_ids", "rollback_deadline_epoch", "rollback_target_sha"]) {
+    for (const input of ["machine_ids", "rollback_deadline_epoch", "rollback_target_sha", "rollback_source_sha", "rollback_source_image"]) {
       expect(workflow.on.workflow_dispatch.inputs[input]).toMatchObject({ required: true, type: "string" });
     }
     expect(workflow.jobs.deploy.if).toBe("vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'");
     expect(workflow.jobs.deploy.env.ROLLBACK_DEADLINE_EPOCH).toBe("${{ inputs.rollback_deadline_epoch }}");
     expect(workflow.jobs.deploy.env.ROLLBACK_TARGET_SHA).toBe("${{ inputs.rollback_target_sha }}");
+    expect(workflow.jobs.deploy.env.ROLLBACK_SOURCE_SHA).toBe("${{ inputs.rollback_source_sha }}");
+    expect(workflow.jobs.deploy.env.ROLLBACK_SOURCE_IMAGE).toBe("${{ inputs.rollback_source_image }}");
     expect(workflow.jobs.deploy.env.APPROVED_MACHINE_IDS).toBe("${{ inputs.machine_ids }}");
     expect(workflow.jobs.deploy.steps.find((step: any) => step.id === "rollback").if).toContain("steps.deploy.outputs.attempted == 'true'");
   });
@@ -209,6 +213,40 @@ describe("managed deployment contract", () => {
     expect(result.updates).toBe("");
     expect(result.stagedInput).toBe("");
     expect(result.observedSecrets).toEqual(secretMetadata);
+  });
+
+  test("source inputs reject missing and malformed values at admission", () => {
+    for (const environment of [
+      { ROLLBACK_SOURCE_SHA: "" },
+      { ROLLBACK_SOURCE_SHA: sourceSha.toUpperCase() },
+      { ROLLBACK_SOURCE_SHA: sourceSha.slice(1) },
+      { ROLLBACK_SOURCE_IMAGE: "" },
+      { ROLLBACK_SOURCE_IMAGE: sourceImage.replace("@sha256:", ":") },
+      { ROLLBACK_SOURCE_IMAGE: sourceImage.toUpperCase() },
+    ] as Record<string, string>[]) {
+      const result = runStep("admission", fleet(), fleet(), secretMetadata, undefined,
+        fleet(), undefined, environment, secretMetadata);
+      expect(result.code, result.error).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.stagedInput).toBe("");
+    }
+  });
+
+  test("source fleet requires exact dispatch source SHA and image before staging", () => {
+    const ids = steps.map(step => step.id);
+    expect(ids.indexOf("source-fleet")).toBeLessThan(ids.indexOf("stage-feedback"));
+    for (const environment of [
+      { ROLLBACK_SOURCE_SHA: targetSha },
+      { ROLLBACK_SOURCE_IMAGE: `registry.fly.io/postil-web@sha256:${randomBytes(32).toString("hex")}` },
+    ] as Record<string, string>[]) {
+      const rejected = runStep("source-fleet", fleet(), fleet(), secretMetadata, undefined,
+        fleet(), undefined, environment, secretMetadata);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.output).toBe("");
+      expect(rejected.updates).toBe("");
+      expect(rejected.stagedInput).toBe("");
+      expect(rejected.observedSecrets).toEqual(secretMetadata);
+    }
   });
 
   test("admission rejects stale deadlines and invalid approved IDs before staging", () => {
