@@ -33,10 +33,11 @@ mock.module("@/lib/private-repository-entitlement", () => ({ ...realEntitlement,
   canProcessRepositoryInference: async () => ({ allowed: true }),
 }));
 
-const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
+const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, reviewFeedbackEnabled, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
 const { claimJob, completeJob, enqueueJob, enqueueReviewJobOnce, failJob, requeueJobsOwnedBy } = await import("@/lib/queue");
 const { deferHostedReviewForRelease, activateHostedInferenceRelease } = await import("@/lib/release-job-rollout");
 const { closeDb } = await import("@/lib/db");
+const { controlReviewFeedbackMode } = await import("../scripts/control-review-feedback");
 const { watchdogPass } = await import("@/worker/watchdog");
 
 describeDb("durable review feedback admission", () => {
@@ -93,6 +94,68 @@ describeDb("durable review feedback admission", () => {
     if (originalEnabled === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
     else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = originalEnabled;
     await database?.drop();
+  });
+
+  test("database control overrides the process flag and preserves inherit semantics", async () => {
+    const pool = database.pool;
+    const original = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+    const event = { ...identity, rootCommentId: rootId, actor: { id: 51, login: "maintainer", type: "User" } };
+    try {
+      expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "inherit" }]);
+      process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "0";
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+      expect(await reviewFeedbackEnabled(pool)).toBe(true);
+      expect(await admitReviewFeedbackEvent(event, pool)).toBe(true);
+      await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'review-feedback-reconciliation' AND status = 'queued'");
+      process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "1";
+      await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+      expect(await admitReviewFeedbackEvent(event, pool)).toBe(false);
+      expect(await scheduleReviewFeedbackReconciliationJobs(pool)).toBe(0);
+      await reconcileReviewFeedback(identity, pool);
+      expect((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind IN ('review-feedback', 'review-feedback-reconciliation') AND status = 'queued'")).rows[0].count).toBe(0);
+      await pool.query("UPDATE review_feedback_control SET mode = 'inherit' WHERE id = 1");
+      expect(await reviewFeedbackEnabled(pool)).toBe(true);
+      await expect(pool.query("INSERT INTO review_feedback_control (mode) VALUES ('enabled')"))
+        .rejects.toThrow();
+      await expect(pool.query("UPDATE review_feedback_control SET mode = 'invalid' WHERE id = 1"))
+        .rejects.toThrow();
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'inherit' WHERE id = 1");
+      if (original === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+      else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = original;
+    }
+  });
+
+  test("a failed or missing control read cannot admit or schedule feedback", async () => {
+    const failed = { query: async () => { throw new Error("control read failed"); } } as unknown as typeof database.pool;
+    const missing = { query: async () => ({ rows: [] }) } as unknown as typeof database.pool;
+    const event = { ...identity, rootCommentId: rootId, actor: { id: 51, login: "maintainer", type: "User" } };
+    expect(await reviewFeedbackEnabled(missing)).toBe(false);
+    expect(await reviewFeedbackEnabled(failed)).toBe(false);
+    expect(await admitReviewFeedbackEvent(event, failed)).toBe(false);
+    expect(await scheduleReviewFeedbackReconciliationJobs(failed)).toBe(0);
+    await reconcileReviewFeedback(identity, failed);
+  });
+
+  test("operator control dry-runs and changes only the expected database mode", async () => {
+    const pool = database.pool;
+    try {
+      expect(await controlReviewFeedbackMode(pool, "inherit", "enabled", false)).toBe("dry-run");
+      expect((await pool.query("SELECT mode FROM review_feedback_control WHERE id = 1")).rows[0].mode)
+        .toBe("inherit");
+      expect(await controlReviewFeedbackMode(pool, "inherit", "enabled", true)).toBe("confirmed");
+      await expect(controlReviewFeedbackMode(pool, "inherit", "disabled", true)).rejects.toThrow(
+        "does not match the expected mode",
+      );
+      expect((await pool.query("SELECT mode FROM review_feedback_control WHERE id = 1")).rows[0].mode)
+        .toBe("enabled");
+      expect(await controlReviewFeedbackMode(pool, "enabled", "disabled", true)).toBe("confirmed");
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'inherit' WHERE id = 1");
+    }
   });
 
   test("recovers historical evidence once, isolates old consumers, and retains context through legacy coalescing", async () => {

@@ -11,7 +11,7 @@ import {
   HOSTED_INFERENCE_LOCK,
   PRIVATE_REVIEW_AUTHOR_CAPABILITY,
   RELEASE_V1_JOBS_CAPABILITY,
-  applyReviewedMonitoringDeliveryMigration,
+  applyReviewedFeedbackControlMigration,
   compatibleManagedReleaseProtocolCapability,
   hostedInferenceCapability,
   prepareCompatibleManagedRelease,
@@ -27,7 +27,7 @@ describe("compatible managed release identity", () => {
   test("rejects malformed full migration lists before opening any database transaction", async () => {
     const migrations = checkedInReleaseMigrations();
     const latest = migrations.at(-1)!;
-    const source = await readFile(join(import.meta.dir, "..", "drizzle", "0062_monitor_delivery_receipt.sql"), "utf8");
+    const source = await readFile(join(import.meta.dir, "..", "drizzle", "0063_review_feedback_control.sql"), "utf8");
     let connected = false;
     const pool = { connect() { connected = true; throw new Error("database must not be contacted"); } } as unknown as Pool;
     for (const dryRun of [true, false]) {
@@ -37,7 +37,7 @@ describe("compatible managed release identity", () => {
         [...migrations, { folderMillis: -1, hash: latest.hash }],
         [...migrations, { folderMillis: Number.MAX_SAFE_INTEGER + 1, hash: latest.hash }],
       ]) {
-        await expect(applyReviewedMonitoringDeliveryMigration(pool, "a".repeat(40), "b".repeat(40),
+        await expect(applyReviewedFeedbackControlMigration(pool, "a".repeat(40), "b".repeat(40),
           COMPATIBLE_MANAGED_RELEASE_PROTOCOL, identities, source, { dryRun })).rejects.toThrow("identities are invalid");
       }
     }
@@ -83,7 +83,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       const migration = new Client({ connectionString: url.toString() });
       await migration.connect();
       for (const file of (await readdir(join(import.meta.dir, "..", "drizzle")))
-        .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !name.startsWith("0062_"))
+        .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !name.startsWith("0063_"))
         .sort()) {
         const source = await readFile(
           join(import.meta.dir, "..", "drizzle", file),
@@ -133,16 +133,16 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
     }, 30_000);
 
     test("applies only the reviewed additive migration atomically without retiring the source", async () => {
-      const source = await readFile(join(import.meta.dir, "..", "drizzle", "0062_monitor_delivery_receipt.sql"), "utf8");
+      const source = await readFile(join(import.meta.dir, "..", "drizzle", "0063_review_feedback_control.sql"), "utf8");
       const latest = migrations.at(-1)!;
       const previous = migrations.at(-2)!;
       const capabilities = async () => (await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows;
       const before = await capabilities();
       const apply = (dryRun = false, identities = migrations, sql = source) =>
-        applyReviewedMonitoringDeliveryMigration(pool, sourceRelease, targetRelease,
+        applyReviewedFeedbackControlMigration(pool, sourceRelease, targetRelease,
           COMPATIBLE_MANAGED_RELEASE_PROTOCOL, identities, sql, { dryRun });
       const unchanged = async () => {
-        expect((await pool.query("SELECT (SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='private_monitor_incidents' AND column_name='last_delivery_receipt') AS relation")).rows[0].relation).toBeNull();
+        expect((await pool.query("SELECT to_regclass('public.review_feedback_control') AS relation")).rows[0].relation).toBeNull();
         expect((await pool.query("SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations WHERE created_at=$1", [latest.folderMillis])).rows[0].count).toBe(0);
         expect(await capabilities()).toEqual(before);
       };
@@ -207,7 +207,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
         expect(await apply()).toBe(false);
         expect(await apply(true)).toBe(false);
         expect(await capabilities()).toEqual(before);
-        expect((await pool.query("SELECT (SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='private_monitor_incidents' AND column_name='last_delivery_receipt') AS relation")).rows[0].relation).toBe("last_delivery_receipt");
+        expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "inherit" }]);
         expect((await pool.query("SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at=$1", [latest.folderMillis])).rows).toEqual([{ hash: latest.hash }]);
         await oldWriter(2);
         await pool.query(`INSERT INTO private_monitor_incidents

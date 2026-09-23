@@ -466,6 +466,33 @@ const REVIEWED_MONITOR_DELIVERY_MIGRATION = {
   hash: "210d4d77736bc55ffd6975b72967c4d0ba91ebffcba80e5242600e895cfd908e",
 } as const;
 
+const REVIEWED_FEEDBACK_CONTROL_MIGRATION = {
+  folderMillis: 1790186892052,
+  hash: "fcea695139d972d86ec1bae82fd0b7ba539412815ba6b96c815ad5e125be3de6",
+} as const;
+
+/** Apply the feedback control only after the reviewed monitor delivery schema. */
+export async function applyReviewedFeedbackControlMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const predecessor = migrations.filter((migration) =>
+    migration.folderMillis < REVIEWED_FEEDBACK_CONTROL_MIGRATION.folderMillis
+  ).sort((left, right) => right.folderMillis - left.folderMillis)[0];
+  if (predecessor?.folderMillis !== REVIEWED_MONITOR_DELIVERY_MIGRATION.folderMillis ||
+      predecessor.hash !== REVIEWED_MONITOR_DELIVERY_MIGRATION.hash) {
+    throw new Error("feedback control migration requires the reviewed monitor delivery predecessor");
+  }
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_FEEDBACK_CONTROL_MIGRATION, options);
+}
+
 /** Apply only the reviewed delivery receipt transition from the feedback schema. */
 export async function applyReviewedMonitoringDeliveryMigration(
   pool: Pool,

@@ -77,9 +77,29 @@ export interface ReviewFeedbackJobPayload extends Record<string, unknown> {
   installationId: number;
 }
 
-/** Activate only after every review consumer supports the feedback file contract. */
-export function reviewFeedbackEnabled(): boolean {
-  return process.env.POSTIL_REVIEW_FEEDBACK_ENABLED === "1";
+/** Read every admission from the durable control; a failed read cannot enable feedback. */
+export async function reviewFeedbackEnabled(pool: Pick<Pool, "query"> = getPool()): Promise<boolean> {
+  let result: { rows: { mode: string }[] };
+  try {
+    result = await pool.query<{ mode: string }>(
+      "SELECT mode FROM review_feedback_control WHERE id = 1",
+    );
+  } catch {
+    console.warn("Review feedback control read failed; admission remains disabled");
+    return false;
+  }
+  if (result.rows.length !== 1) {
+    console.warn("Review feedback control row is unavailable; admission remains disabled");
+    return false;
+  }
+  switch (result.rows[0]?.mode) {
+    case "enabled": return true;
+    case "disabled": return false;
+    case "inherit": return process.env.POSTIL_REVIEW_FEEDBACK_ENABLED === "1";
+    default:
+      console.warn("Review feedback control mode is invalid; admission remains disabled");
+      return false;
+  }
 }
 
 function positiveId(value: unknown): value is number {
@@ -165,10 +185,10 @@ export async function admitReviewFeedbackEvent(input: ReviewFeedbackJobPayload &
   actor: { id?: number; login?: string; type?: string };
   rootCommentId: number;
 }, pool: Pool = getPool()): Promise<boolean> {
-  if (!reviewFeedbackEnabled() || !positiveId(input.actor?.id) ||
-      typeof input.actor.login !== "string" || !input.actor.login ||
+  if (!positiveId(input.actor?.id) || typeof input.actor.login !== "string" || !input.actor.login ||
       input.actor.type === "Bot" || input.actor.login.endsWith("[bot]") ||
       isPostilBotLogin(input.actor.login) || !positiveId(input.rootCommentId)) return false;
+  if (!await reviewFeedbackEnabled(pool)) return false;
   const repository = await loadFeedbackRepository(pool, input);
   if (!repository) return false;
   const publication = await pool.query(`
@@ -184,6 +204,7 @@ export async function admitReviewFeedbackEvent(input: ReviewFeedbackJobPayload &
   const verification = await verifyLiveGithubAdmin(repository, input.actor, repository.fullName, token, signal);
   if (verification.outcome === "unavailable") throw new Error("review feedback actor authority is unavailable");
   if (verification.outcome !== "authorized") return false;
+  if (!await reviewFeedbackEnabled(pool)) return false;
   return enqueueReviewFeedbackJob(pool, {
     githubRepoId: input.githubRepoId, installationId: input.installationId, prNumber: input.prNumber,
   });
@@ -214,7 +235,7 @@ async function enqueueReviewFeedbackJob(pool: Pool, payload: ReviewFeedbackJobPa
 
 /** Bound each watchdog pass to twenty due pull requests, independent of webhook subscriptions. */
 export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now = new Date()): Promise<number> {
-  if (!reviewFeedbackEnabled()) return 0;
+  if (!await reviewFeedbackEnabled(pool)) return 0;
   const result = await pool.query<ReviewFeedbackJobPayload>(`
     WITH candidates AS MATERIALIZED (
       SELECT DISTINCT ON (review.repository_id, review.pr_number)
@@ -242,6 +263,7 @@ export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now =
     `, [now, REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND]);
   let scheduled = 0;
   for (const row of result.rows) {
+    if (!await reviewFeedbackEnabled(pool)) break;
     if (await enqueueReviewFeedbackJob(pool, {
       githubRepoId: Number(row.githubRepoId), prNumber: Number(row.prNumber), installationId: Number(row.installationId),
     })) scheduled += 1;
@@ -254,7 +276,7 @@ export async function reconcileReviewFeedback(
   payload: ReviewFeedbackJobPayload,
   pool: Pool = getPool(),
 ): Promise<void> {
-  if (!reviewFeedbackEnabled()) return;
+  if (!await reviewFeedbackEnabled(pool)) return;
   const repository = await loadFeedbackRepository(pool, payload);
   if (!repository) return;
   let nextPollAt = new Date(Date.now() + POLL_INTERVAL_MS);
@@ -318,6 +340,7 @@ export async function reconcileReviewFeedback(
     const live = await getPullRequestReviewContext(token, repository.fullName, payload.prNumber, signal);
     signal.throwIfAborted();
     if (!live.open || live.merged || live.draft || live.headSha !== observed.headSha) return;
+    if (!await reviewFeedbackEnabled(pool)) return;
     await enqueueReviewJobOnce(pool, {
       installationId: payload.installationId, sourceInstallationId: repository.sourceInstallationId,
       sourceOrgId: repository.orgId, githubRepoId: repository.githubRepoId, repoFullName: repository.fullName,

@@ -13,6 +13,9 @@ const targetSha = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
 const sourceImage = `registry.fly.io/postil-web@${digest}`;
 const secretMetadata = [{ name: "DATABASE_URL", digest: "fixture-digest", status: "Deployed" }];
+const stagedFeedback = { name: "POSTIL_REVIEW_FEEDBACK_ENABLED", digest: "feedback-digest", status: "Staged" };
+const deployedFeedback = { ...stagedFeedback, status: "Deployed" };
+const approvedMachineIds = ["a0", "a1", "a2", "a3", "a4"];
 const binding = {
   POSTIL_MANAGED_RELEASE: "1",
   POSTIL_RELEASE_SHA: targetSha,
@@ -34,12 +37,12 @@ function fleet() {
 }
 
 function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = secretMetadata,
-  afterExecSecrets?: typeof secretMetadata, statusMachines = machines, afterUpdateMachines?: ReturnType<typeof fleet>, deadlineEnvironment: Record<string, string> = {}) {
+  afterExecSecrets?: typeof secretMetadata, statusMachines = machines, afterUpdateMachines?: ReturnType<typeof fleet>, deadlineEnvironment: Record<string, string> = {}, sourceSecrets = secretMetadata) {
   const directory = mkdtempSync(join(tmpdir(), "postil-deploy-test-"));
   try {
     writeFileSync(join(directory, "machines.json"), JSON.stringify(machines));
     writeFileSync(join(directory, "postil-source-machines.json"), JSON.stringify(snapshot));
-    writeFileSync(join(directory, "postil-source-secrets.json"), JSON.stringify(secretMetadata));
+    writeFileSync(join(directory, "postil-source-secrets.json"), JSON.stringify(sourceSecrets));
     writeFileSync(join(directory, "secrets.json"), JSON.stringify(secrets));
     writeFileSync(join(directory, "status-machines.json"), JSON.stringify(statusMachines));
     if (afterUpdateMachines) writeFileSync(join(directory, "after-update-machines.json"), JSON.stringify(afterUpdateMachines));
@@ -104,7 +107,8 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
     `], {
       env: { ...process.env, RUNNER_TEMP: directory, GITHUB_OUTPUT: join(directory, "output"),
         TARGET_RELEASE_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.4", MONITOR_VOLUME_ID: "vol_test", TEST_NOW_EPOCH: "1800000000",
-        ROLLBACK_DEADLINE_EPOCH: "1800004000", ROLLBACK_TARGET_SHA: targetSha, ...deadlineEnvironment },
+        ROLLBACK_DEADLINE_EPOCH: "1800004000", ROLLBACK_TARGET_SHA: targetSha,
+        APPROVED_MACHINE_IDS: JSON.stringify(approvedMachineIds), ...deadlineEnvironment },
       stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
     const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
@@ -161,12 +165,13 @@ describe("managed deployment contract", () => {
 
   test("requires manual target-bound admission and never rolls back an unattempted deploy", () => {
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
-    for (const input of ["rollback_deadline_epoch", "rollback_target_sha"]) {
+    for (const input of ["machine_ids", "rollback_deadline_epoch", "rollback_target_sha"]) {
       expect(workflow.on.workflow_dispatch.inputs[input]).toMatchObject({ required: true, type: "string" });
     }
     expect(workflow.jobs.deploy.if).toBe("vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'");
     expect(workflow.jobs.deploy.env.ROLLBACK_DEADLINE_EPOCH).toBe("${{ inputs.rollback_deadline_epoch }}");
     expect(workflow.jobs.deploy.env.ROLLBACK_TARGET_SHA).toBe("${{ inputs.rollback_target_sha }}");
+    expect(workflow.jobs.deploy.env.APPROVED_MACHINE_IDS).toBe("${{ inputs.machine_ids }}");
     expect(workflow.jobs.deploy.steps.find((step: any) => step.id === "rollback").if).toContain("steps.deploy.outputs.attempted == 'true'");
   });
 
@@ -255,10 +260,47 @@ describe("managed deployment contract", () => {
     }
   });
 
+  test("admits exactly five distinct approved Machine IDs before mutation and immediately before deploy", () => {
+    expect(runStep("source-fleet").code).toBe(0);
+    expect(runStep("deploy").updates).toBe("deploy");
+    for (const approved of ["", "not json", "[]", JSON.stringify(approvedMachineIds.slice(0, 4)),
+      JSON.stringify([...approvedMachineIds.slice(0, 4), "a3"]),
+      JSON.stringify([...approvedMachineIds.slice(0, 4), "A4"]),
+      JSON.stringify([...approvedMachineIds, "a5"])]) {
+      for (const id of ["source-fleet", "deploy"]) {
+        const result = runStep(id, fleet(), fleet(), secretMetadata, undefined, fleet(), undefined,
+          { APPROVED_MACHINE_IDS: approved });
+        expect(result.code).not.toBe(0);
+        expect(result.updates).toBe("");
+        expect(result.output).not.toContain("attempted=true");
+      }
+    }
+    for (const mutate of [
+      (machines: ReturnType<typeof fleet>) => { machines[4]!.id = "a5"; },
+      (machines: ReturnType<typeof fleet>) => { machines.pop(); },
+      (machines: ReturnType<typeof fleet>) => { machines.push(structuredClone(machines[0]!)); },
+      (machines: ReturnType<typeof fleet>) => { machines.push({ ...structuredClone(machines[0]!), id: "a5" }); },
+    ]) {
+      const observed = fleet(); mutate(observed);
+      for (const id of ["source-fleet", "deploy"]) {
+        const result = runStep(id, observed);
+        expect(result.code).not.toBe(0);
+        expect(result.updates).toBe("");
+        expect(result.output).not.toContain("attempted=true");
+      }
+    }
+    const deployScript = steps.find((step) => step.id === "deploy")!.run!;
+    expect(deployScript.lastIndexOf("flyctl machine list")).toBeGreaterThan(deployScript.indexOf("flyctl secrets list"));
+    expect(deployScript.lastIndexOf("flyctl machine list")).toBeLessThan(deployScript.indexOf("flyctl deploy"));
+  });
+
   test("captures deployed secret metadata and rejects staged, partial, unknown, or missing proof", () => {
     expect(runStep("secret-contract").code).toBe(0);
+    expect(runStep("secret-contract", fleet(), fleet(), [...secretMetadata, stagedFeedback]).code).toBe(0);
     for (const secrets of [
       [{ ...secretMetadata[0]!, status: "Staged" }],
+      [...secretMetadata, { name: "ANOTHER_SETTING", digest: "other-digest", status: "Staged" }],
+      [...secretMetadata, { ...stagedFeedback, status: "Partial" }],
       [{ ...secretMetadata[0]!, status: "Partial" }],
       [{ ...secretMetadata[0]!, status: "Unknown" }],
       [{ ...secretMetadata[0]!, status: "" }],
@@ -270,6 +312,75 @@ describe("managed deployment contract", () => {
       expect(result.code).not.toBe(0);
       expect(result.updates).toBe("");
     }
+  });
+
+  test("deploy accepts a staged feedback flag only with unchanged source metadata", () => {
+    const sourceSecrets = [...secretMetadata, stagedFeedback];
+    const accepted = runStep("deploy", fleet(), fleet(), sourceSecrets, undefined, fleet(), undefined, {}, sourceSecrets);
+    expect(accepted.code).toBe(0);
+    expect(accepted.updates).toBe("deploy");
+    for (const changed of [
+      [...secretMetadata, deployedFeedback],
+      [...secretMetadata, { ...stagedFeedback, digest: "changed-digest" }],
+      [...secretMetadata, stagedFeedback, { name: "EXTRA", digest: "extra-digest", status: "Deployed" }],
+    ]) {
+      const result = runStep("deploy", fleet(), fleet(), changed, undefined, fleet(), undefined, {}, sourceSecrets);
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+    }
+  });
+
+  test("successful verification requires the staged flag to deploy with its original digest", () => {
+    const sourceSecrets = [...secretMetadata, stagedFeedback];
+    const accepted = runStep("verify", fleet(), fleet(), [...secretMetadata, deployedFeedback], undefined,
+      fleet(), undefined, {}, sourceSecrets);
+    expect(accepted.code).toBe(0);
+    for (const changed of [
+      sourceSecrets,
+      [...secretMetadata, { ...deployedFeedback, digest: "changed-digest" }],
+      [{ ...secretMetadata[0]!, status: "Staged" }, deployedFeedback],
+      [...secretMetadata, deployedFeedback, { name: "EXTRA", digest: "extra-digest", status: "Deployed" }],
+    ]) {
+      const result = runStep("verify", fleet(), fleet(), changed, undefined, fleet(), undefined, {}, sourceSecrets);
+      expect(result.code).not.toBe(0);
+    }
+  });
+
+  test("rollback tolerates only the staged feedback status transition and preserves every digest", () => {
+    const sourceSecrets = [...secretMetadata, stagedFeedback];
+    const machines = fleet();
+    machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    machines[1]!.release = targetSha;
+    for (const observed of [sourceSecrets, [...secretMetadata, { ...stagedFeedback, status: "Partial" }],
+      [...secretMetadata, deployedFeedback]]) {
+      const accepted = runStep("rollback", structuredClone(machines), fleet(), observed, undefined,
+        structuredClone(machines), undefined, {}, sourceSecrets);
+      expect(accepted.code, accepted.error).toBe(0);
+      expect(accepted.updates).toContain("machine update a1");
+    }
+    for (const changed of [
+      [...secretMetadata, { ...deployedFeedback, digest: "changed-digest" }],
+      [{ ...secretMetadata[0]!, digest: "changed-digest" }, deployedFeedback],
+      [{ ...secretMetadata[0]!, status: "Staged" }, deployedFeedback],
+      [{ ...secretMetadata[0]!, status: "Partial" }, deployedFeedback],
+      [...secretMetadata, { ...stagedFeedback, status: "Unknown" }],
+    ]) {
+      const rejected = runStep("rollback", structuredClone(machines), fleet(), changed, undefined,
+        structuredClone(machines), undefined, {}, sourceSecrets);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.updates).toBe("");
+    }
+    const afterExec = runStep("rollback", structuredClone(machines), fleet(), sourceSecrets,
+      [...secretMetadata, { ...deployedFeedback, digest: "changed-digest" }], structuredClone(machines),
+      undefined, {}, sourceSecrets);
+    expect(afterExec.code).not.toBe(0);
+    expect(afterExec.updates).toBe("");
+    const deployedSource = [...secretMetadata, deployedFeedback];
+    const reversed = runStep("rollback", structuredClone(machines), fleet(),
+      [...secretMetadata, { ...deployedFeedback, status: "Partial" }], undefined,
+      structuredClone(machines), undefined, {}, deployedSource);
+    expect(reversed.code).not.toBe(0);
+    expect(reversed.updates).toBe("");
   });
 
   test("checks secret names, digests, and deployment status before deploy, successful verification, or rollback", () => {

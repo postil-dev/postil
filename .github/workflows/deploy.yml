@@ -3,6 +3,10 @@ name: deploy
 on:
   workflow_dispatch:
     inputs:
+      machine_ids:
+        description: JSON array of the five approved postil-web Machine IDs
+        required: true
+        type: string
       rollback_deadline_epoch:
         description: Absolute Unix-seconds deadline from the active target-bound rollback timer
         required: true
@@ -27,6 +31,7 @@ jobs:
       TARGET_RELEASE_SHA: ${{ github.sha }}
       ROLLBACK_DEADLINE_EPOCH: ${{ inputs.rollback_deadline_epoch }}
       ROLLBACK_TARGET_SHA: ${{ inputs.rollback_target_sha }}
+      APPROVED_MACHINE_IDS: ${{ inputs.machine_ids }}
     # Manual admission remains disabled until target-bound rollback protection is active.
     if: vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
     steps:
@@ -173,6 +178,17 @@ jobs:
           fi
           umask 077
           machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The app fleet must match exactly the five approved Machine IDs."
+            exit 1
+          fi
           jq '[.[] | select(
             .config.metadata.fly_process_group == "web" or
             .config.metadata.fly_process_group == "worker" or
@@ -255,7 +271,10 @@ jobs:
             [.[] | .name] as $names |
             all(.[];
               (.name | type == "string" and length > 0) and
-              (.digest | type == "string" and length > 0) and .status == "Deployed") and
+              (.digest | type == "string" and length > 0) and
+              (.status == "Deployed" or
+                (.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Staged"))) and
+            ($names | unique | length) == ($names | length) and
             ($names | index("DATABASE_URL") != null) and
             all($names[];
               test("^(POSTIL_RELEASE_SHA|POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA|POSTIL_RELEASE_PROTOCOL|POSTIL_MANAGED_RELEASE|POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE)$") | not)
@@ -319,6 +338,18 @@ jobs:
           now=$(date -u +%s)
           if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2100 )); then
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
+          machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The app fleet changed after source capture; deploy stopped."
             exit 1
           fi
           echo "attempted=true" >> "${GITHUB_OUTPUT}"
@@ -392,7 +423,9 @@ jobs:
           done
           fly_secrets=$(flyctl secrets list --app postil-web --json)
           if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
-            (map({name, digest, status}) | sort_by(.name)) == $source[0]
+            (map({name, digest, status}) | sort_by(.name)) ==
+              ($source[0] | map(if .name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and
+                .status == "Staged" then .status = "Deployed" else . end))
           ' <<<"${fly_secrets}" >/dev/null; then
             echo "::error::Fly secret metadata changed during deployment; target verification failed."
             exit 1
@@ -453,9 +486,17 @@ jobs:
             local fly_secrets
             fly_secrets=$(flyctl secrets list --app postil-web --json) || return 1
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
-              (map({name, digest, status}) | sort_by(.name)) == $source[0]
+              (map({name, digest, status}) | sort_by(.name)) as $observed |
+              ($observed | map({name, digest})) ==
+                ($source[0] | map({name, digest})) and
+              all($observed[]; . as $secret |
+                any($source[0][]; .name == $secret.name and
+                  (.status == $secret.status or
+                    (.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and
+                     .status == "Staged" and
+                     ($secret.status == "Partial" or $secret.status == "Deployed")))))
             ' <<<"${fly_secrets}" >/dev/null; then
-              echo "::error::Fly secret metadata changed; rollback cannot apply staged or changed secrets."
+              echo "::error::Fly secret metadata changed beyond the approved staged flag transition; rollback stopped."
               return 1
             fi
           }

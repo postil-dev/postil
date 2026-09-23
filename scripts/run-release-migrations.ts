@@ -6,7 +6,7 @@ import { Pool } from "pg";
 
 import {
   COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
-  applyReviewedMonitoringDeliveryMigration,
+  applyReviewedFeedbackControlMigration,
   type ManagedReleaseMigrationIdentity,
   prepareCompatibleManagedRelease,
   restoreAllManagedReleasePreparations,
@@ -159,13 +159,13 @@ export async function prepareReviewedAdditiveMigration(
   }
   const pool = existingPool ?? new Pool({ connectionString: databaseEnvironment.DATABASE_URL });
   try {
-    return await applyReviewedMonitoringDeliveryMigration(
+    return await applyReviewedFeedbackControlMigration(
       pool,
       compatibleSourceReleaseSha(databaseEnvironment),
       databaseEnvironment.POSTIL_RELEASE_SHA ?? "",
       requireCompatibleReleaseProtocol(databaseEnvironment),
       checkedInReleaseMigrations(),
-      await readFile(new URL("../drizzle/0062_monitor_delivery_receipt.sql", import.meta.url), "utf8"),
+      await readFile(new URL("../drizzle/0063_review_feedback_control.sql", import.meta.url), "utf8"),
       { dryRun },
     );
   } finally {
