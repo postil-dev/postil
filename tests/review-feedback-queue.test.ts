@@ -372,6 +372,60 @@ describeDb("durable review feedback admission", () => {
     });
   }
 
+  for (const transition of ["retry", "recovery"] as const) {
+    for (const pendingKind of ["review-feedback", "review"] as const) {
+      test(`disabled feedback control preserves ${transition} semantics with pending ${pendingKind}`, async () => {
+        const pool = database.pool;
+        const prNumber = 210 + ["retry", "recovery"].indexOf(transition) * 2
+          + ["review-feedback", "review"].indexOf(pendingKind);
+        const pending = { ...reviewPayload(), prNumber,
+          ...(pendingKind === "review-feedback" ? { reviewFeedback: { version: 1, threads: [] } } : {}) };
+        const payload = { ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending };
+        const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+          (kind, payload, status, attempts, max_attempts, locked_by, locked_at)
+          VALUES ('review', $1, 'running', 1, 3, 'disabled-feedback-owner', now()) RETURNING id`,
+        [JSON.stringify(payload)]);
+        const id = Number(inserted.rows[0]!.id);
+        await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+        try {
+          const before = new Date();
+          const outcome = transition === "retry"
+            ? await failJob(pool, { id, lockedBy: "disabled-feedback-owner", attempts: 1, maxAttempts: 3 }, "temporary failure")
+            : await requeueJobsOwnedBy(pool, "disabled-feedback-owner", "shutdown", ["review"], [id]);
+          expect(outcome).toBe(pendingKind === "review-feedback"
+            ? (transition === "retry" ? "retried" : 1)
+            : (transition === "retry" ? "coalesced" : 1));
+          const original = (await pool.query(
+            "SELECT status, attempts, payload, locked_by, locked_at, last_error, run_after FROM jobs WHERE id = $1",
+            [id],
+          )).rows[0];
+          expect(original.payload).toEqual(payload);
+          expect(original.locked_by).toBeNull();
+          expect(original.locked_at).toBeNull();
+          expect(original.last_error).toBe(transition === "retry" ? "temporary failure" : "shutdown");
+          const followups = (await pool.query(
+            "SELECT kind, payload FROM jobs WHERE id <> $1 AND payload->>'prNumber' = $2 ORDER BY id",
+            [id, String(prNumber)],
+          )).rows;
+          if (pendingKind === "review-feedback") {
+            expect(original.status).toBe("queued");
+            expect(original.attempts).toBe(transition === "retry" ? 1 : 0);
+            expect(new Date(original.run_after).getTime()).toBeGreaterThanOrEqual(
+              before.getTime() + (transition === "retry" ? 30_000 : 0),
+            );
+            expect(followups).toEqual([]);
+          } else {
+            expect(original.status).toBe(transition === "retry" ? "failed" : "done");
+            expect(original.attempts).toBe(1);
+            expect(followups).toEqual([{ kind: "review", payload: pending }]);
+          }
+        } finally {
+          await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+        }
+      });
+    }
+  }
+
   test("finding feedback provenance requires a matching source alongside its digest", async () => {
     const insert = (context: unknown) => database.pool.query(`INSERT INTO reviews
       (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
@@ -540,7 +594,11 @@ describeDb("durable review feedback admission", () => {
 
         const secondId = await prepare();
         const afterDisable = await run(secondId);
-        expect(afterDisable).toBe(transition === "recovery" ? 1 : transition === "retry" ? "failed" : transition === "complete" ? "done" : "failed");
+        expect(afterDisable).toBe(transition === "recovery" ? 1 : transition === "retry" ? "retried" : transition === "complete" ? "done" : "failed");
+        if (transition === "retry" || transition === "recovery") {
+          const original = await pool.query("SELECT status, locked_by FROM jobs WHERE id = $1", [secondId]);
+          expect(original.rows[0]).toEqual({ status: "queued", locked_by: null });
+        }
         const final = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
         expect(final.rows[0].count).toBe(1);
         if (transition === "terminal-followup") {

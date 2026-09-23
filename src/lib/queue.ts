@@ -1243,12 +1243,14 @@ export async function requeueJobsOwnedBy(
           SET status = CASE
                 WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
                      AND jsonb_typeof(payload -> $5) = 'object'
+                     AND (NOT ((payload -> $5) ? 'reviewFeedback') OR $6::boolean)
                   THEN 'done'::job_status
                 ELSE 'queued'::job_status
               END,
               attempts = CASE
                 WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
                      AND jsonb_typeof(payload -> $5) = 'object'
+                     AND (NOT ((payload -> $5) ? 'reviewFeedback') OR $6::boolean)
                   THEN attempts
                 ELSE GREATEST(attempts - 1, 0)
               END,
@@ -1334,6 +1336,7 @@ export async function failJob(
             SET status = CASE
                   WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
                        AND jsonb_typeof(payload -> $5) = 'object'
+                       AND (NOT ((payload -> $5) ? 'reviewFeedback') OR $6::boolean)
                     THEN 'failed'::job_status
                   ELSE 'queued'::job_status
                 END,
@@ -1342,6 +1345,7 @@ export async function failJob(
                 run_after = CASE
                   WHEN kind IN ('review', 'review-feedback') AND NOT payload ? 'recoveryReviewId'
                        AND jsonb_typeof(payload -> $5) = 'object'
+                       AND (NOT ((payload -> $5) ? 'reviewFeedback') OR $6::boolean)
                     THEN now()
                   ELSE now() + ($3 || ' milliseconds')::interval
                 END
