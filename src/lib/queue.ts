@@ -72,6 +72,33 @@ export interface ReviewJobPayload extends Record<string, unknown> {
 
 export const COALESCED_REVIEW_PAYLOAD_KEY = "_postilCoalescedReviewPayload";
 
+async function lockFeedbackControl(client: PoolClient): Promise<boolean> {
+  const { feedbackModeEnabled } = await import("@/lib/review-feedback");
+  const result = await client.query<{ mode: string }>(
+    "SELECT mode FROM review_feedback_control WHERE id = 1 FOR SHARE",
+  );
+  return feedbackModeEnabled(result.rows);
+}
+
+async function withFeedbackControl<T>(
+  pool: Pool,
+  operation: (client: PoolClient, enabled: boolean) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const enabled = await lockFeedbackControl(client);
+    const result = await operation(client, enabled);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 type StoredReviewJobPayload = ReviewJobPayload & {
   [COALESCED_REVIEW_PAYLOAD_KEY]?: ReviewJobPayload;
 };
@@ -702,6 +729,12 @@ export async function enqueueReviewJobOnce(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    if (payload.reviewFeedback || payload.trigger?.source === "finding_feedback") {
+      if (!await lockFeedbackControl(client)) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+    }
     const identity = reviewJobIdentity(payload);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:review-pr:${[String(payload.githubRepoId), String(payload.prNumber)].join("\u001f")}`,
@@ -1141,7 +1174,8 @@ export async function completeJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "lockedBy">,
 ): Promise<"done" | "coalesced" | "lost"> {
-  const result = await pool.query<{ outcome: "done" | "coalesced" | "lost" }>(
+  return withFeedbackControl(pool, async (client, enabled) => {
+  const result = await client.query<{ outcome: "done" | "coalesced" | "lost" }>(
     `WITH transitioned AS (
        UPDATE jobs
           SET status = 'done', locked_at = NULL, locked_by = NULL,
@@ -1153,6 +1187,7 @@ export async function completeJob(
        SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
          FROM transitioned
         WHERE kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object'
+          AND (NOT pending ? 'reviewFeedback' OR $4::boolean)
        RETURNING id
      )
      SELECT CASE
@@ -1160,9 +1195,10 @@ export async function completeJob(
        WHEN EXISTS (SELECT 1 FROM transitioned) THEN 'done'
        ELSE 'lost'
      END AS outcome`,
-    [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+    [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled],
   );
   return result.rows[0]?.outcome ?? "lost";
+  });
 }
 
 export async function continueClaimedJob(
@@ -1200,7 +1236,8 @@ export async function requeueJobsOwnedBy(
   const ownedJobIds = [...new Set(jobIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
   if (ownedJobIds.length === 0) return 0;
   const redactedReason = redactAndTruncate(reason, 2000);
-  const result = await pool.query<{ count: string }>(
+  return withFeedbackControl(pool, async (client, enabled) => {
+  const result = await client.query<{ count: string }>(
     `WITH transitioned AS (
        UPDATE jobs
           SET status = CASE
@@ -1228,6 +1265,7 @@ export async function requeueJobsOwnedBy(
        SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
          FROM transitioned
         WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
+          AND (NOT pending ? 'reviewFeedback' OR $6::boolean)
        RETURNING id
      )
      SELECT count(*)::text AS count FROM transitioned`,
@@ -1237,9 +1275,11 @@ export async function requeueJobsOwnedBy(
       allowedKinds,
       ownedJobIds,
       COALESCED_REVIEW_PAYLOAD_KEY,
+      enabled,
     ],
   );
   return Number(result.rows[0]?.count ?? 0);
+  });
 }
 
 export function backoffMs(attempts: number): number {
@@ -1277,6 +1317,7 @@ export async function failJob(
   } = {},
 ): Promise<"retried" | "failed" | "coalesced" | "lost"> {
   const redactedError = redactAndTruncate(error, 2000);
+  return withFeedbackControl(pool, async (client, enabled) => {
   if (!opts.permanent && job.attempts < job.maxAttempts) {
     const delay = backoffMs(job.attempts);
     // Guarded by `status = 'running'` (mirroring the final-fail path below).
@@ -1287,7 +1328,7 @@ export async function failJob(
     // worker owns and let a third worker run it concurrently (double review /
     // reply / check-runs / LLM spend). rowCount 0 means we lost the row; report
     // "lost" and do not resurrect it.
-    const res = await pool.query<{ outcome: "coalesced" | "retried" | "lost" }>(
+    const res = await client.query<{ outcome: "coalesced" | "retried" | "failed" | "lost" }>(
       `WITH transitioned AS (
          UPDATE jobs
             SET status = CASE
@@ -1311,14 +1352,16 @@ export async function failJob(
          SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
            FROM transitioned
           WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
+            AND (NOT pending ? 'reviewFeedback' OR $6::boolean)
          RETURNING id
        )
        SELECT CASE
          WHEN EXISTS (SELECT 1 FROM inserted) THEN 'coalesced'
          WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'queued') THEN 'retried'
+         WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
          ELSE 'lost'
        END AS outcome`,
-      [job.id, redactedError, String(delay), job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+      [job.id, redactedError, String(delay), job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled],
     );
     return res.rows[0]?.outcome ?? "lost";
   }
@@ -1328,7 +1371,7 @@ export async function failJob(
   // affects 0 rows. The winner is the single owner of any follow-up side
   // effect (e.g. posting a user-facing failure comment).
   const res = opts.failureFollowup
-    ? await pool.query<{ outcome: "coalesced" | "failed" | "lost" }>(
+    ? await client.query<{ outcome: "coalesced" | "failed" | "lost" }>(
         `WITH transitioned AS (
            UPDATE jobs
               SET status = 'failed',
@@ -1341,13 +1384,15 @@ export async function failJob(
            SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
              FROM transitioned
             WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
+              AND (NOT pending ? 'reviewFeedback' OR $8::boolean)
            RETURNING id
          ), inserted_followup AS (
          INSERT INTO jobs (kind, payload, max_attempts)
          SELECT $5, $6::jsonb, $7
            FROM transitioned
           WHERE status = 'failed' AND NOT recovering
-            AND NOT (kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object')
+            AND NOT (kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object'
+                     AND (NOT pending ? 'reviewFeedback' OR $8::boolean))
          RETURNING id
          )
          SELECT CASE
@@ -1363,9 +1408,10 @@ export async function failJob(
           opts.failureFollowup.kind,
           JSON.stringify(opts.failureFollowup.payload),
           opts.failureFollowup.maxAttempts,
+          enabled,
         ],
       )
-    : await pool.query<{ outcome: "coalesced" | "failed" | "lost" }>(
+    : await client.query<{ outcome: "coalesced" | "failed" | "lost" }>(
         `WITH transitioned AS (
            UPDATE jobs
               SET status = 'failed',
@@ -1378,6 +1424,7 @@ export async function failJob(
            SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
              FROM transitioned
             WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
+              AND (NOT pending ? 'reviewFeedback' OR $5::boolean)
            RETURNING id
          )
          SELECT CASE
@@ -1385,10 +1432,11 @@ export async function failJob(
            WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
            ELSE 'lost'
          END AS outcome`,
-        [job.id, redactedError, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+        [job.id, redactedError, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled],
       );
   return (res.rows[0] as { outcome?: "coalesced" | "failed" | "lost" } | undefined)
     ?.outcome ?? "lost";
+  });
 }
 
 /**

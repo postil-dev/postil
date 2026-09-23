@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { Client, type Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 
 import { getDb, getPool } from "@/lib/db";
@@ -91,7 +91,7 @@ export async function reviewFeedbackEnabled(pool: Pick<Pool, "query"> = getPool(
   return feedbackModeEnabled(result.rows);
 }
 
-function feedbackModeEnabled(rows: { mode: string }[]): boolean {
+export function feedbackModeEnabled(rows: { mode: string }[]): boolean {
   if (rows.length !== 1) {
     console.warn("Review feedback control row is unavailable; admission remains disabled");
     return false;
@@ -111,13 +111,11 @@ function feedbackModeEnabled(rows: { mode: string }[]): boolean {
  */
 async function withFeedbackAdmission(
   pool: Pool,
-  enqueue: (client: Client) => Promise<boolean>,
+  enqueue: (client: PoolClient) => Promise<boolean>,
 ): Promise<boolean> {
-  // The full review queue acquires its own pool client. Keep this guard outside
-  // that pool so concurrent admissions cannot consume all pooled connections.
-  const client = new Client(pool.options);
+  let client: PoolClient;
   try {
-    await client.connect();
+    client = await pool.connect();
   } catch {
     console.warn("Review feedback control connection failed; admission remains disabled");
     return false;
@@ -146,7 +144,7 @@ async function withFeedbackAdmission(
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
   } finally {
-    await client.end();
+    client.release();
   }
 }
 
@@ -378,16 +376,13 @@ export async function reconcileReviewFeedback(
     const live = await getPullRequestReviewContext(token, repository.fullName, payload.prNumber, signal);
     signal.throwIfAborted();
     if (!live.open || live.merged || live.draft || live.headSha !== observed.headSha) return;
-    await withFeedbackAdmission(pool, async () => {
-      await enqueueReviewJobOnce(pool, {
+    await enqueueReviewJobOnce(pool, {
         installationId: payload.installationId, sourceInstallationId: repository.sourceInstallationId,
         sourceOrgId: repository.orgId, githubRepoId: repository.githubRepoId, repoFullName: repository.fullName,
         repositoryPrivate: repository.private, prNumber: payload.prNumber,
         authorGithubId: live.authorGithubId, authorLogin: live.authorLogin,
         headSha: live.headSha, baseSha: live.baseSha, forceFullReview: true, reviewFeedback,
         trigger: { source: "finding_feedback", feedbackDigest: digest },
-      });
-      return true;
     });
   } catch (error) {
     lastError = redactAndTruncate(error, 1_000);

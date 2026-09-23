@@ -476,4 +476,131 @@ describeDb("durable review feedback admission", () => {
       await limitedPool.end();
     }
   });
+
+  for (const transition of ["complete", "retry", "terminal", "terminal-followup", "recovery"] as const) {
+    test(`disable serializes with ${transition} coalesced feedback promotion`, async () => {
+      const pool = database.pool;
+      const prNumber = 200 + ["complete", "retry", "terminal", "terminal-followup", "recovery"].indexOf(transition);
+      const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+        version: 1 as const, repository: "octo/repository", prNumber, headSha,
+        threads: [{ findingId: "pending", rootCommentId: rootId, resolved: false,
+          comments: [{ commentId: rootId + 1, author: { id: 51, login: "maintainer" }, body: reply, updatedAt }] }],
+      } };
+      const run = async (id: number) => {
+        const claim = { id, lockedBy: "transition-owner", attempts: 1, maxAttempts: 3 };
+        switch (transition) {
+          case "complete": return completeJob(pool, claim);
+          case "retry": return failJob(pool, claim, "temporary failure");
+          case "terminal": return failJob(pool, claim, "final failure", { permanent: true });
+          case "terminal-followup": return failJob(pool, claim, "final failure", { permanent: true,
+            failureFollowup: { kind: "respond-failure-comment", payload: { prNumber }, maxAttempts: 5 } });
+          case "recovery": return requeueJobsOwnedBy(pool, "transition-owner", "shutdown", ["review"], [id]);
+        }
+      };
+      const prepare = async () => {
+        const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs (kind, payload, status, locked_by, locked_at)
+          VALUES ('review', $1, 'running', 'transition-owner', now()) RETURNING id`,
+        [JSON.stringify({ ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending })]);
+        return Number(inserted.rows[0]!.id);
+      };
+
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+      const firstId = await prepare();
+      const blocker = await pool.connect();
+      let running: Promise<unknown> | undefined;
+      let disabling: Promise<unknown> | undefined;
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE", [firstId]);
+        running = run(firstId);
+        let transitionWaiting = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const state = await pool.query(`SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+              AND wait_event_type = 'Lock' AND query LIKE 'WITH transitioned AS (%'
+          ) AS waiting`);
+          if (state.rows[0].waiting) { transitionWaiting = true; break; }
+          await Bun.sleep(10);
+        }
+        expect(transitionWaiting).toBe(true);
+        let disabled = false;
+        disabling = controlReviewFeedbackMode(pool, "enabled", "disabled", true).then((result) => {
+          disabled = true;
+          return result;
+        });
+        await Bun.sleep(50);
+        expect(disabled).toBe(false);
+        await blocker.query("COMMIT");
+        const outcome = await running;
+        expect(outcome).toBe(transition === "recovery" ? 1 : "coalesced");
+        expect(await disabling).toBe("confirmed");
+        const promoted = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
+        expect(promoted.rows[0].count).toBe(1);
+        await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
+
+        const secondId = await prepare();
+        const afterDisable = await run(secondId);
+        expect(afterDisable).toBe(transition === "recovery" ? 1 : transition === "retry" ? "failed" : transition === "complete" ? "done" : "failed");
+        const final = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
+        expect(final.rows[0].count).toBe(1);
+        if (transition === "terminal-followup") {
+          const followups = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'respond-failure-comment' AND payload->>'prNumber' = $1", [String(prNumber)]);
+          expect(followups.rows[0].count).toBe(1);
+        }
+      } finally {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+        blocker.release();
+        await Promise.allSettled([running, disabling].filter((value) => value !== undefined));
+        await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+      }
+    }, 15_000);
+  }
+
+  test("concurrent webhook admissions bound guard connections with a one-client pool", async () => {
+    const pool = database.pool;
+    const prNumber = 205;
+    const review = await pool.query(`INSERT INTO reviews
+      (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+       source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, finished_at)
+      VALUES ($1, $2, $3, 81, 71, 'octo/repository', $4, $5, $6, 'completed', 51, 'maintainer', now()) RETURNING id`,
+    [repositoryId, orgId, installationId, prNumber, headSha, baseSha]);
+    await pool.query(`INSERT INTO finding_publications
+      (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      VALUES ($1, 'bounded-admission', true, 'inline', 'resolved', $2)`, [review.rows[0].id, String(rootId)]);
+    await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    const limitedPool = new Pool({ connectionString: database.url, max: 1, connectionTimeoutMillis: 3_000,
+      application_name: "feedback-admission-bound" });
+    const blocker = await pool.connect();
+    let admissions: Promise<boolean[]> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`postil:feedback-poll:71:${prNumber}`]);
+      const event = { ...identity, prNumber, rootCommentId: rootId,
+        actor: { id: 51, login: "maintainer", type: "User" } };
+      admissions = Promise.all(Array.from({ length: 12 }, () => admitReviewFeedbackEvent(event, limitedPool)));
+      let waiting = false;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const state = await pool.query(`SELECT count(*)::int AS count FROM pg_stat_activity
+          WHERE datname = current_database() AND application_name = 'feedback-admission-bound'`);
+        expect(state.rows[0].count).toBeLessThanOrEqual(1);
+        const lock = await pool.query(`SELECT EXISTS (SELECT 1 FROM pg_locks lock
+          JOIN pg_stat_activity activity ON activity.pid = lock.pid
+          WHERE activity.datname = current_database() AND activity.application_name = 'feedback-admission-bound'
+            AND lock.locktype = 'advisory' AND NOT lock.granted) AS waiting`);
+        if (lock.rows[0].waiting) { waiting = true; break; }
+        await Bun.sleep(10);
+      }
+      expect(waiting).toBe(true);
+      await blocker.query("COMMIT");
+      const results = await admissions;
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const jobs = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback-reconciliation' AND payload->>'prNumber' = $1", [String(prNumber)]);
+      expect(jobs.rows[0].count).toBe(1);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await admissions?.catch(() => undefined);
+      await limitedPool.end();
+    }
+  }, 15_000);
 });
