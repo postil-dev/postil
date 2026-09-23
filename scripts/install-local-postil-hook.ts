@@ -15,9 +15,15 @@ import { dirname, join, resolve } from "node:path";
 const projectRoot = join(import.meta.dir, "..");
 const sourceHook = join(projectRoot, ".githooks", "pre-push");
 const installedMarker = "# postil-local-hook:v1";
+const defaultCascade = "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code";
+const preservedCascades = new Set([
+  defaultCascade,
+  "z-ai/glm-5.2,google/gemini-3.8-flash,moonshotai/kimi-k2.7-code",
+]);
 
 interface InstallOptions {
   force?: boolean;
+  preserveInstalledCascade?: boolean;
   allowDelegatedHooksPath?: boolean;
   postilExecutable?: string;
   credentialWrapper?: string;
@@ -108,9 +114,28 @@ export async function installLocalPostilHook(
     "/bin",
   ].filter((entry, index, entries) => entries.indexOf(entry) === index).join(":");
 
+  let cascade = defaultCascade;
+  if (options.preserveInstalledCascade) {
+    const entry = await lstat(targetHook).catch(() => undefined);
+    if (!entry?.isFile() || entry.isSymbolicLink() ||
+        (process.getuid && entry.uid !== process.getuid())) {
+      throw new Error("--preserve-installed-cascade requires an owned regular Postil hook");
+    }
+    const installed = await readFile(targetHook, "utf8");
+    const markers = installed.split("\n").filter(line => line === installedMarker);
+    const assignments = installed.match(/\blocal_cascade_override\s*=/g) ?? [];
+    const exact = /^local_cascade_override=([^\r\n]+)$/m.exec(installed);
+    if (markers.length !== 1 || assignments.length !== 1 ||
+        !exact || !preservedCascades.has(exact[1]!)) {
+      throw new Error("--preserve-installed-cascade requires one exact vetted installed Postil cascade");
+    }
+    cascade = exact[1]!;
+  }
+
   const template = await readFile(sourceHook, "utf8");
   const rendered = renderTemplate(template, {
     __POSTIL_EXECUTABLE__: postilExecutable,
+    __LOCAL_REVIEW_CASCADE__: cascade,
     __GIT_EXECUTABLE__: gitExecutable,
     __GH_EXECUTABLE__: ghExecutable,
     __JQ_EXECUTABLE__: jqExecutable,
@@ -214,14 +239,26 @@ async function run(
 if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
-    const unknown = args.filter(
-      (arg) => arg !== "--force" && arg !== "--allow-delegated-hooks-path",
-    );
-    if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`);
-    const target = await installLocalPostilHook(process.cwd(), {
-      force: args.includes("--force"),
-      allowDelegatedHooksPath: args.includes("--allow-delegated-hooks-path"),
-    });
+    let repositoryPath = process.cwd();
+    const options: InstallOptions = {};
+    let targetSpecified = false;
+    for (let index = 0; index < args.length; index++) {
+      const argument = args[index];
+      if (argument === "--repo-path") {
+        const value = args[++index];
+        if (targetSpecified || !value || value.startsWith("--") || value.includes("\0")) {
+          throw new Error("--repo-path requires one explicit filesystem path and may appear only once");
+        }
+        repositoryPath = await resolveDirectory(resolve(value), "--repo-path");
+        targetSpecified = true;
+      } else if (argument === "--preserve-installed-cascade") {
+        if (options.preserveInstalledCascade) throw new Error("--preserve-installed-cascade may appear only once");
+        options.preserveInstalledCascade = true;
+      } else if (argument === "--force") options.force = true;
+      else if (argument === "--allow-delegated-hooks-path") options.allowDelegatedHooksPath = true;
+      else throw new Error(`unknown argument: ${argument}`);
+    }
+    const target = await installLocalPostilHook(repositoryPath, options);
     console.log(`postil: installed trusted local pre-push hook at ${target}`);
     if (!process.env.POSTIL_LOCAL_CREDENTIAL_WRAPPER) {
       console.log(
