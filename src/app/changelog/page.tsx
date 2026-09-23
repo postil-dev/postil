@@ -42,7 +42,7 @@ const RELEASES: Release[] = [
     changes: [
       {
         label: "Fixed",
-        text: "A finding on unchanged code must cite an exact added or removed line as its cause before it can block a pull request. When complete diff evidence confirms that the finding predates the change, it stays out of the gate.",
+        text: "A new finding on unchanged code must cite an exact added or removed line as its cause before it can block a pull request. Complete diff evidence excludes new findings that predate the change; existing published findings keep their recorded state.",
       },
       {
         label: "Fixed",
