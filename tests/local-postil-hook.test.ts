@@ -27,6 +27,242 @@ afterEach(async () => {
 });
 
 describe("trusted local Postil pre-push hook", () => {
+  test("retains full output for clean, incomplete and malformed reviews without retaining credentials", async()=>{
+    for(const mode of ["pass","synthetic-diff","malformed","provider-error"] as const) {
+      const fixture=await createFixture(`retained-${mode}`);
+      await commit(fixture.repository,"topic",`${mode} review\n`);await installHook(fixture,fixture.repository,true);
+      const credential=crypto.randomUUID();
+      await writeFile(fixture.leakNeedle, credential + "\n");
+      const result=await push(fixture,fixture.repository,["origin",`HEAD:refs/heads/retained-${mode}`],mode,{MODEL_API_KEY:credential});
+      expect(result.exitCode===0).toBe(mode==="pass");
+      const files=await archiveFiles(fixture),outputs=files.filter(path=>path.endsWith("/review.json"));
+      expect(outputs).toHaveLength(1);
+      expect((await stat(dirname(outputs[0]!))).mode & 0o777).toBe(0o700);
+      expect((await stat(outputs[0]!)).mode & 0o777).toBe(0o600);
+      expect(result.stderr).toContain(outputs[0]!);
+      const raw=await readFile(outputs[0]!,"utf8");
+      if(mode==="malformed") expect(raw).toBe('{"findings":[]}\n');
+      else if(mode!=="provider-error") expect(JSON.parse(raw).usage).toEqual({promptTokens:1,completionTokens:1});
+      else expect(raw).toBe("");
+      expect(await directoryContains(join(fixture.repository,".git","postil-local-review"),credential)).toBe(false);
+      expect(files.some(path=>path.endsWith("/exit-status"))).toBe(true);
+      expect(await Bun.file(fixture.leakLog).exists()).toBe(false);
+    }
+  });
+
+  test("superseding a finding retains exact cache, edited disposition and both full outputs",async()=>{
+    const fixture=await createFixture("superseded-evidence");
+    const head=await commit(fixture.repository,"topic","superseded\n");
+    const base=await gitCapture(fixture.repository,["rev-parse","refs/remotes/origin/main"]);
+    await installHook(fixture,fixture.repository,true);
+    await push(fixture,fixture.repository,["origin","HEAD:refs/heads/superseded-evidence"],"finding");
+    const paths=reviewCachePaths(fixture,base,head);await fillDispositionReasons(paths.template);
+    const cache=await readFile(paths.cache,"utf8"),dispositions=await readFile(paths.template,"utf8");
+    const result=await push(fixture,fixture.repository,["origin","HEAD:refs/heads/superseded-evidence"],"pass");
+    expect(result.exitCode).toBe(0);
+    const files=await archiveFiles(fixture);
+    expect(files.filter(path=>path.endsWith("/review.json"))).toHaveLength(2);
+    const content=await Promise.all(files.filter(path=>path.includes("/superseded.")).map(path=>readFile(path,"utf8")));
+    expect(content.includes(cache)).toBe(true);expect(content.includes(dispositions)).toBe(true);
+  });
+
+  test("simultaneous reviews retain distinct full outputs even when one exact-SHA lock loses",async()=>{
+    const fixture=await createFixture("racing-evidence");await commit(fixture.repository,"topic","race\n");
+    await installHook(fixture,fixture.repository,true);
+    const results=await Promise.all(["first","second"].map(name=>push(fixture,fixture.repository,["--dry-run","origin",`HEAD:refs/heads/${name}`],"finding")));
+    expect(results.every(result=>result.exitCode!==0)).toBe(true);
+    const outputs=(await archiveFiles(fixture)).filter(path=>path.endsWith("/review.json"));
+    expect(outputs).toHaveLength(2);expect(new Set(outputs).size).toBe(2);
+    for(const output of outputs) expect(JSON.parse(await readFile(output,"utf8")).findings[0].id).toBe("fixture-finding-id");
+  });
+
+  test("an archive symlink blocks before inference without touching its target",async()=>{
+    const fixture=await createFixture("archive-symlink");await commit(fixture.repository,"topic","archive\n");
+    const root=join(fixture.repository,".git","postil-local-review");await mkdir(root,{mode:0o700});
+    const target=join(fixture.root,"archive-target");await mkdir(target);await symlink(target,join(root,"archive"));
+    await installHook(fixture,fixture.repository,true);
+    const result=await push(fixture,fixture.repository,["origin","HEAD:refs/heads/archive-symlink"],"pass");
+    expect(result.exitCode).not.toBe(0);expect(result.stderr).toContain("archive must be a non-symlink");
+    expect(await readdir(target)).toEqual([]);expect(await Bun.file(fixture.log).exists()).toBe(false);
+  });
+
+  test("archive write failure and interrupted supersession preserve evidence and fail closed", async () => {
+    for (const fault of ["create", "second-move"]) {
+      const fixture = await createFixture("archive-failure");
+      const head = await commit(fixture.repository, "topic", "archive failure\n");
+      const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+      await installHook(fixture, fixture.repository, true);
+      await push(fixture, fixture.repository, ["origin", "HEAD:refs/heads/archive"], "finding");
+      const paths = reviewCachePaths(fixture, base, head);
+      await fillDispositionReasons(paths.template);
+      const originals = await Promise.all([paths.cache, paths.template].map(path => readFile(path, "utf8")));
+      const hook = await readFile(fixture.hook, "utf8");
+      const before = fault === "create"
+        ? 'archive_batch=$("$MKTEMP_EXECUTABLE" -d "$archive_directory/superseded.XXXXXX") || return 1'
+        : '/bin/mv -- "$archive_source" "$archive_batch/${archive_source##*/}" || return 1';
+      const after = fault === "create" ? "return 1"
+        : '[ "$archive_source" != "$disposition_template_path" ] || return 1\n      ' + before;
+      expect(hook.split(before)).toHaveLength(2);
+      await writeFile(fixture.hook, hook.replace(before, after));
+      const failed = await push(fixture, fixture.repository, ["origin", "HEAD:refs/heads/archive"], "pass");
+      expect(failed.exitCode).not.toBe(0);
+      expect(await refExists(fixture.remote, "refs/heads/archive")).toBe(false);
+      const preserved = await Promise.all([...(await archiveFiles(fixture)), paths.cache, paths.template]
+        .map(path => readFile(path, "utf8").catch(() => "")));
+      for (const bytes of originals) expect(preserved.includes(bytes)).toBe(true);
+      await writeFile(fixture.hook, hook);
+      expect((await push(fixture, fixture.repository, ["origin", "HEAD:refs/heads/archive"], "pass")).exitCode).toBe(0);
+    }
+  });
+
+  test("private evidence validation rejects another owner before changing file permissions", async () => {
+    const target = "/etc/hosts";
+    const before = await stat(target);
+    const source = await readFile(join(import.meta.dir, "../.githooks/pre-push"), "utf8");
+    const extract = (name: string) => {
+      const start = source.indexOf(name + "() {");
+      expect(start).toBeGreaterThan(-1);
+      return source.slice(start, source.indexOf("\n}\n", start) + 3);
+    };
+    // Exercise the ownership predicate against an actual file with a different UID.
+    const uid = process.getuid!();
+    const otherUid = before.uid === uid ? uid + 1 : uid;
+    const child = Bun.spawn(["/bin/sh", "-c",
+      'current_uid=$1; fail_setup() { exit 2; }; ' +
+      extract("owned_evidence_path") + "\n" + extract("validate_private_file") +
+      '\nvalidate_private_file "$2" evidence', "ownership-test", String(otherUid), target],
+      { stdout: "pipe", stderr: "pipe" });
+    expect(await child.exited).toBe(2);
+    expect((await stat(target)).mode).toBe(before.mode);
+  });
+
+  test("installer CLI targets another worktree and preserves ownership and delegation checks", async () => {
+    const fixture = await createFixture("cli-target");
+    const linked = join(fixture.root, "linked target");
+    await git(fixture.repository, ["worktree", "add", "-b", "linked", linked]);
+    const invoke = (args: string[]) => installHookCli(fixture, fixture.root, args);
+    const installed = await invoke(["--repo-path", linked]);
+    expect(installed.exitCode).toBe(0);
+    expect(installed.stdout).toContain(fixture.hook);
+    expect(await readFile(fixture.hook, "utf8")).toContain("# postil-local-hook:v1");
+    const foreign = "#!/bin/sh\nexit 9\n";
+    await writeFile(fixture.hook, foreign);
+    expect((await invoke(["--repo-path", linked])).stderr).toContain("already exists");
+    expect(await readFile(fixture.hook, "utf8")).toBe(foreign);
+    expect((await invoke(["--repo-path", linked, "--force"])).exitCode).toBe(0);
+    const delegating = join(fixture.root, "delegating");
+    await mkdir(delegating);
+    await git(fixture.repository, ["config", "core.hooksPath", delegating]);
+    const before = await readFile(fixture.hook, "utf8");
+    expect((await invoke(["--repo-path", linked])).stderr).toContain("refusing to install an inactive hook");
+    expect((await invoke(["--repo-path", linked, "--allow-delegated-hooks-path"])).stderr)
+      .toContain("delegating pre-push hook is not executable");
+    expect(await readFile(fixture.hook, "utf8")).toBe(before);
+    await writeFile(join(delegating, "pre-push"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect((await invoke(["--repo-path", linked, "--allow-delegated-hooks-path"])).exitCode).toBe(0);
+  });
+
+  test("installer CLI preserves only the two vetted installed cascades and defaults to Luna", async () => {
+    const fixture = await createFixture("preserve-cascade");
+    const luna = "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code";
+    const gemini = "z-ai/glm-5.2,google/gemini-3.8-flash,moonshotai/kimi-k2.7-code";
+    const args = ["--repo-path", fixture.repository, "--preserve-installed-cascade"];
+    expect((await installHookCli(fixture, fixture.root, args)).exitCode).toBe(2);
+    expect(await Bun.file(fixture.hook).exists()).toBe(false);
+    expect((await installHookCli(fixture, fixture.root, ["--repo-path", fixture.repository])).exitCode).toBe(0);
+    const original = await readFile(fixture.hook, "utf8");
+    expect(original).toContain("local_cascade_override=" + luna);
+    for (const cascade of [luna, gemini]) {
+      await writeFile(fixture.hook, original.replace("local_cascade_override=" + luna, "local_cascade_override=" + cascade));
+      expect((await installHookCli(fixture, fixture.root, args)).exitCode).toBe(0);
+      const rendered = await readFile(fixture.hook, "utf8");
+      expect(rendered).toContain("local_cascade_override=" + cascade);
+      expect(rendered.replace(cascade, luna)).toBe(original);
+    }
+    const invalid = [
+      original.replace(luna, "z-ai/glm-5.2"),
+      original.replace(luna, gemini + ",other/model"),
+      original.replace(luna, '"' + luna + '"'),
+      original.replace(luna, luna + "; exit 0"),
+      original + "\nlocal_cascade_override=" + gemini + "\n",
+      original + "\nexport local_cascade_override=" + gemini + "\n",
+      original.replace("# postil-local-hook:v1", "# unrelated hook"),
+      "#!/bin/sh\nexit 0\n",
+    ];
+    for (const content of invalid) {
+      await writeFile(fixture.hook, content);
+      const rejected = await installHookCli(fixture, fixture.root, args);
+      expect(rejected.exitCode).toBe(2);
+      expect(await readFile(fixture.hook, "utf8") === content).toBe(true);
+    }
+    await writeFile(fixture.hook, original);
+    expect((await installHookCli(fixture, fixture.root, [...args, "--preserve-installed-cascade"])).exitCode).toBe(2);
+    const target = join(fixture.root, "symlink-hook");
+    await rename(fixture.hook, target);
+    await symlink(target, fixture.hook);
+    expect((await installHookCli(fixture, fixture.root, args)).exitCode).toBe(2);
+    expect((await lstat(fixture.hook)).isSymbolicLink()).toBe(true);
+    expect(await readFile(target, "utf8") === original).toBe(true);
+  });
+
+  test("installer CLI rejects missing, duplicate and invalid paths before installing", async () => {
+    const fixture = await createFixture("cli-invalid");
+    for (const args of [
+      ["--repo-path"],
+      ["--repo-path", "--force"],
+      ["--repo-path", fixture.repository, "--repo-path", fixture.repository],
+      ["--repo-path", join(fixture.root, "missing")],
+      ["--repo-path", fixture.modeFile],
+    ]) {
+      const result = await installHookCli(fixture, fixture.root, args);
+      expect(result.exitCode).toBe(2);
+      expect(await Bun.file(fixture.hook).exists()).toBe(false);
+    }
+    expect((await installHookCli(fixture, fixture.repository, [])).exitCode).toBe(0);
+    expect(await Bun.file(fixture.hook).exists()).toBe(true);
+  });
+
+  test("observer interruptions retain all bytes and permit fresh review after marker retirement", async () => {
+    for (const moved of ["marker_path", "cache_path", "template_path"]) {
+      const fixture = await createFixture("observer-interruption");
+      const head = await commit(fixture.repository, "topic", "interrupted archive\n");
+      const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
+      const paths = reviewCachePaths(fixture, base, head);
+      await installHook(fixture, fixture.repository, true);
+      await push(fixture, fixture.repository, ["origin", "HEAD:refs/heads/interrupted"], "finding");
+      await fillDispositionReasons(paths.template);
+      const original = await Promise.all([paths.cache, paths.template].map(path => readFile(path, "utf8")));
+      const hook = await readFile(fixture.hook, "utf8");
+      const move = '/bin/mv -- "$' + moved + '" "$consumed_directory/${' + moved + '##*/}" &&';
+      expect(hook.split(move)).toHaveLength(2);
+      // Simulate a failed next archive operation while allowing lock cleanup.
+      await writeFile(fixture.hook, hook.replace(move, move + " false &&"));
+      const accepted = await push(fixture, fixture.repository,
+        ["origin", "HEAD:refs/heads/interrupted"], "provider-error",
+        { POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE: paths.template });
+      expect(accepted.exitCode).toBe(0);
+      const root = dirname(paths.cache);
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const active = (await readdir(root)).some(name => name.startsWith("accepted-"));
+        if (!active && !(await lstat(paths.lock).catch(() => undefined))) break;
+        await Bun.sleep(20);
+      }
+      expect((await readdir(root)).some(name => name.startsWith("accepted-"))).toBe(false);
+      const retained = await archiveFiles(fixture);
+      expect(retained.some(path => path.includes("/consumed.") && path.includes("/accepted-"))).toBe(true);
+      const bytes = await Promise.all([...retained, paths.cache, paths.template]
+        .map(path => readFile(path, "utf8").catch(() => "")));
+      for (const content of original) expect(bytes.includes(content)).toBe(true);
+      await writeFile(fixture.hook, hook);
+      const recovered = await push(fixture, fixture.repository,
+        ["origin", "HEAD:refs/heads/recovered"], "pass");
+      expect(recovered.exitCode).toBe(0);
+      expect((await readRecords(fixture)).length).toBe(2);
+      const after = await Promise.all((await archiveFiles(fixture)).map(path => readFile(path, "utf8")));
+      for (const content of original) expect(after.includes(content)).toBe(true);
+    }
+  }, 15000);
+
   test("installs a rendered hook in the common directory from a linked worktree", async () => {
     const fixture = await createFixture("linked-installer");
     const linked = join(fixture.root, "linked");
@@ -365,6 +601,11 @@ describe("trusted local Postil pre-push hook", () => {
     expect((await readRecords(fixture)).length).toBe(1);
     expect((await readRecord(fixture)).dispositionsVariable).toBe("absent");
     await waitForFilesToDisappear(paths.cache, paths.template);
+    const retained = await archiveFiles(fixture);
+    expect(retained.filter(path=>path.endsWith("/review.json"))).toHaveLength(1);
+    expect(retained.some(path=>path.includes("/consumed.") && path.includes("/accepted-"))).toBe(true);
+    expect(retained.some(path=>path.includes("/consumed.") && path.endsWith(paths.cache.split("/").at(-1)!))).toBe(true);
+    expect(await Promise.all(retained.map(async path=>(await stat(path)).mode & 0o777))).toEqual(retained.map(()=>0o600));
     expect(await Bun.file(paths.lock).exists()).toBe(false);
     expect(await refExists(fixture.remote, "refs/heads/accepted-disposition")).toBe(true);
   });
@@ -474,7 +715,7 @@ describe("trusted local Postil pre-push hook", () => {
     expect(await refExists(fixture.remote, remoteRef)).toBe(false);
   }, 30_000);
 
-  test("replaces cache symlinks without modifying their targets", async () => {
+  test("rejects cache symlinks without modifying their targets", async () => {
     const fixture = await createFixture("cache-symlinks");
     const head = await commit(fixture.repository, "topic", "cache symlink safety\n");
     const base = await gitCapture(fixture.repository, ["rev-parse", "refs/remotes/origin/main"]);
@@ -496,8 +737,8 @@ describe("trusted local Postil pre-push hook", () => {
     );
 
     expect(result.exitCode).not.toBe(0);
-    expect((await lstat(paths.cache)).isSymbolicLink()).toBe(false);
-    expect((await lstat(paths.template)).isSymbolicLink()).toBe(false);
+    expect((await lstat(paths.cache)).isSymbolicLink()).toBe(true);
+    expect((await lstat(paths.template)).isSymbolicLink()).toBe(true);
     expect(await readFile(cacheVictim, "utf8")).toBe("do not replace cache target\n");
     expect(await readFile(templateVictim, "utf8")).toBe("do not replace template target\n");
   });
@@ -767,6 +1008,26 @@ async function createFixture(name: string): Promise<Fixture> {
   };
 }
 
+async function installHookCli(fixture: Fixture, cwd: string, args: string[]) {
+  const child = Bun.spawn([
+    process.execPath, "run", join(import.meta.dir, "../scripts/install-local-postil-hook.ts"), ...args,
+  ], {
+    cwd,
+    env: {
+      ...process.env,
+      PATH: fixture.bin + ":" + process.env.PATH,
+      POSTIL_LOCAL_POSTIL_BIN: fixture.postil,
+      POSTIL_LOCAL_CREDENTIAL_WRAPPER: "",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+  ]);
+  return { exitCode, stdout, stderr };
+}
+
 async function installHook(
   fixture: Fixture,
   repository: string,
@@ -1012,4 +1273,18 @@ async function runGit(cwd: string, args: string[]) {
     child.exited,
   ]);
   return { exitCode, stdout, stderr };
+}
+
+async function archiveFiles(fixture:Fixture):Promise<string[]> {
+  const root=join(fixture.repository,".git","postil-local-review","archive");
+  const files:string[]=[];
+  async function visit(directory:string) {
+    expect((await stat(directory)).mode & 0o777).toBe(0o700);
+    for(const entry of await readdir(directory,{withFileTypes:true})) {
+      const path=join(directory,entry.name);
+      if(entry.isDirectory()) await visit(path);
+      else {expect(entry.isFile()).toBe(true);files.push(path);}
+    }
+  }
+  await visit(root);return files;
 }
