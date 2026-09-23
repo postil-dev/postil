@@ -33,7 +33,7 @@ describe("trusted local Postil pre-push hook", () => {
       await commit(fixture.repository,"topic",`${mode} review\n`);await installHook(fixture,fixture.repository,true);
       const credential=crypto.randomUUID();
       await writeFile(fixture.leakNeedle, credential + "\n");
-      const result=await push(fixture,fixture.repository,["origin",`HEAD:refs/heads/retained-${mode}`],mode,{OPENROUTER_API_KEY:credential});
+      const result=await push(fixture,fixture.repository,["origin",`HEAD:refs/heads/retained-${mode}`],mode,{MODEL_API_KEY:credential});
       expect(result.exitCode===0).toBe(mode==="pass");
       const files=await archiveFiles(fixture),outputs=files.filter(path=>path.endsWith("/review.json"));
       expect(outputs).toHaveLength(1);
@@ -63,7 +63,7 @@ describe("trusted local Postil pre-push hook", () => {
     const files=await archiveFiles(fixture);
     expect(files.filter(path=>path.endsWith("/review.json"))).toHaveLength(2);
     const content=await Promise.all(files.filter(path=>path.includes("/superseded.")).map(path=>readFile(path,"utf8")));
-    expect(content).toContain(cache);expect(content).toContain(dispositions);
+    expect(content.includes(cache)).toBe(true);expect(content.includes(dispositions)).toBe(true);
   });
 
   test("simultaneous reviews retain distinct full outputs even when one exact-SHA lock loses",async()=>{
@@ -109,7 +109,7 @@ describe("trusted local Postil pre-push hook", () => {
       expect(await refExists(fixture.remote, "refs/heads/archive")).toBe(false);
       const preserved = await Promise.all([...(await archiveFiles(fixture)), paths.cache, paths.template]
         .map(path => readFile(path, "utf8").catch(() => "")));
-      for (const bytes of originals) expect(preserved).toContain(bytes);
+      for (const bytes of originals) expect(preserved.includes(bytes)).toBe(true);
       await writeFile(fixture.hook, hook);
       expect((await push(fixture, fixture.repository, ["origin", "HEAD:refs/heads/archive"], "pass")).exitCode).toBe(0);
     }
@@ -201,7 +201,7 @@ describe("trusted local Postil pre-push hook", () => {
       const root = dirname(paths.cache);
       for (let attempt = 0; attempt < 100; attempt++) {
         const active = (await readdir(root)).some(name => name.startsWith("accepted-"));
-        if (!active && !(await Bun.file(paths.lock).exists())) break;
+        if (!active && !(await lstat(paths.lock).catch(() => undefined))) break;
         await Bun.sleep(20);
       }
       expect((await readdir(root)).some(name => name.startsWith("accepted-"))).toBe(false);
@@ -209,14 +209,14 @@ describe("trusted local Postil pre-push hook", () => {
       expect(retained.some(path => path.includes("/consumed.") && path.includes("/accepted-"))).toBe(true);
       const bytes = await Promise.all([...retained, paths.cache, paths.template]
         .map(path => readFile(path, "utf8").catch(() => "")));
-      for (const content of original) expect(bytes).toContain(content);
+      for (const content of original) expect(bytes.includes(content)).toBe(true);
       await writeFile(fixture.hook, hook);
       const recovered = await push(fixture, fixture.repository,
         ["origin", "HEAD:refs/heads/recovered"], "pass");
       expect(recovered.exitCode).toBe(0);
       expect((await readRecords(fixture)).length).toBe(2);
       const after = await Promise.all((await archiveFiles(fixture)).map(path => readFile(path, "utf8")));
-      for (const content of original) expect(after).toContain(content);
+      for (const content of original) expect(after.includes(content)).toBe(true);
     }
   }, 15000);
 
