@@ -1,15 +1,16 @@
 name: deploy
 
 on:
-  # Deploy only after the ci workflow has completed successfully on main,
-  # not merely on push: ci and deploy used to run in parallel off the same
-  # push event, so a merge commit that failed post-merge CI could still
-  # deploy while its own test run was still in flight or had failed.
-  workflow_run:
-    workflows: ["ci"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      rollback_deadline_epoch:
+        description: Absolute Unix-seconds deadline from the active target-bound rollback timer
+        required: true
+        type: string
+      rollback_target_sha:
+        description: Exact target SHA bound by the active rollback timer
+        required: true
+        type: string
 
 concurrency:
   group: fly-deploy
@@ -23,16 +24,15 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      TARGET_RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-    # Skips quietly until the FLY_DEPLOY_ENABLED repo variable is set to
-    # 'true' (and the FLY_API_TOKEN secret is configured). Also skips a
-    # workflow_run event whose ci run did not succeed; workflow_dispatch
-    # (manual deploy) has no associated ci run and always proceeds.
-    if: vars.FLY_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      TARGET_RELEASE_SHA: ${{ github.sha }}
+      ROLLBACK_DEADLINE_EPOCH: ${{ inputs.rollback_deadline_epoch }}
+      ROLLBACK_TARGET_SHA: ${{ inputs.rollback_target_sha }}
+    # Manual admission remains disabled until target-bound rollback protection is active.
+    if: vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
       # Bake the pinned CLI into the image so the worker can spawn it.
       # `src/data/public-cli-release.json` is the only place the pinned release
       # is named. This step always runs on deploy so
@@ -271,6 +271,17 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
+          # Provisioning (5m), deploy (10m), verify (5m), activate (5m), rollback (10m), margin (5m).
+          if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
+            echo "::error::An exact target-bound rollback deadline is required."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2400 )); then
+            echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
           volumes=$(flyctl volumes list --app postil-web --json)
           count=$(jq -r '[.[] | select((.name // .Name) == "postil_monitor_state" and (.region // .Region) == "lhr")] | length' <<<"${volumes}")
           if [ "${count}" -eq 0 ]; then
@@ -299,6 +310,18 @@ jobs:
             echo "::error::Fly secret metadata changed after source capture; deployment requires separate configuration maintenance."
             exit 1
           fi
+          # Recheck after preparation: deploy, verify, activate, automatic rollback, and a five-minute margin.
+          if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
+            echo "::error::An exact target-bound rollback deadline is required."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2100 )); then
+            echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
+          echo "attempted=true" >> "${GITHUB_OUTPUT}"
           flyctl deploy \
             --remote-only \
             --strategy rolling \
@@ -391,6 +414,17 @@ jobs:
               .config.metadata.fly_process_group == "worker"
             ) | .id] | if length >= 1 then .[0] else error("no managed worker is available") end
           ')
+          # Activation (5m), automatic rollback (10m), and margin (5m).
+          if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
+            echo "::error::An exact target-bound rollback deadline is required."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 1200 )); then
+            echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
           flyctl machine exec "${machine_id}" \
             "bun run jobs:activate-release" \
             --app postil-web --timeout 60
@@ -398,10 +432,21 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Roll back an incomplete managed replacement
         id: rollback
-        if: ${{ always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outcome != 'skipped' && (steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure' || steps.activate.outcome == 'failure') }}
+        if: ${{ always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outputs.attempted == 'true' && (steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure' || steps.activate.outcome == 'failure') }}
         timeout-minutes: 10
         run: |
           set -euo pipefail
+          # If the local timer is due, leave recovery to that independently armed owner.
+          if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
+            echo "::error::An exact target-bound rollback deadline is required."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 900 )); then
+            echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
           [[ "${SOURCE_IMAGE}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ]]
           verify_source_secrets() {
             local fly_secrets
