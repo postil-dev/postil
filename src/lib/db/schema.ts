@@ -1986,11 +1986,14 @@ export const privateMonitorIncidents = pgTable(
     }),
     lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true }),
     lastNotificationError: text("last_notification_error"),
+    lastNotificationKey: text("last_notification_key"),
+    lastDeliveryReceipt: jsonb("last_delivery_receipt"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (t) => [
+    check("private_monitor_delivery_receipt_bound", sql`("last_delivery_receipt" IS NULL AND "last_notification_key" IS NULL) OR ("last_delivery_receipt" IS NOT NULL AND "last_notification_key" IS NOT NULL AND length("last_notification_key") BETWEEN 1 AND 512 AND jsonb_typeof("last_delivery_receipt") = 'object' AND octet_length("last_delivery_receipt"::text) <= 2048)`),
     index("private_monitor_incidents_state_updated_idx").on(
       t.state,
       t.updatedAt,

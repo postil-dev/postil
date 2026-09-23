@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import type { Pool } from "pg";
 
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import { ilertEventTransport, withFallbackTransport } from "@/lib/operator-notifications";
 import type {
   OperatorNotification,
   OperatorNotificationTransport,
@@ -18,6 +19,7 @@ import {
   finishPrivateMonitoringPass,
   getPrivateMonitoringDashboard,
   markMonitorPassAlertSent,
+  matchingMonitoringDeliveryReceipt,
   monitorPassAlertBucket,
   recordMonitorPassFailure,
   recordMonitorPassSuccess,
@@ -709,6 +711,79 @@ describeDb("private monitoring durability", () => {
     await db?.drop();
   }, 30_000);
 
+  const receiptTransport: OperatorNotificationTransport = { async send() {
+    return { messageId: "not-persisted", delivery: { transport: "email", fallbackUsed: true,
+      primaryOutcome: "http_rejected", primaryHttpStatus: 402 } };
+  } };
+  async function openReceiptNotification() {
+    expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
+    const pass = await startPrivateMonitoringPass(pool, "monitor-a", BUCKET, NOW);
+    await finishPrivateMonitoringPass(pool, pass!, [{ key: "public-site", group: "availability",
+      severity: "critical", healthy: false, summary: "Public site responds", detail: "Probe failed." }], NOW);
+    return (await claimPrivateMonitoringNotifications(pool, "monitor-a", NOW))[0]!;
+  }
+  test("persists bounded receipt and legacy acknowledgment clears same-timestamp provenance", async () => {
+    const notification = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", transport: receiptTransport, now: NOW,
+    });
+    const receipt = (await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt;
+    expect(receipt).toEqual({ transport: "email", fallbackUsed: true, primaryOutcome: "http_rejected",
+      primaryHttpStatus: 402, notificationKey: notification.notificationKey, acceptedAt: NOW.toISOString() });
+    expect(JSON.stringify(receipt)).not.toContain("not-persisted");
+    expect(matchingMonitoringDeliveryReceipt(receipt, "different-key", NOW)).toBeNull();
+    expect(matchingMonitoringDeliveryReceipt(receipt, notification.notificationKey, new Date(NOW.getTime()+1))).toBeNull();
+    await pool.query("UPDATE private_monitor_incidents SET last_notified_at = $1 WHERE key = 'public-site'", [NOW]);
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toEqual(receipt);
+    await pool.query(`UPDATE private_monitor_incidents SET pending_notification_key = 'legacy-reminder',
+      pending_notification_kind = 'reminder' WHERE key = 'public-site'`);
+    // The old worker acknowledges its pending key without writing either new column.
+    await pool.query(`UPDATE private_monitor_incidents SET last_notified_at = $1,
+      pending_notification_key = NULL, pending_notification_kind = NULL WHERE key = 'public-site'`, [NOW]);
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toBeNull();
+    expect((await pool.query("SELECT last_notification_key, last_delivery_receipt FROM private_monitor_incidents")).rows[0])
+      .toEqual({ last_notification_key: null, last_delivery_receipt: null });
+  });
+  test("receipt write failure rolls back acknowledgment and leaves notification retryable", async () => {
+    const notification = await openReceiptNotification();
+    const client = await pool.connect();
+    const query = client.query.bind(client);
+    const wrapped = { query: async (...args: unknown[]) => {
+      if (String(args[0]).includes("SET last_notification_key = $2")) throw new Error("receipt storage unavailable");
+      return (query as (...args: unknown[]) => Promise<unknown>)(...args);
+    }, release: () => client.release() };
+    const failingPool = { connect: async () => wrapped, query: pool.query.bind(pool) } as unknown as Pool;
+    await expect(deliverPrivateMonitoringNotification(failingPool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", transport: receiptTransport, now: NOW,
+    })).rejects.toThrow("receipt storage unavailable");
+    const row = (await pool.query("SELECT last_notified_at, last_delivery_receipt, pending_notification_key, notification_lease_owner FROM private_monitor_incidents")).rows[0];
+    expect(row).toEqual({ last_notified_at: null, last_delivery_receipt: null,
+      pending_notification_key: notification.notificationKey, notification_lease_owner: null });
+    expect(await claimPrivateMonitoringNotifications(pool, "monitor-b", new Date(NOW.getTime()+31_000))).toHaveLength(1);
+  });
+  test("both transports failing retains retry without a successful receipt", async () => {
+    const notification = await openReceiptNotification();
+    const primary = ilertEventTransport(crypto.randomUUID(), (async () => new Response("rejected", { status: 402 })) as unknown as typeof fetch);
+    const transport = withFallbackTransport(primary, { async send() { throw new Error("email unavailable"); } }, () => undefined);
+    await expect(deliverPrivateMonitoringNotification(pool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", transport, now: NOW,
+    })).rejects.toThrow("fallback delivery failed");
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toBeNull();
+    expect(await claimPrivateMonitoringNotifications(pool, "monitor-b", new Date(NOW.getTime()+31_000))).toHaveLength(1);
+  });
+  test("unknown or unexpected transport fields cannot enter the receipt", async () => {
+    const notification = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", now: NOW,
+      transport: { async send() { return { messageId: null, delivery: {
+        transport: "email", fallbackUsed: false, primaryOutcome: "accepted", primaryHttpStatus: null,
+        body: crypto.randomUUID(),
+      } }; } },
+    });
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toBeNull();
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastNotifiedAt).toEqual(NOW);
+  });
+
   test("allows one monitor owner and one pass per schedule bucket", async () => {
     const acquired = await Promise.all([
       acquirePrivateMonitorLease(pool, "monitor-a", NOW),
@@ -1180,7 +1255,7 @@ describeDb("private monitoring durability", () => {
       publicOrigin: "https://postil.dev",
       transport: {
         async send() {
-          return { messageId: "late-opening" };
+          return { messageId: "late-opening", delivery: { transport: "ilert", fallbackUsed: false, primaryOutcome: "accepted", primaryHttpStatus: 202 } };
         },
       },
       now: lateDeliveryAt,
@@ -1191,6 +1266,9 @@ describeDb("private monitoring durability", () => {
       lateDeliveryAt,
     );
     expect(resolution[0]?.kind).toBe("resolved");
+    const receipt = (await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt;
+    expect(receipt).toMatchObject({ notificationKey: opening!.notificationKey, acceptedAt: lateDeliveryAt.toISOString(), transport: "ilert" });
+    expect(receipt?.notificationKey).not.toBe(resolution[0]?.notificationKey);
   });
 
   test("bounds each notification retry epoch and rearms after cooldown", async () => {
