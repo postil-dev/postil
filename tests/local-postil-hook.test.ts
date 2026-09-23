@@ -162,6 +162,49 @@ describe("trusted local Postil pre-push hook", () => {
     expect((await invoke(["--repo-path", linked, "--allow-delegated-hooks-path"])).exitCode).toBe(0);
   });
 
+  test("installer CLI preserves only the two vetted installed cascades and defaults to Luna", async () => {
+    const fixture = await createFixture("preserve-cascade");
+    const luna = "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code";
+    const gemini = "z-ai/glm-5.2,google/gemini-3.8-flash,moonshotai/kimi-k2.7-code";
+    const args = ["--repo-path", fixture.repository, "--preserve-installed-cascade"];
+    expect((await installHookCli(fixture, fixture.root, args)).exitCode).toBe(2);
+    expect(await Bun.file(fixture.hook).exists()).toBe(false);
+    expect((await installHookCli(fixture, fixture.root, ["--repo-path", fixture.repository])).exitCode).toBe(0);
+    const original = await readFile(fixture.hook, "utf8");
+    expect(original).toContain("local_cascade_override=" + luna);
+    for (const cascade of [luna, gemini]) {
+      await writeFile(fixture.hook, original.replace("local_cascade_override=" + luna, "local_cascade_override=" + cascade));
+      expect((await installHookCli(fixture, fixture.root, args)).exitCode).toBe(0);
+      const rendered = await readFile(fixture.hook, "utf8");
+      expect(rendered).toContain("local_cascade_override=" + cascade);
+      expect(rendered.replace(cascade, luna)).toBe(original);
+    }
+    const invalid = [
+      original.replace(luna, "z-ai/glm-5.2"),
+      original.replace(luna, gemini + ",other/model"),
+      original.replace(luna, '"' + luna + '"'),
+      original.replace(luna, luna + "; exit 0"),
+      original + "\nlocal_cascade_override=" + gemini + "\n",
+      original + "\nexport local_cascade_override=" + gemini + "\n",
+      original.replace("# postil-local-hook:v1", "# unrelated hook"),
+      "#!/bin/sh\nexit 0\n",
+    ];
+    for (const content of invalid) {
+      await writeFile(fixture.hook, content);
+      const rejected = await installHookCli(fixture, fixture.root, args);
+      expect(rejected.exitCode).toBe(2);
+      expect(await readFile(fixture.hook, "utf8") === content).toBe(true);
+    }
+    await writeFile(fixture.hook, original);
+    expect((await installHookCli(fixture, fixture.root, [...args, "--preserve-installed-cascade"])).exitCode).toBe(2);
+    const target = join(fixture.root, "symlink-hook");
+    await rename(fixture.hook, target);
+    await symlink(target, fixture.hook);
+    expect((await installHookCli(fixture, fixture.root, args)).exitCode).toBe(2);
+    expect((await lstat(fixture.hook)).isSymbolicLink()).toBe(true);
+    expect(await readFile(target, "utf8") === original).toBe(true);
+  });
+
   test("installer CLI rejects missing, duplicate and invalid paths before installing", async () => {
     const fixture = await createFixture("cli-invalid");
     for (const args of [

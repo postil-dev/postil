@@ -17,9 +17,9 @@ TRUSTED_HOME='__TRUSTED_HOME__'
 
 zero_sha=0000000000000000000000000000000000000000
 local_primary_model=z-ai/glm-5.2
-# Luna, then Kimi, recover reviews whose primary output fails validation.
+# The installed cascade recovers reviews whose primary output fails validation.
 # GLM stays pinned as the primary model.
-local_cascade_override=z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code
+local_cascade_override=__LOCAL_REVIEW_CASCADE__
 remote_name=${1:-origin}
 cached_openrouter_api_key=${OPENROUTER_API_KEY:-}
 dispositions_source=${POSTIL_LOCAL_REVIEW_DISPOSITIONS_FILE:-}

@@ -32,7 +32,9 @@ binary or credential, provider failure, malformed response, or any surviving
 finding blocks handoff and push. Install the trusted common-directory hook with
 `bun run review:install-hook`; `--repo-path <path>` selects another worktree
 while the tracked service template remains the source. Review an existing hook
-before using `--force`.
+before using `--force`. `--preserve-installed-cascade` retains only the exact
+installed GLM/Luna/Kimi or GLM/Gemini/Kimi cascade from an owned Postil hook.
+New installations default to GLM/Luna/Kimi.
 When Git uses a global hook that delegates to the common Git directory, verify
 that wrapper first and pass `--allow-delegated-hooks-path` during installation.
 When no model key is exported, the harness and installed hook load only
