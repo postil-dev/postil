@@ -468,7 +468,7 @@ const REVIEWED_MONITOR_DELIVERY_MIGRATION = {
 
 const REVIEWED_FEEDBACK_CONTROL_MIGRATION = {
   folderMillis: 1790186892052,
-  hash: "fcea695139d972d86ec1bae82fd0b7ba539412815ba6b96c815ad5e125be3de6",
+  hash: "ae760e265f2a6f6fbaf1bad71c6e3552bb25f819a285f8e9f02db2f7a110d8d8",
 } as const;
 
 /** Apply the feedback control only after the reviewed monitor delivery schema. */

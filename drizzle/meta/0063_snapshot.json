@@ -7188,7 +7188,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'inherit'"
+          "default": "'disabled'"
         }
       },
       "indexes": {},

@@ -207,7 +207,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
         expect(await apply()).toBe(false);
         expect(await apply(true)).toBe(false);
         expect(await capabilities()).toEqual(before);
-        expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "inherit" }]);
+        expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "disabled" }]);
         expect((await pool.query("SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at=$1", [latest.folderMillis])).rows).toEqual([{ hash: latest.hash }]);
         await oldWriter(2);
         await pool.query(`INSERT INTO private_monitor_incidents

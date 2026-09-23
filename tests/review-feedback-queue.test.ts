@@ -101,8 +101,10 @@ describeDb("durable review feedback admission", () => {
     const original = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
     const event = { ...identity, rootCommentId: rootId, actor: { id: 51, login: "maintainer", type: "User" } };
     try {
-      expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "inherit" }]);
+      expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "disabled" }]);
       process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "0";
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+      process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "1";
       expect(await reviewFeedbackEnabled(pool)).toBe(false);
       await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
       expect(await reviewFeedbackEnabled(pool)).toBe(true);
@@ -122,7 +124,7 @@ describeDb("durable review feedback admission", () => {
       await expect(pool.query("UPDATE review_feedback_control SET mode = 'invalid' WHERE id = 1"))
         .rejects.toThrow();
     } finally {
-      await pool.query("UPDATE review_feedback_control SET mode = 'inherit' WHERE id = 1");
+      await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
       if (original === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
       else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = original;
     }
@@ -142,11 +144,11 @@ describeDb("durable review feedback admission", () => {
   test("operator control dry-runs and changes only the expected database mode", async () => {
     const pool = database.pool;
     try {
-      expect(await controlReviewFeedbackMode(pool, "inherit", "enabled", false)).toBe("dry-run");
+      expect(await controlReviewFeedbackMode(pool, "disabled", "enabled", false)).toBe("dry-run");
       expect((await pool.query("SELECT mode FROM review_feedback_control WHERE id = 1")).rows[0].mode)
-        .toBe("inherit");
-      expect(await controlReviewFeedbackMode(pool, "inherit", "enabled", true)).toBe("confirmed");
-      await expect(controlReviewFeedbackMode(pool, "inherit", "disabled", true)).rejects.toThrow(
+        .toBe("disabled");
+      expect(await controlReviewFeedbackMode(pool, "disabled", "enabled", true)).toBe("confirmed");
+      await expect(controlReviewFeedbackMode(pool, "disabled", "inherit", true)).rejects.toThrow(
         "does not match the expected mode",
       );
       expect((await pool.query("SELECT mode FROM review_feedback_control WHERE id = 1")).rows[0].mode)
@@ -154,7 +156,7 @@ describeDb("durable review feedback admission", () => {
       expect(await controlReviewFeedbackMode(pool, "enabled", "disabled", true)).toBe("confirmed");
       expect(await reviewFeedbackEnabled(pool)).toBe(false);
     } finally {
-      await pool.query("UPDATE review_feedback_control SET mode = 'inherit' WHERE id = 1");
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
     }
   });
 

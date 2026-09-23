@@ -59,7 +59,7 @@ export const findingApprovalVerb = pgEnum("finding_approval_verb", [
 /** One durable switch shared by every web and worker process. */
 export const reviewFeedbackControl = pgTable("review_feedback_control", {
   id: integer("id").primaryKey().default(1),
-  mode: text("mode").notNull().default("inherit"),
+  mode: text("mode").notNull().default("disabled"),
 }, (table) => [
   check("review_feedback_control_singleton", sql`${table.id} = 1`),
   check("review_feedback_control_mode", sql`${table.mode} IN ('inherit', 'enabled', 'disabled')`),
