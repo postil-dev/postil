@@ -20,7 +20,7 @@ const binding = {
   POSTIL_RELEASE_PROTOCOL: "additive-publication-hosted-v1",
 };
 function fleet() {
-  return ["web", "web", "worker", "monitor"].map((group, index) => ({
+  return ["web", "web", "worker", "monitor", "worker"].map((group, index) => ({
     id: `a${index}`, state: "started", host_status: "ok", release: sourceSha,
     image_ref: { registry: "registry.fly.io", repository: "postil-web", digest },
     checks: [{ status: "passing" }],
@@ -52,6 +52,7 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
       : []));
     const result = Bun.spawnSync(["bash", "-c", `
       date() { printf '%s\\n' "$TEST_NOW_EPOCH"; }
+      sleep() { printf '%s\\n' "$1" >> "$RUNNER_TEMP/sleeps"; }
       flyctl() {
         case "$1 $2" in
           "volumes list") cat "$RUNNER_TEMP/volumes.json" ;;
@@ -67,6 +68,14 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
           "deploy --remote-only") printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
             if [[ "$4" == "bun run jobs:activate-release" ]]; then printf 'activate' >> "$RUNNER_TEMP/updates"; return 0; fi
+            local count_file="$RUNNER_TEMP/exec-$3" count=0
+            [[ ! -f "$count_file" ]] || read -r count < "$count_file"
+            count=$((count + 1))
+            printf '%s\\n' "$count" > "$count_file"
+            printf '%s\\n' "$3" >> "$RUNNER_TEMP/exec-calls"
+            if [[ "\${TEST_FAIL_RESTORED:-0}" == "1" && -f "$RUNNER_TEMP/updates" && "$3" == "a0" ]]; then return 1; fi
+            if (( count <= \${TEST_EXEC_FAILURES:-0} )); then printf 'partial failed output'; return 1; fi
+            if [[ "\${TEST_EXEC_WRONG:-0}" == "1" ]]; then printf 'wrong'; return 0; fi
             if [[ -f "$RUNNER_TEMP/after-exec-secrets.json" ]]; then cp "$RUNNER_TEMP/after-exec-secrets.json" "$RUNNER_TEMP/secrets.json"; fi
             if [[ "$4" == *'JSON.stringify(contract)'* ]]; then
               jq -cn --arg target "$TARGET_RELEASE_SHA" --arg source "$SOURCE_RELEASE_SHA" '[$target, $source, "additive-publication-hosted-v1", "1"]'
@@ -99,13 +108,57 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = s
       stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
     const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
-    return { code: result.exitCode, error: result.stderr.toString(), stdout: result.stdout.toString(), output: read("output"), updates: read("updates"), machines: JSON.parse(read("machines.json")) };
+    return { code: result.exitCode, error: result.stderr.toString(), stdout: result.stdout.toString(), output: read("output"), calls: read("exec-calls"), sleeps: read("sleeps"), updates: read("updates"), machines: JSON.parse(read("machines.json")) };
   } finally {
     rmSync(directory, { recursive: true });
   }
 }
 
 describe("managed deployment contract", () => {
+  test.each(["verify", "rollback"])("%s retries transient reads but rejects persistent failure and wrong identity", (id) => {
+    const machines = fleet();
+    if (id === "rollback") {
+      machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+      machines[1]!.release = targetSha;
+    }
+    const execute = (environment: Record<string, string>) => runStep(id, structuredClone(machines), fleet(), secretMetadata,
+      undefined, structuredClone(machines), undefined, environment);
+    const recovered = execute({ TEST_EXEC_FAILURES: "2" });
+    expect(recovered.code, recovered.error).toBe(0);
+    expect(recovered.sleeps.trim().split("\n").every(value => value === "2")).toBe(true);
+    expect(recovered.stdout).not.toContain("partial failed output");
+    expect(recovered.calls.trim().split("\n").filter(value => value === "a1").length).toBe(id === "verify" ? 3 : 4);
+    const unavailable = execute({ TEST_EXEC_FAILURES: "99" });
+    expect(unavailable.code).not.toBe(0);
+    expect(unavailable.calls.trim().split("\n")).toHaveLength(3);
+    expect(unavailable.sleeps.trim().split("\n")).toHaveLength(2);
+    expect(unavailable.updates).toBe("");
+    const wrong = execute({ TEST_EXEC_WRONG: "1" });
+    expect(wrong.code).not.toBe(0);
+    expect(wrong.calls.trim().split("\n")).toHaveLength(1);
+    expect(wrong.sleeps).toBe("");
+    expect(wrong.updates).toBe("");
+  });
+
+  test("rollback fails closed when restored runtime remains unavailable", () => {
+    const machines = fleet();
+    machines[1]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    machines[1]!.release = targetSha;
+    const result = runStep("rollback", machines, fleet(), secretMetadata, undefined, machines, undefined,
+      { TEST_FAIL_RESTORED: "1" });
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toContain("A restored machine did not report its release SHA");
+    expect(result.calls.trim().split("\n").filter(id => id === "a0")).toHaveLength(3);
+    expect(result.sleeps.trim().split("\n")).toHaveLength(2);
+    expect(result.updates.trim().split("\n")).toHaveLength(1);
+  });
+
+  test("runtime retries retain bounded request and workflow timeouts", () => {
+    expect(readFileSync("scripts/probe-managed-runtime.sh", "utf8")).toContain("--timeout 15");
+    expect(workflow.jobs.deploy.steps.find((step: any) => step.id === "verify")["timeout-minutes"]).toBe(5);
+    expect(workflow.jobs.deploy.steps.find((step: any) => step.id === "rollback")["timeout-minutes"]).toBe(10);
+  });
+
   test("requires manual target-bound admission and never rolls back an unattempted deploy", () => {
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
     for (const input of ["rollback_deadline_epoch", "rollback_target_sha"]) {
