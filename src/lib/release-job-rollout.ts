@@ -461,6 +461,33 @@ const REVIEWED_ADDITIVE_MIGRATION = {
   hash: "1844328bea9c5817896c9d6a56075879168781379c7d959022c8dd34bbce89da",
 } as const;
 
+const REVIEWED_MONITOR_DELIVERY_MIGRATION = {
+  folderMillis: 1790162457485,
+  hash: "04db4349838ddcd3fa6c4288ca86acc45f859e49247a5c9ffcbbd9be6755b1be",
+} as const;
+
+/** Apply only the reviewed delivery receipt transition from the feedback schema. */
+export async function applyReviewedMonitoringDeliveryMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const predecessor = migrations.filter((migration) =>
+    migration.folderMillis < REVIEWED_MONITOR_DELIVERY_MIGRATION.folderMillis
+  ).sort((left, right) => right.folderMillis - left.folderMillis)[0];
+  if (predecessor?.folderMillis !== REVIEWED_ADDITIVE_MIGRATION.folderMillis ||
+      predecessor.hash !== REVIEWED_ADDITIVE_MIGRATION.hash) {
+    throw new Error("monitor delivery migration requires the reviewed feedback predecessor");
+  }
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_MONITOR_DELIVERY_MIGRATION, options);
+}
+
 /** Apply only the reviewed feedback migration while preserving source capabilities. */
 export async function applyReviewedManagedReleaseMigration(
   pool: Pool,
@@ -471,18 +498,32 @@ export async function applyReviewedManagedReleaseMigration(
   source: string,
   options: { dryRun?: boolean } = {},
 ): Promise<boolean> {
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_ADDITIVE_MIGRATION, options);
+}
+
+async function applyExactReviewedMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  reviewed: ManagedReleaseMigrationIdentity,
+  options: { dryRun?: boolean },
+): Promise<boolean> {
   checkedMigrationIdentities(migrations);
   const identity = migrations.find(
-    (migration) => migration.folderMillis === REVIEWED_ADDITIVE_MIGRATION.folderMillis,
+    (migration) => migration.folderMillis === reviewed.folderMillis,
   );
-  if (identity?.hash !== REVIEWED_ADDITIVE_MIGRATION.hash ||
-      createHash("sha256").update(source).digest("hex") !== REVIEWED_ADDITIVE_MIGRATION.hash) {
+  if (identity?.hash !== reviewed.hash ||
+      createHash("sha256").update(source).digest("hex") !== reviewed.hash) {
     throw new Error("managed additive migration does not match its reviewed identity");
   }
   return withCompatibleManagedReleaseState(
     pool, sourceReleaseSha, releaseSha, protocol, migrations,
     { readOnly: options.dryRun === true, requirePreparedRelease: false,
-      lockLifecycle: options.dryRun !== true, reviewedMigration: source },
+      lockLifecycle: options.dryRun !== true, reviewedMigration: { source, identity: reviewed } },
     async (_client, state) => state.migrationApplied,
   );
 }
@@ -701,7 +742,7 @@ async function withCompatibleManagedReleaseState<T>(
     readOnly: boolean;
     requirePreparedRelease: boolean;
     lockLifecycle: boolean;
-    reviewedMigration?: string;
+    reviewedMigration?: { source: string; identity: ManagedReleaseMigrationIdentity };
   },
   operation: (
     client: PoolClient,
@@ -750,14 +791,14 @@ async function withCompatibleManagedReleaseState<T>(
       }
       const applied = await client.query<{ present: boolean }>(
         "SELECT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE created_at = $1) AS present",
-        [REVIEWED_ADDITIVE_MIGRATION.folderMillis],
+        [options.reviewedMigration!.identity.folderMillis],
       );
       if (!applied.rows[0]?.present) {
-        if (migrations.some((migration) => migration.folderMillis > REVIEWED_ADDITIVE_MIGRATION.folderMillis)) {
+        if (migrations.some((migration) => migration.folderMillis > options.reviewedMigration!.identity.folderMillis)) {
           throw new Error("managed release has unapproved pending migrations");
         }
         compatibleMigrations = migrations.filter(
-          (migration) => migration.folderMillis < REVIEWED_ADDITIVE_MIGRATION.folderMillis,
+          (migration) => migration.folderMillis < options.reviewedMigration!.identity.folderMillis,
         );
         migrationApplied = true;
       }
@@ -770,10 +811,10 @@ async function withCompatibleManagedReleaseState<T>(
       options.requirePreparedRelease,
     );
     if (migrationApplied && !options.readOnly) {
-      await client.query(options.reviewedMigration!);
+      await client.query(options.reviewedMigration!.source);
       await client.query(
         "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
-        [REVIEWED_ADDITIVE_MIGRATION.hash, REVIEWED_ADDITIVE_MIGRATION.folderMillis],
+        [options.reviewedMigration!.identity.hash, options.reviewedMigration!.identity.folderMillis],
       );
       await assertCompatibleManagedReleaseDatabaseState(
         client, normalizedSourceRelease, normalizedRelease, migrations, options.requirePreparedRelease,
