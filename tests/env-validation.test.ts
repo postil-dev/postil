@@ -138,7 +138,8 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain("Verify runtime secret contract");
     expect(deployWorkflow).toContain("flyctl secrets list --app postil-web --json");
     expect(deployWorkflow).not.toContain("flyctl secrets unset");
-    expect(deployWorkflow).not.toContain("flyctl secrets import");
+    expect(deployWorkflow.match(/flyctl secrets import --stage --app postil-web/g)).toHaveLength(1);
+    expect(deployWorkflow).not.toMatch(/flyctl secrets import(?! --stage --app postil-web)/);
 
     const validFleet = [
       managedMachine("web", "1", "1"),
