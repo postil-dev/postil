@@ -31,6 +31,7 @@ const receiptSchema = deliverySchema.extend({
 }).strict();
 export type MonitoringDeliveryReceipt = z.infer<typeof receiptSchema>;
 
+/** The receipt describes the last acknowledged acceptance, not a pending delivery. */
 export function matchingMonitoringDeliveryReceipt(
   receipt: unknown, notificationKey: string | null, notifiedAt: Date | null,
 ): MonitoringDeliveryReceipt | null {

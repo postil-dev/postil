@@ -6,7 +6,7 @@ ALTER TABLE "private_monitor_incidents" ADD CONSTRAINT "private_monitor_delivery
 CREATE FUNCTION clear_private_monitor_delivery_receipt() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.last_notified_at IS DISTINCT FROM OLD.last_notified_at
-     OR NEW.pending_notification_key IS DISTINCT FROM OLD.pending_notification_key THEN
+     OR (OLD.pending_notification_key IS NOT NULL AND NEW.pending_notification_key IS NULL) THEN
     NEW.last_notification_key := NULL;
     NEW.last_delivery_receipt := NULL;
   END IF;

@@ -744,6 +744,42 @@ describeDb("private monitoring durability", () => {
     expect((await pool.query("SELECT last_notification_key, last_delivery_receipt FROM private_monitor_incidents")).rows[0])
       .toEqual({ last_notification_key: null, last_delivery_receipt: null });
   });
+  test("scheduled reminder preserves the last receipt until acknowledgment", async () => {
+    const opening = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, opening, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev",
+      transport: receiptTransport, now: NOW,
+    });
+    const accepted = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    const reminderAt = new Date(NOW.getTime() + 6 * 60 * 60 * 1_000);
+    expect(await acquirePrivateMonitorLease(pool, "monitor-b", reminderAt)).toBe(true);
+    const pass = await startPrivateMonitoringPass(pool, "monitor-b", reminderAt, reminderAt);
+    await finishPrivateMonitoringPass(pool, pass!, [{ key: "public-site", group: "availability",
+      severity: "critical", healthy: false, summary: "Public site responds", detail: "Probe failed." }], reminderAt);
+    const pending = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    expect(pending.lastNotifiedAt).toEqual(accepted.lastNotifiedAt);
+    expect(pending.lastDeliveryReceipt).toEqual(accepted.lastDeliveryReceipt);
+    const reminders = await claimPrivateMonitoringNotifications(pool, "monitor-b", reminderAt);
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0]!.kind).toBe("reminder");
+    expect(reminders[0]!.notificationKey).not.toBe(opening.notificationKey);
+    await expect(deliverPrivateMonitoringNotification(pool, reminders[0]!, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", now: reminderAt,
+      transport: { async send() { throw new Error("delivery unavailable"); } },
+    })).rejects.toThrow("delivery unavailable");
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt)
+      .toEqual(accepted.lastDeliveryReceipt);
+    const retryAt = new Date(reminderAt.getTime() + 31_000);
+    const retry = await claimPrivateMonitoringNotifications(pool, "monitor-b", retryAt);
+    expect(retry).toHaveLength(1);
+    await deliverPrivateMonitoringNotification(pool, retry[0]!, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev",
+      transport: receiptTransport, now: retryAt,
+    });
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt)
+      .toMatchObject({ notificationKey: reminders[0]!.notificationKey, acceptedAt: retryAt.toISOString() });
+  });
+
   test("receipt write failure rolls back acknowledgment and leaves notification retryable", async () => {
     const notification = await openReceiptNotification();
     const client = await pool.connect();
