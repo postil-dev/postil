@@ -224,6 +224,40 @@ describe("managed deployment contract", () => {
     }
   });
 
+  test("preflight elapsed time can expire staging margin after admission", () => {
+    const deadline = "1800002700";
+    expect(runStep("admission", fleet(), fleet(), secretMetadata, undefined,
+      fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: deadline }, secretMetadata).code).toBe(0);
+    expect(runStep("source-fleet").code).toBe(0);
+    expect(runStep("feedback-preflight").code).toBe(0);
+    const expired = runStep("stage-feedback", fleet(), fleet(), secretMetadata, undefined,
+      fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: deadline, TEST_NOW_EPOCH: "1800000061" }, secretMetadata);
+    expect(expired.code).not.toBe(0);
+    expect(expired.updates).toBe("");
+    expect(expired.stagedInput).toBe("");
+    expect(expired.observedSecrets).toEqual(secretMetadata);
+  });
+
+  test("feedback staging requires the complete 44-minute window and exact target", () => {
+    for (const offset of [-1, 0, 1]) {
+      const result = runStep("stage-feedback", fleet(), fleet(), secretMetadata, undefined,
+        fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + 2640 + offset) }, secretMetadata);
+      expect(result.code, result.error).toBe(offset < 0 ? 1 : 0);
+      expect(result.updates).toBe(offset < 0 ? "" : "stage-feedback\n");
+    }
+    for (const environment of [
+      { ROLLBACK_TARGET_SHA: "b".repeat(40) },
+      { ROLLBACK_DEADLINE_EPOCH: "" },
+      { TEST_NOW_EPOCH: "invalid" },
+    ] as Record<string, string>[]) {
+      const result = runStep("stage-feedback", fleet(), fleet(), secretMetadata, undefined,
+        fleet(), undefined, environment, secretMetadata);
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.stagedInput).toBe("");
+    }
+  });
+
   test.each(["monitor-volume", "deploy", "activate", "rollback"])("%s rejects invalid or stale admission without mutation", (id) => {
     const rejected: Record<string, string>[] = [
       { ROLLBACK_DEADLINE_EPOCH: "" }, { ROLLBACK_DEADLINE_EPOCH: "yesterday" },
