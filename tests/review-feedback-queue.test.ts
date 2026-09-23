@@ -662,13 +662,17 @@ describeDb("durable review feedback admission", () => {
 
         const secondId = await prepare();
         const afterDisable = await run(secondId);
-        expect(afterDisable).toBe(transition === "recovery" ? 1 : transition === "retry" ? "retried" : transition === "complete" ? "done" : "failed");
+        expect(afterDisable).toBe(transition === "recovery" ? 1 : transition === "retry" ? "retried" : transition === "complete" ? "coalesced" : "failed");
         if (transition === "retry" || transition === "recovery") {
           const original = await pool.query("SELECT status, locked_by FROM jobs WHERE id = $1", [secondId]);
           expect(original.rows[0]).toEqual({ status: "queued", locked_by: null });
         }
         const final = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
-        expect(final.rows[0].count).toBe(1);
+        expect(final.rows[0].count).toBe(transition === "complete" ? 2 : 1);
+        if (transition === "complete") {
+          const retained = await pool.query("SELECT kind, payload, status FROM jobs WHERE id = $1", [secondId]);
+          expect(retained.rows[0]).toEqual({ kind: "review-feedback", payload: pending, status: "queued" });
+        }
         if (transition === "terminal-followup") {
           const followups = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'respond-failure-comment' AND payload->>'prNumber' = $1", [String(prNumber)]);
           expect(followups.rows[0].count).toBe(1);
@@ -681,6 +685,36 @@ describeDb("durable review feedback admission", () => {
       }
     }, 15_000);
   }
+
+  test("completion retains previously coalesced feedback after admission is disabled", async () => {
+    const pool = database.pool;
+    const prNumber = 230;
+    const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+      version: 1 as const, repository: "octo/repository", prNumber, headSha, threads: [],
+    } };
+    const original = { ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending };
+    const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+      (kind, payload, status, locked_by, locked_at)
+      VALUES ('review', $1, 'running', 'completion-owner', now()) RETURNING id`,
+    [JSON.stringify(original)]);
+    const id = Number(inserted.rows[0]!.id);
+    await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+    try {
+      expect(await completeJob(pool, { id, lockedBy: "completion-owner" })).toBe("coalesced");
+      const rows = (await pool.query(
+        "SELECT id, kind, payload, status, locked_by, locked_at, attempts FROM jobs WHERE payload->>'prNumber' = $1",
+        [String(prNumber)],
+      )).rows;
+      expect(rows).toEqual([{ id: String(id), kind: "review-feedback", payload: pending,
+        status: "queued", locked_by: null, locked_at: null, attempts: 0 }]);
+      expect(await enqueueReviewJobOnce(pool, { ...pending, prNumber: prNumber + 1,
+        reviewFeedback: { ...pending.reviewFeedback, prNumber: prNumber + 1 } })).toBeNull();
+      expect((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE payload->>'prNumber' = $1",
+        [String(prNumber + 1)])).rows[0].count).toBe(0);
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  });
 
   test("concurrent webhook admissions bound guard connections with a one-client pool", async () => {
     const pool = database.pool;

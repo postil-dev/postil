@@ -1169,12 +1169,37 @@ export function nextClaimPollDelay(
  * a worker finishing late cannot stamp `done` over a job the watchdog already
  * requeued and a second worker re-claimed under a new lock (which would mask a
  * concurrent double-run). Only the current lock holder can complete the row.
+ * A coalesced feedback payload already admitted before disabling feedback is
+ * retained on the same row, so completion does not create a new job after disable.
  */
 export async function completeJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "lockedBy">,
 ): Promise<"done" | "coalesced" | "lost"> {
   return withFeedbackControl(pool, async (client, enabled) => {
+  if (!enabled) {
+    const retained = await client.query<{ id: string }>(
+      `UPDATE jobs
+          SET status = 'queued', attempts = 0, run_after = now(),
+              locked_at = NULL, locked_by = NULL, last_error = NULL
+        WHERE id = $1 AND status = 'running' AND locked_by = $2
+          AND kind IN ('review', 'review-feedback')
+          AND jsonb_typeof(payload -> $3) = 'object'
+          AND (payload -> $3) ? 'reviewFeedback'
+      RETURNING id`,
+      [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+    );
+    if (retained.rowCount) {
+      // The publication-identity trigger permits this kind change only from queued.
+      await client.query(
+        `UPDATE jobs
+            SET kind = 'review-feedback', payload = payload -> $2
+          WHERE id = $1 AND status = 'queued'`,
+        [job.id, COALESCED_REVIEW_PAYLOAD_KEY],
+      );
+      return "coalesced";
+    }
+  }
   const result = await client.query<{ outcome: "done" | "coalesced" | "lost" }>(
     `WITH transitioned AS (
        UPDATE jobs
