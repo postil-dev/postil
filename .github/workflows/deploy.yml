@@ -664,15 +664,19 @@ jobs:
               [.[] | select(
                 managed_group == "web" or managed_group == "worker" or managed_group == "monitor"
               )] as $managed |
+              ($managed | map(select(.id == $id)) | .[0]) as $target |
               ([$managed[].id] | sort) == ([$source[0][].id] | sort) and
               all($managed[]; . as $machine |
                 any($source[0][];
                   .id == $machine.id and .region == $machine.region and
                   runtime_config == ($machine | runtime_config))) and
-              all(["web", "worker"][]; . as $group |
-                any($managed[]; .id != $id and managed_group == $group and healthy))
+              (if ($target | managed_group) == "monitor" then true else
+                any($managed[];
+                  .id != $id and managed_group == ($target | managed_group) and healthy) or
+                ($target | healthy | not)
+              end)
             ' <<<"${current_machines}" >/dev/null; then
-              echo "::error::Rollback requires unchanged machine bindings and a healthy web and worker peer before each update."
+              echo "::error::Rollback requires unchanged machine bindings and a healthy same-group peer before updating a healthy machine."
               exit 1
             fi
             verify_source_secrets

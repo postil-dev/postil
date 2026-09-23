@@ -112,8 +112,10 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
           "machine status") echo 'Error: unknown flag: --json' >&2; return 64 ;;
           "machine update")
             printf '%s\\n' "$*" >> "$RUNNER_TEMP/updates"
-            jq --arg id "$3" --arg image "$SOURCE_IMAGE" --arg sha "$SOURCE_RELEASE_SHA" '
-              map(if .id == $id then .config.image = $image | .image_ref.digest = ($image | split("@")[1]) | .release = $sha | .state = "started" | .host_status = "ok" | (.checks[]?.status) = "passing" else . end)
+            if [[ "\${TEST_FAIL_UPDATE_ID:-}" == "$3" ]]; then return 1; fi
+            jq --arg id "$3" --arg image "$SOURCE_IMAGE" --arg sha "$SOURCE_RELEASE_SHA" --arg unhealthy "\${TEST_LEAVE_UNHEALTHY_ID:-}" '
+              map(if .id == $id then .config.image = $image | .image_ref.digest = ($image | split("@")[1]) | .release = $sha | .state = "started" | .host_status = "ok" | (.checks[]?.status) = "passing" |
+                if .id == $unhealthy then .checks[0].status = "critical" else . end else . end)
             ' "$RUNNER_TEMP/machines.json" > "$RUNNER_TEMP/next.json"
             mv "$RUNNER_TEMP/next.json" "$RUNNER_TEMP/machines.json"
             if [[ -f "$RUNNER_TEMP/after-update-machines.json" ]]; then
@@ -623,6 +625,47 @@ describe("managed deployment contract", () => {
     expect(targetResult.code, targetResult.error).toBe(0);
     expect(targetResult.updates.trim()).toBe(`machine update a1 --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`);
     expect(targetResult.machines).toEqual(fleet());
+  });
+
+  test("recovers both unhealthy peers in each group one at a time", () => {
+    const machines = fleet();
+    for (const machine of machines.filter(machine => machine.config.metadata.fly_process_group !== "monitor")) {
+      machine.state = "stopped";
+      machine.image_ref.digest = `sha256:${"c".repeat(64)}`;
+      machine.config.image = `registry.fly.io/postil-web@${machine.image_ref.digest}`;
+      machine.release = targetSha;
+    }
+    const result = runStep("rollback", machines);
+    expect(result.code, result.error).toBe(0);
+    expect(result.updates.trim().split("\n")).toEqual(["a0", "a1", "a2", "a4"].map(id =>
+      `machine update ${id} --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`));
+    expect(result.machines).toEqual(fleet());
+
+    for (const environment of [{ TEST_FAIL_UPDATE_ID: "a0" }, { TEST_LEAVE_UNHEALTHY_ID: "a0" }] as Record<string, string>[]) {
+      const failed = runStep("rollback", structuredClone(machines), fleet(), stagedSecrets, undefined,
+        structuredClone(machines), undefined, environment);
+      expect(failed.code).not.toBe(0);
+      expect(failed.updates.trim().split("\n")).toEqual([
+        `machine update a0 --app postil-web --image ${sourceImage} --wait-timeout 120 --yes`,
+      ]);
+    }
+
+    const unauthorized = structuredClone(machines);
+    unauthorized.push({ ...structuredClone(unauthorized[0]!), id: "a5" });
+    const rejected = runStep("rollback", unauthorized);
+    expect(rejected.code).not.toBe(0);
+    expect(rejected.updates).toBe("");
+  });
+
+  test("does not replace a healthy machine without a healthy same-group peer", () => {
+    const machines = fleet();
+    machines[0]!.image_ref.digest = `sha256:${"c".repeat(64)}`;
+    machines[0]!.config.image = `registry.fly.io/postil-web@${machines[0]!.image_ref.digest}`;
+    machines[0]!.release = targetSha;
+    machines[1]!.state = "stopped";
+    const result = runStep("rollback", machines);
+    expect(result.code).not.toBe(0);
+    expect(result.updates).toBe("");
   });
 
   test("refuses an unavailable runtime identity on a healthy machine", () => {
