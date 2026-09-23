@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import type { Pool } from "pg";
+import { Client, type Pool } from "pg";
 import { z } from "zod";
 
 import { getDb, getPool } from "@/lib/db";
@@ -88,17 +88,65 @@ export async function reviewFeedbackEnabled(pool: Pick<Pool, "query"> = getPool(
     console.warn("Review feedback control read failed; admission remains disabled");
     return false;
   }
-  if (result.rows.length !== 1) {
+  return feedbackModeEnabled(result.rows);
+}
+
+function feedbackModeEnabled(rows: { mode: string }[]): boolean {
+  if (rows.length !== 1) {
     console.warn("Review feedback control row is unavailable; admission remains disabled");
     return false;
   }
-  switch (result.rows[0]?.mode) {
+  switch (rows[0]?.mode) {
     case "enabled": return true;
     case "disabled": return false;
     case "inherit": return process.env.POSTIL_REVIEW_FEEDBACK_ENABLED === "1";
     default:
       console.warn("Review feedback control mode is invalid; admission remains disabled");
       return false;
+  }
+}
+
+/** Hold the control row until the admitted job has committed. A mode update
+ * waits for this transaction, so a confirmed disable excludes later inserts.
+ */
+async function withFeedbackAdmission(
+  pool: Pool,
+  enqueue: (client: Client) => Promise<boolean>,
+): Promise<boolean> {
+  // The full review queue acquires its own pool client. Keep this guard outside
+  // that pool so concurrent admissions cannot consume all pooled connections.
+  const client = new Client(pool.options);
+  try {
+    await client.connect();
+  } catch {
+    console.warn("Review feedback control connection failed; admission remains disabled");
+    return false;
+  }
+  try {
+    await client.query("BEGIN");
+    let enabled: boolean;
+    try {
+      const result = await client.query<{ mode: string }>(
+        "SELECT mode FROM review_feedback_control WHERE id = 1 FOR SHARE",
+      );
+      enabled = feedbackModeEnabled(result.rows);
+    } catch {
+      console.warn("Review feedback control read failed; admission remains disabled");
+      await client.query("ROLLBACK");
+      return false;
+    }
+    if (!enabled) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    const inserted = await enqueue(client);
+    await client.query("COMMIT");
+    return inserted;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end();
   }
 }
 
@@ -204,16 +252,13 @@ export async function admitReviewFeedbackEvent(input: ReviewFeedbackJobPayload &
   const verification = await verifyLiveGithubAdmin(repository, input.actor, repository.fullName, token, signal);
   if (verification.outcome === "unavailable") throw new Error("review feedback actor authority is unavailable");
   if (verification.outcome !== "authorized") return false;
-  if (!await reviewFeedbackEnabled(pool)) return false;
   return enqueueReviewFeedbackJob(pool, {
     githubRepoId: input.githubRepoId, installationId: input.installationId, prNumber: input.prNumber,
   });
 }
 
 async function enqueueReviewFeedbackJob(pool: Pool, payload: ReviewFeedbackJobPayload): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
+  return withFeedbackAdmission(pool, async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:feedback-poll:${payload.githubRepoId}:${payload.prNumber}`,
     ]);
@@ -223,14 +268,8 @@ async function enqueueReviewFeedbackJob(pool: Pool, payload: ReviewFeedbackJobPa
        WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND status IN ('queued', 'running')
                            AND payload->>'githubRepoId' = $3 AND payload->>'prNumber' = $4)
       RETURNING id`, [REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND, JSON.stringify(payload), String(payload.githubRepoId), String(payload.prNumber)]);
-    await client.query("COMMIT");
     return (result.rowCount ?? 0) > 0;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 /** Bound each watchdog pass to twenty due pull requests, independent of webhook subscriptions. */
@@ -263,7 +302,6 @@ export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now =
     `, [now, REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND]);
   let scheduled = 0;
   for (const row of result.rows) {
-    if (!await reviewFeedbackEnabled(pool)) break;
     if (await enqueueReviewFeedbackJob(pool, {
       githubRepoId: Number(row.githubRepoId), prNumber: Number(row.prNumber), installationId: Number(row.installationId),
     })) scheduled += 1;
@@ -340,14 +378,16 @@ export async function reconcileReviewFeedback(
     const live = await getPullRequestReviewContext(token, repository.fullName, payload.prNumber, signal);
     signal.throwIfAborted();
     if (!live.open || live.merged || live.draft || live.headSha !== observed.headSha) return;
-    if (!await reviewFeedbackEnabled(pool)) return;
-    await enqueueReviewJobOnce(pool, {
-      installationId: payload.installationId, sourceInstallationId: repository.sourceInstallationId,
-      sourceOrgId: repository.orgId, githubRepoId: repository.githubRepoId, repoFullName: repository.fullName,
-      repositoryPrivate: repository.private, prNumber: payload.prNumber,
-      authorGithubId: live.authorGithubId, authorLogin: live.authorLogin,
-      headSha: live.headSha, baseSha: live.baseSha, forceFullReview: true, reviewFeedback,
-      trigger: { source: "finding_feedback", feedbackDigest: digest },
+    await withFeedbackAdmission(pool, async () => {
+      await enqueueReviewJobOnce(pool, {
+        installationId: payload.installationId, sourceInstallationId: repository.sourceInstallationId,
+        sourceOrgId: repository.orgId, githubRepoId: repository.githubRepoId, repoFullName: repository.fullName,
+        repositoryPrivate: repository.private, prNumber: payload.prNumber,
+        authorGithubId: live.authorGithubId, authorLogin: live.authorLogin,
+        headSha: live.headSha, baseSha: live.baseSha, forceFullReview: true, reviewFeedback,
+        trigger: { source: "finding_feedback", feedbackDigest: digest },
+      });
+      return true;
     });
   } catch (error) {
     lastError = redactAndTruncate(error, 1_000);
