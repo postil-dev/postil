@@ -168,6 +168,7 @@ describe("fallback transport", () => {
 
     expect(await transport.send(notification())).toEqual({
       messageId: "fallback-message",
+      delivery: { transport: "unknown", fallbackUsed: true, primaryOutcome: "unknown", primaryHttpStatus: null },
     });
     expect(log).toEqual([
       "primary:notification-key-1",
@@ -205,5 +206,31 @@ describe("configured monitoring alert transport", () => {
     } finally {
       if (previous !== undefined) process.env.ILERT_INTEGRATION_KEY = previous;
     }
+  });
+});
+
+
+describe("monitoring delivery provenance", () => {
+  const email: OperatorNotificationTransport = { async send() {
+    return { messageId: "unused", delivery: { transport: "email", fallbackUsed: false,
+      primaryOutcome: "accepted", primaryHttpStatus: null } };
+  } };
+  test("records primary HTTP acceptance without response content", async () => {
+    const transport = ilertEventTransport(crypto.randomUUID(), (async () => new Response("ignored", { status: 202 })) as unknown as typeof fetch);
+    expect((await transport.send(notification())).delivery).toEqual({
+      transport: "ilert", fallbackUsed: false, primaryOutcome: "accepted", primaryHttpStatus: 202,
+    });
+  });
+  test("records numeric 402 and email fallback without provider text", async () => {
+    const privateText = crypto.randomUUID();
+    const primary = ilertEventTransport(crypto.randomUUID(), (async () => new Response(privateText, { status: 402 })) as unknown as typeof fetch);
+    const result = await withFallbackTransport(primary, email, () => undefined).send(notification());
+    expect(result.delivery).toEqual({ transport: "email", fallbackUsed: true, primaryOutcome: "http_rejected", primaryHttpStatus: 402 });
+    expect(JSON.stringify(result.delivery)).not.toContain(privateText);
+  });
+  test("distinguishes timeout fallback from HTTP rejection", async () => {
+    const primary = ilertEventTransport(crypto.randomUUID(), (async () => { throw new DOMException("deadline", "TimeoutError"); }) as unknown as typeof fetch);
+    expect((await withFallbackTransport(primary, email, () => undefined).send(notification())).delivery)
+      .toEqual({ transport: "email", fallbackUsed: true, primaryOutcome: "timeout", primaryHttpStatus: null });
   });
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 
 import type { Pool, PoolClient } from "pg";
 
@@ -10,12 +11,36 @@ import {
   configuredMonitoringAlertTransport,
   sendOperatorNotification,
   type OperatorNotificationTransport,
+  type NotificationDelivery,
 } from "@/lib/operator-notifications";
 import { redactSecrets } from "@/lib/redact";
 import { getInstallationToken } from "@/lib/github/app-auth";
 import { listOpenPullRequestHeadsPage, type OpenPullRequestHead } from "@/lib/github/checks";
 import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
 import type { TransactionalEmailContent } from "@/lib/transactional-email";
+
+const deliverySchema = z.object({
+  transport: z.enum(["ilert", "email", "unknown"]),
+  fallbackUsed: z.boolean(),
+  primaryOutcome: z.enum(["accepted", "http_rejected", "timeout", "network_error", "unknown"]),
+  primaryHttpStatus: z.number().int().min(100).max(599).nullable(),
+}).strict();
+const receiptSchema = deliverySchema.extend({
+  notificationKey: z.string().min(1).max(512),
+  acceptedAt: z.string().datetime(),
+}).strict();
+export type MonitoringDeliveryReceipt = z.infer<typeof receiptSchema>;
+
+/** The receipt describes the last acknowledged acceptance, not a pending delivery. */
+export function matchingMonitoringDeliveryReceipt(
+  receipt: unknown, notificationKey: string | null, notifiedAt: Date | null,
+): MonitoringDeliveryReceipt | null {
+  const parsed = receiptSchema.safeParse(receipt);
+  if (!parsed.success || !notificationKey || !notifiedAt ||
+      parsed.data.notificationKey !== notificationKey ||
+      parsed.data.acceptedAt !== notifiedAt.toISOString()) return null;
+  return parsed.data;
+}
 
 export type PrivateMonitoringGroup =
   | "availability"
@@ -121,6 +146,7 @@ export interface PrivateMonitoringDashboard {
     notificationAttempts: number;
     lastNotifiedAt: Date | null;
     lastNotificationError: string | null;
+    lastDeliveryReceipt?: MonitoringDeliveryReceipt | null;
   }>;
   runs: Array<{
     id: number;
@@ -474,10 +500,13 @@ export async function getPrivateMonitoringDashboard(
       notification_attempts: number;
       last_notified_at: Date | null;
       last_notification_error: string | null;
+      last_notification_key: string | null;
+      last_delivery_receipt: unknown;
     }>(
       `SELECT key, "group", severity, summary, detail, opened_detail, state,
               occurrence_count, first_detected_at, last_detected_at, resolved_at,
-              notification_attempts, last_notified_at, last_notification_error
+              notification_attempts, last_notified_at, last_notification_error,
+              last_notification_key, last_delivery_receipt
          FROM private_monitor_incidents
         ORDER BY (state = 'open') DESC,
                  (severity = 'critical') DESC,
@@ -559,6 +588,9 @@ export async function getPrivateMonitoringDashboard(
       notificationAttempts: row.notification_attempts,
       lastNotifiedAt: row.last_notified_at,
       lastNotificationError: row.last_notification_error,
+      lastDeliveryReceipt: matchingMonitoringDeliveryReceipt(
+        row.last_delivery_receipt, row.last_notification_key, row.last_notified_at,
+      ),
     })),
     runs: runResult.rows.map((row) => ({
       id: Number(row.id),
@@ -1240,7 +1272,7 @@ export async function deliverPrivateMonitoringNotification(
     dashboardUrl,
   );
   try {
-    await sendOperatorNotification(
+    const result = await sendOperatorNotification(
       {
         recipient: input.recipient,
         subject: `[${notification.severity}] Postil monitor: ${content.title}`,
@@ -1254,7 +1286,7 @@ export async function deliverPrivateMonitoringNotification(
       },
       input.transport ?? configuredMonitoringAlertTransport(),
     );
-    await recordDeliveredNotification(pool, notification, now);
+    await recordDeliveredNotification(pool, notification, now, result.delivery);
   } catch (error) {
     const delayMs =
       notification.attempt >= MAX_NOTIFICATION_ATTEMPTS
@@ -1287,6 +1319,7 @@ async function recordDeliveredNotification(
   pool: Pool,
   notification: PrivateMonitoringNotification,
   now: Date,
+  delivery: NotificationDelivery | undefined,
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -1305,13 +1338,14 @@ async function recordDeliveredNotification(
         WHERE key = $1 AND pending_notification_key = $2`,
       [notification.incidentKey, notification.notificationKey, now],
     );
-    if ((recorded.rowCount ?? 0) === 0 && notification.kind !== "resolved") {
+    let acknowledged = (recorded.rowCount ?? 0) > 0;
+    if (!acknowledged && notification.kind !== "resolved") {
       const resolutionKey = incidentNotificationKey(
         notification.incidentKey,
         "resolved",
         now,
       );
-      await client.query(
+      const resolved = await client.query(
         `UPDATE private_monitor_incidents
             SET pending_notification_key = $2,
                 pending_notification_kind = 'resolved',
@@ -1326,6 +1360,22 @@ async function recordDeliveredNotification(
             AND state = 'resolved'
             AND pending_notification_key IS NULL`,
         [notification.incidentKey, resolutionKey, now],
+      );
+      acknowledged = (resolved.rowCount ?? 0) > 0;
+    }
+    if (acknowledged) {
+      const parsed = deliverySchema.safeParse(delivery);
+      const receipt = parsed.success && notification.notificationKey.length <= 512 ? {
+        ...parsed.data, notificationKey: notification.notificationKey, acceptedAt: now.toISOString(),
+      } : null;
+      // The timestamp write clears stale provenance, including legacy acknowledgments.
+      // Attach this result under the same row lock and transaction as its acknowledgment.
+      await client.query(
+        `UPDATE private_monitor_incidents
+            SET last_notification_key = $2, last_delivery_receipt = $3::jsonb
+          WHERE key = $1 AND last_notified_at = $4`,
+        [notification.incidentKey, receipt ? notification.notificationKey : null,
+          receipt ? JSON.stringify(receipt) : null, now],
       );
     }
     await client.query("COMMIT");
