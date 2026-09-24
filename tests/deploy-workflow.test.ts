@@ -251,6 +251,42 @@ describe("managed deployment contract", () => {
     }
   });
 
+  test("deploy revalidates the captured source fleet immediately before replacement", () => {
+    const deploy = steps.find((step) => step.id === "deploy")?.run ?? "";
+    expect(deploy.indexOf("postil-source-machines.json")).toBeLessThan(deploy.indexOf("attempted=true"));
+    expect(deploy.indexOf("machine exec")).toBeLessThan(deploy.indexOf("attempted=true"));
+    const source = fleet();
+    const changed: Array<(machines: ReturnType<typeof fleet>) => void> = [
+      (machines) => { machines[1]!.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`; },
+      (machines) => { machines[1]!.release = targetSha; },
+      (machines) => { machines[1]!.state = "stopped"; },
+      (machines) => { machines[1]!.host_status = "unknown"; },
+      (machines) => { machines[1]!.checks[0]!.status = "critical"; },
+      (machines) => { machines[1]!.config.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0"; },
+      (machines) => { machines[1]!.config.mounts.push({ volume: "vol_other", path: "/data" }); },
+      (machines) => { machines[3]!.config.mounts[0]!.volume = "vol_other"; },
+      (machines) => { Object.assign(machines[1]!.config, { init: { cmd: ["other"] } }); },
+    ];
+    for (const change of changed) {
+      const machines = structuredClone(source);
+      change(machines);
+      const result = runStep("deploy", machines, source);
+      expect(result.code, result.error).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.output).not.toContain("attempted=true");
+      expect(result.observedSecrets).toEqual(stagedSecrets);
+    }
+    const metadata = structuredClone(source);
+    Object.assign(metadata[1]!.config.metadata, {
+      fly_release_id: "changed", fly_release_version: "changed",
+      fly_flyctl_version: "changed", fly_builder_id: "changed",
+    });
+    const accepted = runStep("deploy", metadata, source);
+    expect(accepted.code, accepted.error).toBe(0);
+    expect(accepted.updates).toBe("deploy");
+    expect(accepted.output).toContain("attempted=true");
+  });
+
   test("admission rejects stale deadlines and invalid approved IDs before staging", () => {
     for (const environment of [
       { ROLLBACK_DEADLINE_EPOCH: "1800002399" },
