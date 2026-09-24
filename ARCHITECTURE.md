@@ -95,7 +95,13 @@ exact repository, pull request, head, and conversation snapshot into a full CLI
 review with the normal review publication and shutdown recovery paths. Evidence
 digests deduplicate admission; replies and resolution flags do not grant approvals
 or dismiss findings. Polling supplies discovery when App thread events are absent.
-Admission requires `POSTIL_REVIEW_FEEDBACK_ENABLED=1` and defaults off. Disabling
+Admission reads the singleton `review_feedback_control` row for eligible webhook
+events, watchdog scheduling, and reconciliation. The row starts `disabled` so
+new admission cannot begin during a rolling release. Its `inherit` mode uses
+`POSTIL_REVIEW_FEEDBACK_ENABLED=1` when explicitly selected. `enabled`
+admits feedback regardless of the process environment; `disabled` stops new
+admission regardless of that environment. An unavailable or invalid control
+fails closed without failing unrelated webhook or watchdog work. Disabling
 admission leaves already queued full feedback reviews processable.
 
 Every queue consumer supplies its explicit supported job kinds to the claim query.

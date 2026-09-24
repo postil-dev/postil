@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { Pool } from "pg";
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 
 const describeDb = process.env.POSTIL_TEST_DATABASE_URL ? describe : describe.skip;
@@ -33,10 +34,11 @@ mock.module("@/lib/private-repository-entitlement", () => ({ ...realEntitlement,
   canProcessRepositoryInference: async () => ({ allowed: true }),
 }));
 
-const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
+const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, reviewFeedbackEnabled, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
 const { claimJob, completeJob, enqueueJob, enqueueReviewJobOnce, failJob, requeueJobsOwnedBy } = await import("@/lib/queue");
 const { deferHostedReviewForRelease, activateHostedInferenceRelease } = await import("@/lib/release-job-rollout");
 const { closeDb } = await import("@/lib/db");
+const { controlReviewFeedbackMode } = await import("../scripts/control-review-feedback");
 const { watchdogPass } = await import("@/worker/watchdog");
 
 describeDb("durable review feedback admission", () => {
@@ -93,6 +95,70 @@ describeDb("durable review feedback admission", () => {
     if (originalEnabled === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
     else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = originalEnabled;
     await database?.drop();
+  });
+
+  test("database control overrides the process flag and preserves inherit semantics", async () => {
+    const pool = database.pool;
+    const original = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+    const event = { ...identity, rootCommentId: rootId, actor: { id: 51, login: "maintainer", type: "User" } };
+    try {
+      expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "disabled" }]);
+      process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "0";
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+      process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "1";
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+      expect(await reviewFeedbackEnabled(pool)).toBe(true);
+      expect(await admitReviewFeedbackEvent(event, pool)).toBe(true);
+      await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'review-feedback-reconciliation' AND status = 'queued'");
+      process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "1";
+      await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+      expect(await admitReviewFeedbackEvent(event, pool)).toBe(false);
+      expect(await scheduleReviewFeedbackReconciliationJobs(pool)).toBe(0);
+      await reconcileReviewFeedback(identity, pool);
+      expect((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind IN ('review-feedback', 'review-feedback-reconciliation') AND status = 'queued'")).rows[0].count).toBe(0);
+      await pool.query("UPDATE review_feedback_control SET mode = 'inherit' WHERE id = 1");
+      expect(await reviewFeedbackEnabled(pool)).toBe(true);
+      await expect(pool.query("INSERT INTO review_feedback_control (mode) VALUES ('enabled')"))
+        .rejects.toThrow();
+      await expect(pool.query("UPDATE review_feedback_control SET mode = 'invalid' WHERE id = 1"))
+        .rejects.toThrow();
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+      if (original === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+      else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = original;
+    }
+  });
+
+  test("a failed or missing control read cannot admit or schedule feedback", async () => {
+    const failed = { query: async () => { throw new Error("control read failed"); } } as unknown as typeof database.pool;
+    const missing = { query: async () => ({ rows: [] }) } as unknown as typeof database.pool;
+    const event = { ...identity, rootCommentId: rootId, actor: { id: 51, login: "maintainer", type: "User" } };
+    expect(await reviewFeedbackEnabled(missing)).toBe(false);
+    expect(await reviewFeedbackEnabled(failed)).toBe(false);
+    expect(await admitReviewFeedbackEvent(event, failed)).toBe(false);
+    expect(await scheduleReviewFeedbackReconciliationJobs(failed)).toBe(0);
+    await reconcileReviewFeedback(identity, failed);
+  });
+
+  test("operator control dry-runs and changes only the expected database mode", async () => {
+    const pool = database.pool;
+    try {
+      expect(await controlReviewFeedbackMode(pool, "disabled", "enabled", false)).toBe("dry-run");
+      expect((await pool.query("SELECT mode FROM review_feedback_control WHERE id = 1")).rows[0].mode)
+        .toBe("disabled");
+      expect(await controlReviewFeedbackMode(pool, "disabled", "enabled", true)).toBe("confirmed");
+      await expect(controlReviewFeedbackMode(pool, "disabled", "inherit", true)).rejects.toThrow(
+        "does not match the expected mode",
+      );
+      expect((await pool.query("SELECT mode FROM review_feedback_control WHERE id = 1")).rows[0].mode)
+        .toBe("enabled");
+      expect(await controlReviewFeedbackMode(pool, "enabled", "disabled", true)).toBe("confirmed");
+      expect(await reviewFeedbackEnabled(pool)).toBe(false);
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
   });
 
   test("recovers historical evidence once, isolates old consumers, and retains context through legacy coalescing", async () => {
@@ -306,6 +372,60 @@ describeDb("durable review feedback admission", () => {
     });
   }
 
+  for (const transition of ["retry", "recovery"] as const) {
+    for (const pendingKind of ["review-feedback", "review"] as const) {
+      test(`disabled feedback control preserves ${transition} semantics with pending ${pendingKind}`, async () => {
+        const pool = database.pool;
+        const prNumber = 210 + ["retry", "recovery"].indexOf(transition) * 2
+          + ["review-feedback", "review"].indexOf(pendingKind);
+        const pending = { ...reviewPayload(), prNumber,
+          ...(pendingKind === "review-feedback" ? { reviewFeedback: { version: 1, threads: [] } } : {}) };
+        const payload = { ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending };
+        const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+          (kind, payload, status, attempts, max_attempts, locked_by, locked_at)
+          VALUES ('review', $1, 'running', 1, 3, 'disabled-feedback-owner', now()) RETURNING id`,
+        [JSON.stringify(payload)]);
+        const id = Number(inserted.rows[0]!.id);
+        await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+        try {
+          const before = new Date();
+          const outcome = transition === "retry"
+            ? await failJob(pool, { id, lockedBy: "disabled-feedback-owner", attempts: 1, maxAttempts: 3 }, "temporary failure")
+            : await requeueJobsOwnedBy(pool, "disabled-feedback-owner", "shutdown", ["review"], [id]);
+          expect(outcome).toBe(pendingKind === "review-feedback"
+            ? (transition === "retry" ? "retried" : 1)
+            : (transition === "retry" ? "coalesced" : 1));
+          const original = (await pool.query(
+            "SELECT status, attempts, payload, locked_by, locked_at, last_error, run_after FROM jobs WHERE id = $1",
+            [id],
+          )).rows[0];
+          expect(original.payload).toEqual(payload);
+          expect(original.locked_by).toBeNull();
+          expect(original.locked_at).toBeNull();
+          expect(original.last_error).toBe(transition === "retry" ? "temporary failure" : "shutdown");
+          const followups = (await pool.query(
+            "SELECT kind, payload FROM jobs WHERE id <> $1 AND payload->>'prNumber' = $2 ORDER BY id",
+            [id, String(prNumber)],
+          )).rows;
+          if (pendingKind === "review-feedback") {
+            expect(original.status).toBe("queued");
+            expect(original.attempts).toBe(transition === "retry" ? 1 : 0);
+            expect(new Date(original.run_after).getTime()).toBeGreaterThanOrEqual(
+              before.getTime() + (transition === "retry" ? 30_000 : 0),
+            );
+            expect(followups).toEqual([]);
+          } else {
+            expect(original.status).toBe(transition === "retry" ? "failed" : "done");
+            expect(original.attempts).toBe(1);
+            expect(followups).toEqual([{ kind: "review", payload: pending }]);
+          }
+        } finally {
+          await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+        }
+      });
+    }
+  }
+
   test("finding feedback provenance requires a matching source alongside its digest", async () => {
     const insert = (context: unknown) => database.pool.query(`INSERT INTO reviews
       (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
@@ -319,4 +439,410 @@ describeDb("durable review feedback admission", () => {
       await expect(insert(context)).rejects.toMatchObject({ code: "23514", constraint: "reviews_trigger_context_check" });
     }
   });
+
+  for (const kind of ["review-feedback-reconciliation", "review-feedback"] as const) {
+    test(`disable waits for an in-flight ${kind} admission`, async () => {
+      const pool = database.pool;
+      const prNumber = kind === "review-feedback" ? 181 : 180;
+      const review = await pool.query(`INSERT INTO reviews
+        (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+         source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, finished_at)
+        VALUES ($1, $2, $3, 81, 71, 'octo/repository', $4, $5, $6, 'completed', 51, 'maintainer', now()) RETURNING id`,
+      [repositoryId, orgId, installationId, prNumber, headSha, baseSha]);
+      await pool.query(`INSERT INTO finding_publications
+        (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+        VALUES ($1, 'race-finding', true, 'inline', 'resolved', $2)`, [review.rows[0].id, String(rootId)]);
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+
+      const blocker = await pool.connect();
+      let admission: Promise<unknown> | undefined;
+      let disable: Promise<unknown> | undefined;
+      try {
+        await blocker.query("BEGIN");
+        const lockKey = kind === "review-feedback"
+          ? `postil:review-pr:71\u001f${prNumber}`
+          : `postil:feedback-poll:71:${prNumber}`;
+        await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lockKey]);
+        admission = kind === "review-feedback"
+          ? reconcileReviewFeedback({ ...identity, prNumber }, pool)
+          : admitReviewFeedbackEvent({ ...identity, prNumber, rootCommentId: rootId,
+              actor: { id: 51, login: "maintainer", type: "User" } }, pool);
+
+        let waiting = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const result = await pool.query(`SELECT EXISTS (
+            SELECT 1 FROM pg_locks lock JOIN pg_stat_activity activity ON activity.pid = lock.pid
+             WHERE activity.datname = current_database() AND lock.locktype = 'advisory' AND NOT lock.granted
+          ) AS waiting`);
+          waiting = result.rows[0].waiting;
+          if (waiting) break;
+          await Bun.sleep(10);
+        }
+        expect(waiting).toBe(true);
+
+        let disabled = false;
+        disable = controlReviewFeedbackMode(pool, "enabled", "disabled", true).then((result) => {
+          disabled = true;
+          return result;
+        });
+        await Bun.sleep(100);
+        expect(disabled).toBe(false);
+        await blocker.query("COMMIT");
+        await admission;
+        expect(await disable).toBe("confirmed");
+
+        const inserted = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = $1 AND payload->>'prNumber' = $2", [kind, String(prNumber)]);
+        expect(inserted.rows[0].count).toBe(1);
+        expect(await reviewFeedbackEnabled(pool)).toBe(false);
+        if (kind === "review-feedback") {
+          await reconcileReviewFeedback({ ...identity, prNumber }, pool);
+        } else {
+          expect(await admitReviewFeedbackEvent({ ...identity, prNumber, rootCommentId: rootId,
+            actor: { id: 51, login: "maintainer", type: "User" } }, pool)).toBe(false);
+        }
+        const afterDisable = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = $1 AND payload->>'prNumber' = $2", [kind, String(prNumber)]);
+        expect(afterDisable.rows[0].count).toBe(1);
+      } finally {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+        blocker.release();
+        await Promise.allSettled([admission, disable].filter((value) => value !== undefined));
+        await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+      }
+    }, 15_000);
+  }
+
+  test("scheduler selection and insertion serialize with feedback disable", async () => {
+    const pool = database.pool;
+    const prNumber = 188;
+    const review = await pool.query(`INSERT INTO reviews
+      (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+       source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, finished_at)
+      VALUES ($1, $2, $3, 81, 71, 'octo/repository', $4, $5, $6, 'completed', 51, 'maintainer', now()) RETURNING id`,
+    [repositoryId, orgId, installationId, prNumber, headSha, baseSha]);
+    await pool.query(`INSERT INTO finding_publications
+      (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      VALUES ($1, 'scheduler-race', true, 'inline', 'resolved', $2)`, [review.rows[0].id, String(rootId)]);
+    await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+
+    let selectionStarted!: () => void;
+    const selecting = new Promise<void>((resolve) => { selectionStarted = resolve; });
+    let resumeSelection!: () => void;
+    const selectionMayContinue = new Promise<void>((resolve) => { resumeSelection = resolve; });
+    const gateQuery = async (query: (...args: unknown[]) => Promise<unknown>, args: unknown[]) => {
+      if (typeof args[0] === "string" && args[0].includes("WITH candidates AS MATERIALIZED")) {
+        selectionStarted();
+        await selectionMayContinue;
+      }
+      return query(...args);
+    };
+    const gatedPool = new Proxy(pool, {
+      get(target, property) {
+        if (property === "query") return (...args: unknown[]) =>
+          gateQuery(target.query.bind(target) as (...args: unknown[]) => Promise<unknown>, args);
+        if (property === "connect") return async () => {
+          const client = await target.connect();
+          return new Proxy(client, {
+            get(connection, key) {
+              if (key === "query") return (...args: unknown[]) =>
+                gateQuery(connection.query.bind(connection) as (...args: unknown[]) => Promise<unknown>, args);
+              const value = Reflect.get(connection, key);
+              return typeof value === "function" ? value.bind(connection) : value;
+            },
+          });
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    let scheduling: Promise<number> | undefined;
+    let disabling: Promise<unknown> | undefined;
+    try {
+      scheduling = scheduleReviewFeedbackReconciliationJobs(gatedPool);
+      await selecting;
+      let disabled = false;
+      disabling = controlReviewFeedbackMode(pool, "enabled", "disabled", true).then((result) => {
+        disabled = true;
+        return result;
+      });
+      await Bun.sleep(100);
+      expect(disabled).toBe(false);
+      resumeSelection();
+      expect(await scheduling).toBeGreaterThanOrEqual(1);
+      expect(await disabling).toBe("confirmed");
+      const jobs = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback-reconciliation' AND payload->>'prNumber' = $1", [String(prNumber)]);
+      expect(jobs.rows[0].count).toBe(1);
+    } finally {
+      resumeSelection();
+      await Promise.allSettled([scheduling, disabling].filter((value) => value !== undefined));
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  }, 15_000);
+
+  test("full feedback admission does not exhaust a single-connection queue pool", async () => {
+    const prNumber = 182;
+    const review = await database.pool.query(`INSERT INTO reviews
+      (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+       source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, finished_at)
+      VALUES ($1, $2, $3, 81, 71, 'octo/repository', $4, $5, $6, 'completed', 51, 'maintainer', now()) RETURNING id`,
+    [repositoryId, orgId, installationId, prNumber, headSha, baseSha]);
+    await database.pool.query(`INSERT INTO finding_publications
+      (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      VALUES ($1, 'pool-capacity-finding', true, 'inline', 'resolved', $2)`, [review.rows[0].id, String(rootId)]);
+    const limitedPool = new Pool({ connectionString: database.url, max: 1, connectionTimeoutMillis: 500 });
+    try {
+      await reconcileReviewFeedback({ ...identity, prNumber }, limitedPool);
+      const jobs = await database.pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
+      expect(jobs.rows[0].count).toBe(1);
+    } finally {
+      await limitedPool.end();
+    }
+  });
+
+  for (const transition of ["complete", "retry", "terminal", "terminal-followup", "recovery"] as const) {
+    test(`disable serializes with ${transition} coalesced feedback promotion`, async () => {
+      const pool = database.pool;
+      const prNumber = 200 + ["complete", "retry", "terminal", "terminal-followup", "recovery"].indexOf(transition);
+      const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+        version: 1 as const, repository: "octo/repository", prNumber, headSha,
+        threads: [{ findingId: "pending", rootCommentId: rootId, resolved: false,
+          comments: [{ commentId: rootId + 1, author: { id: 51, login: "maintainer" }, body: reply, updatedAt }] }],
+      } };
+      const run = async (id: number) => {
+        const claim = { id, lockedBy: "transition-owner", attempts: 1, maxAttempts: 3 };
+        switch (transition) {
+          case "complete": return completeJob(pool, claim);
+          case "retry": return failJob(pool, claim, "temporary failure");
+          case "terminal": return failJob(pool, claim, "final failure", { permanent: true });
+          case "terminal-followup": return failJob(pool, claim, "final failure", { permanent: true,
+            failureFollowup: { kind: "respond-failure-comment", payload: { prNumber }, maxAttempts: 5 } });
+          case "recovery": return requeueJobsOwnedBy(pool, "transition-owner", "shutdown", ["review"], [id]);
+        }
+      };
+      const prepare = async () => {
+        const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs (kind, payload, status, locked_by, locked_at)
+          VALUES ('review', $1, 'running', 'transition-owner', now()) RETURNING id`,
+        [JSON.stringify({ ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending })]);
+        return Number(inserted.rows[0]!.id);
+      };
+
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+      const firstId = await prepare();
+      const blocker = await pool.connect();
+      let running: Promise<unknown> | undefined;
+      let disabling: Promise<unknown> | undefined;
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE", [firstId]);
+        running = run(firstId);
+        let transitionWaiting = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const state = await pool.query(`SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+              AND wait_event_type = 'Lock' AND query LIKE 'WITH transitioned AS (%'
+          ) AS waiting`);
+          if (state.rows[0].waiting) { transitionWaiting = true; break; }
+          await Bun.sleep(10);
+        }
+        expect(transitionWaiting).toBe(true);
+        let disabled = false;
+        disabling = controlReviewFeedbackMode(pool, "enabled", "disabled", true).then((result) => {
+          disabled = true;
+          return result;
+        });
+        await Bun.sleep(50);
+        expect(disabled).toBe(false);
+        await blocker.query("COMMIT");
+        const outcome = await running;
+        expect(outcome).toBe(transition === "recovery" ? 1 : "coalesced");
+        expect(await disabling).toBe("confirmed");
+        const promoted = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
+        expect(promoted.rows[0].count).toBe(1);
+        await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
+
+        const secondId = await prepare();
+        const afterDisable = await run(secondId);
+        expect(afterDisable).toBe(transition === "recovery" ? 1 : transition === "retry" ? "retried" : transition === "complete" ? "coalesced" : "failed");
+        if (transition === "retry" || transition === "recovery") {
+          const original = await pool.query("SELECT status, locked_by FROM jobs WHERE id = $1", [secondId]);
+          expect(original.rows[0]).toEqual({ status: "queued", locked_by: null });
+        }
+        const final = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)]);
+        expect(final.rows[0].count).toBe(transition === "complete" ? 2 : 1);
+        if (transition === "complete") {
+          const retained = await pool.query("SELECT kind, payload, status FROM jobs WHERE id = $1", [secondId]);
+          expect(retained.rows[0]).toEqual({ kind: "review", payload: {
+            ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending,
+          }, status: "done" });
+        }
+        if (transition === "terminal-followup") {
+          const followups = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'respond-failure-comment' AND payload->>'prNumber' = $1", [String(prNumber)]);
+          expect(followups.rows[0].count).toBe(1);
+        }
+      } finally {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+        blocker.release();
+        await Promise.allSettled([running, disabling].filter((value) => value !== undefined));
+        await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+      }
+    }, 15_000);
+  }
+
+  test("completion retains previously coalesced feedback after admission is disabled", async () => {
+    const pool = database.pool;
+    const prNumber = 230;
+    const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+      version: 1 as const, repository: "octo/repository", prNumber, headSha, threads: [],
+    } };
+    const original = { ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending };
+    const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+      (kind, payload, status, locked_by, locked_at)
+      VALUES ('review', $1, 'running', 'completion-owner', now()) RETURNING id`,
+    [JSON.stringify(original)]);
+    const id = Number(inserted.rows[0]!.id);
+    await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+    try {
+      expect(await completeJob(pool, { id, lockedBy: "completion-owner" })).toBe("coalesced");
+      const rows = (await pool.query(
+        "SELECT id, kind, payload, status, locked_by, locked_at, attempts FROM jobs WHERE payload->>'prNumber' = $1 ORDER BY id",
+        [String(prNumber)],
+      )).rows;
+      expect(rows).toEqual([
+        { id: String(id), kind: "review", payload: original,
+          status: "done", locked_by: null, locked_at: null, attempts: 0 },
+        { id: expect.any(String), kind: "review-feedback", payload: pending,
+          status: "queued", locked_by: null, locked_at: null, attempts: 0 },
+      ]);
+      expect(await enqueueReviewJobOnce(pool, { ...pending, prNumber: prNumber + 1,
+        reviewFeedback: { ...pending.reviewFeedback, prNumber: prNumber + 1 } })).toBeNull();
+      expect((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE payload->>'prNumber' = $1",
+        [String(prNumber + 1)])).rows[0].count).toBe(0);
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  });
+
+  test("disabled completion preserves feedback queued behind a recovery job", async () => {
+    const pool = database.pool;
+    const prNumber = 231;
+    const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+      version: 1 as const, repository: "octo/repository", prNumber, headSha, threads: [],
+    } };
+    const original = { ...reviewPayload(), prNumber, recoveryReviewId: 123456,
+      _postilCoalescedReviewPayload: pending };
+    const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+      (kind, payload, status, locked_by, locked_at)
+      VALUES ('review', $1, 'running', 'recovery-completion-owner', now()) RETURNING id`,
+    [JSON.stringify(original)]);
+    const id = Number(inserted.rows[0]!.id);
+    await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+    try {
+      expect(await completeJob(pool, { id, lockedBy: "recovery-completion-owner" })).toBe("coalesced");
+      const rows = (await pool.query(
+        "SELECT id, kind, payload, status FROM jobs WHERE payload->>'prNumber' = $1 ORDER BY id",
+        [String(prNumber)],
+      )).rows;
+      expect(rows).toEqual([
+        { id: String(id), kind: "review", payload: original, status: "done" },
+        { id: expect.any(String), kind: "review-feedback", payload: pending, status: "queued" },
+      ]);
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  });
+
+  test("feedback completion takes enqueue identity lock before the job row", async () => {
+    const pool = database.pool;
+    const prNumber = 232;
+    const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+      version: 1 as const, repository: "octo/repository", prNumber, headSha, threads: [],
+    } };
+    const original = { ...reviewPayload(), prNumber, recoveryReviewId: 123457,
+      _postilCoalescedReviewPayload: pending };
+    const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+      (kind, payload, status, locked_by, locked_at)
+      VALUES ('review', $1, 'running', 'lock-order-owner', now()) RETURNING id`,
+    [JSON.stringify(original)]);
+    const id = Number(inserted.rows[0]!.id);
+    const blocker = await pool.connect();
+    const completionPool = new Pool({ connectionString: database.url,
+      application_name: "feedback-completion-lock-order" });
+    let completing: Promise<unknown> | undefined;
+    await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `postil:review-pr:${["71", String(prNumber)].join("\u001f")}`,
+      ]);
+      completing = completeJob(completionPool, { id, lockedBy: "lock-order-owner" });
+      let waiting = false;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const state = await pool.query(`SELECT EXISTS (
+          SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+            AND application_name = 'feedback-completion-lock-order'
+            AND wait_event_type = 'Lock' AND wait_event = 'advisory'
+        ) AS waiting`);
+        if (state.rows[0].waiting) { waiting = true; break; }
+        await Bun.sleep(10);
+      }
+      expect(waiting).toBe(true);
+      await blocker.query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE NOWAIT", [id]);
+      await blocker.query("COMMIT");
+      expect(await completing).toBe("coalesced");
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await Promise.allSettled([completing].filter((value) => value !== undefined));
+      await completionPool.end();
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  }, 15_000);
+
+  test("concurrent webhook admissions bound guard connections with a one-client pool", async () => {
+    const pool = database.pool;
+    const prNumber = 205;
+    const review = await pool.query(`INSERT INTO reviews
+      (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+       source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, finished_at)
+      VALUES ($1, $2, $3, 81, 71, 'octo/repository', $4, $5, $6, 'completed', 51, 'maintainer', now()) RETURNING id`,
+    [repositoryId, orgId, installationId, prNumber, headSha, baseSha]);
+    await pool.query(`INSERT INTO finding_publications
+      (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      VALUES ($1, 'bounded-admission', true, 'inline', 'resolved', $2)`, [review.rows[0].id, String(rootId)]);
+    await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    const limitedPool = new Pool({ connectionString: database.url, max: 1, connectionTimeoutMillis: 3_000,
+      application_name: "feedback-admission-bound" });
+    const blocker = await pool.connect();
+    let admissions: Promise<boolean[]> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`postil:feedback-poll:71:${prNumber}`]);
+      const event = { ...identity, prNumber, rootCommentId: rootId,
+        actor: { id: 51, login: "maintainer", type: "User" } };
+      admissions = Promise.all(Array.from({ length: 12 }, () => admitReviewFeedbackEvent(event, limitedPool)));
+      let waiting = false;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const state = await pool.query(`SELECT count(*)::int AS count FROM pg_stat_activity
+          WHERE datname = current_database() AND application_name = 'feedback-admission-bound'`);
+        expect(state.rows[0].count).toBeLessThanOrEqual(1);
+        const lock = await pool.query(`SELECT EXISTS (SELECT 1 FROM pg_locks lock
+          JOIN pg_stat_activity activity ON activity.pid = lock.pid
+          WHERE activity.datname = current_database() AND activity.application_name = 'feedback-admission-bound'
+            AND lock.locktype = 'advisory' AND NOT lock.granted) AS waiting`);
+        if (lock.rows[0].waiting) { waiting = true; break; }
+        await Bun.sleep(10);
+      }
+      expect(waiting).toBe(true);
+      await blocker.query("COMMIT");
+      const results = await admissions;
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const jobs = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'review-feedback-reconciliation' AND payload->>'prNumber' = $1", [String(prNumber)]);
+      expect(jobs.rows[0].count).toBe(1);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await admissions?.catch(() => undefined);
+      await limitedPool.end();
+    }
+  }, 15_000);
 });

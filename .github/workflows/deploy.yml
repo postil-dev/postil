@@ -3,12 +3,24 @@ name: deploy
 on:
   workflow_dispatch:
     inputs:
+      machine_ids:
+        description: JSON array of the five approved postil-web Machine IDs
+        required: true
+        type: string
       rollback_deadline_epoch:
         description: Absolute Unix-seconds deadline from the active target-bound rollback timer
         required: true
         type: string
       rollback_target_sha:
         description: Exact target SHA bound by the active rollback timer
+        required: true
+        type: string
+      rollback_source_sha:
+        description: Exact lowercase source release SHA bound by the rollback package
+        required: true
+        type: string
+      rollback_source_image:
+        description: Exact pinned source image bound by the rollback package
         required: true
         type: string
 
@@ -27,6 +39,9 @@ jobs:
       TARGET_RELEASE_SHA: ${{ github.sha }}
       ROLLBACK_DEADLINE_EPOCH: ${{ inputs.rollback_deadline_epoch }}
       ROLLBACK_TARGET_SHA: ${{ inputs.rollback_target_sha }}
+      ROLLBACK_SOURCE_SHA: ${{ inputs.rollback_source_sha }}
+      ROLLBACK_SOURCE_IMAGE: ${{ inputs.rollback_source_image }}
+      APPROVED_MACHINE_IDS: ${{ inputs.machine_ids }}
     # Manual admission remains disabled until target-bound rollback protection is active.
     if: vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
     steps:
@@ -162,6 +177,33 @@ jobs:
           install -m 0755 "${tmp}/flyctl" "${RUNNER_TEMP}/flyctl"
           echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
           "${RUNNER_TEMP}/flyctl" version
+      - name: Admit target-bound rollout
+        id: admission
+        run: |
+          set -euo pipefail
+          if [[ ! "${TARGET_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ||
+                ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ ||
+                "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ! "${ROLLBACK_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ||
+                ! "${ROLLBACK_SOURCE_IMAGE:-}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ||
+                ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
+            echo "::error::An exact target, source SHA, source image, and rollback deadline are required."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2400 )); then
+            echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            $ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5
+          ' <<<"null" >/dev/null; then
+            echo "::error::Exactly five distinct approved Machine IDs are required."
+            exit 1
+          fi
       - name: Verify compatible source fleet
         id: source-fleet
         timeout-minutes: 5
@@ -173,12 +215,31 @@ jobs:
           fi
           umask 077
           machines=$(flyctl machine list --app postil-web --json)
-          jq '[.[] | select(
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The app fleet must match exactly the five approved Machine IDs."
+            exit 1
+          fi
+          managed_machines=$(jq -c '[.[] | select(
             .config.metadata.fly_process_group == "web" or
             .config.metadata.fly_process_group == "worker" or
             .config.metadata.fly_process_group == "monitor"
-          )]' <<<"${machines}" > "${RUNNER_TEMP}/postil-source-machines.json"
-          machines=$(cat "${RUNNER_TEMP}/postil-source-machines.json")
+          )]' <<<"${machines}")
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            length == 5 and ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${managed_machines}" >/dev/null; then
+            echo "::error::The managed source fleet must match exactly the five approved Machine IDs."
+            exit 1
+          fi
+          printf '%s\n' "${managed_machines}" > "${RUNNER_TEMP}/postil-source-machines.json"
+          machines="${managed_machines}"
           if ! jq -e 'length >= 4 and all(.[];
             .state == "started" and .host_status == "ok" and
             all(.checks[]?; .status == "passing")
@@ -203,6 +264,10 @@ jobs:
             echo "::error::The source fleet image reference is invalid."
             exit 1
           fi
+          if [[ "${source_image}" != "${ROLLBACK_SOURCE_IMAGE}" ]]; then
+            echo "::error::The source fleet image does not match the rollback source image."
+            exit 1
+          fi
           mapfile -t machine_ids < <(jq -r '.[] | select(
             .config.metadata.fly_platform_version == "v2" and
             (.config.metadata.fly_process_group == "web" or
@@ -214,8 +279,6 @@ jobs:
             echo "::error::Source fleet evidence is incomplete."
             exit 1
           fi
-          # The live source SHA supplies compatibility and rollback evidence;
-          # TARGET_RELEASE_SHA identifies the new-image checkout and normally differs during an upgrade.
           source_release=""
           for id in "${machine_ids[@]}"; do
             if [[ ! "${id}" =~ ^[0-9a-f]+$ ]]; then
@@ -239,9 +302,98 @@ jobs:
             echo "::error::The managed source release is invalid."
             exit 1
           fi
+          if [[ "${source_release}" != "${ROLLBACK_SOURCE_SHA}" ]]; then
+            echo "::error::The source fleet release does not match the rollback source SHA."
+            exit 1
+          fi
           echo "release-sha=${source_release}" >> "${GITHUB_OUTPUT}"
           echo "image=${source_image}" >> "${GITHUB_OUTPUT}"
           echo "Compatible source fleet verified."
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Verify source feedback runtime is off
+        id: feedback-preflight
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The source fleet changed before feedback preflight."
+            exit 1
+          fi
+          mapfile -t machine_ids < <(jq -r '.[].id' <<<"${machines}")
+          for id in "${machine_ids[@]}"; do
+            if ! feedback_off=$(flyctl machine exec "${id}" \
+              "bun -e 'const value = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED; process.stdout.write(value === undefined || value === \"0\" ? \"true\" : \"false\")'" \
+              --app postil-web --timeout 15 2>/dev/null) || [[ "${feedback_off}" != "true" ]]; then
+              echo "::error::A source machine did not prove feedback runtime is off."
+              exit 1
+            fi
+          done
+          echo "Source feedback runtime is off on all approved machines."
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Stage feedback compatibility mode
+        id: stage-feedback
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          # Stage (2m), secret contract (2m), and the bounded 40m release sequence.
+          if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
+            echo "::error::An exact target-bound rollback deadline is required."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2640 )); then
+            echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
+            exit 1
+          fi
+          machines=$(flyctl machine list --app postil-web --json)
+          # Revalidate the captured source immediately before the first mutation.
+          # Fly may regenerate these four metadata fields without changing the runtime.
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" \
+            --arg approved "${APPROVED_MACHINE_IDS}" --arg image "${ROLLBACK_SOURCE_IMAGE}" '
+            def runtime_config: .config | del(
+              .metadata.fly_release_id, .metadata.fly_release_version,
+              .metadata.fly_flyctl_version, .metadata.fly_builder_id);
+            def source_image: .image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest;
+            def stable_source: {id, region, image: source_image, config: runtime_config};
+            def healthy: .state == "started" and .host_status == "ok" and
+              all(.checks[]?; .status == "passing");
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array" and length == 5) and
+            ($source | length == 1 and ($source[0] | type == "array" and length == 5)) and
+            ([.[].id] | sort) == ($ids | sort) and
+            ([$source[0][].id] | sort) == ($ids | sort) and
+            all(.[]; healthy and source_image == $image) and
+            (map(stable_source) | sort_by(.id)) ==
+              ($source[0] | map(stable_source) | sort_by(.id))
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::Source fleet identity, image, health, or runtime configuration changed before feedback staging."
+            exit 1
+          fi
+          mapfile -t machine_ids < <(jq -r '.[].id' <<<"${machines}")
+          for id in "${machine_ids[@]}"; do
+            if ! release=$(flyctl machine exec "${id}" \
+              "bun -e 'const release = process.env.POSTIL_RELEASE_SHA ?? \"\"; if (!/^[0-9a-f]{40}$/.test(release)) process.exit(64); process.stdout.write(release)'" \
+              --app postil-web --timeout 15 2>/dev/null) ||
+              [[ "${release}" != "${ROLLBACK_SOURCE_SHA}" ]]; then
+              echo "::error::A source machine release changed before feedback staging."
+              exit 1
+            fi
+          done
+          printf '%s\n' 'POSTIL_REVIEW_FEEDBACK_ENABLED=0' | flyctl secrets import --stage --app postil-web >/dev/null
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Verify runtime secret contract
@@ -255,8 +407,12 @@ jobs:
             [.[] | .name] as $names |
             all(.[];
               (.name | type == "string" and length > 0) and
-              (.digest | type == "string" and length > 0) and .status == "Deployed") and
+              (.digest | type == "string" and length > 0) and
+              ((.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and (.status == "Staged" or .status == "Deployed")) or
+                (.name != "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Deployed"))) and
+            ($names | unique | length) == ($names | length) and
             ($names | index("DATABASE_URL") != null) and
+            ($names | index("POSTIL_REVIEW_FEEDBACK_ENABLED") != null) and
             all($names[];
               test("^(POSTIL_RELEASE_SHA|POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA|POSTIL_RELEASE_PROTOCOL|POSTIL_MANAGED_RELEASE|POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE)$") | not)
           ' <<<"${fly_secrets}" >/dev/null; then
@@ -321,6 +477,43 @@ jobs:
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
+          machines=$(flyctl machine list --app postil-web --json)
+          # Compare the captured source before the first replacement. Fly may
+          # regenerate these four metadata fields without changing the runtime.
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" \
+            --arg approved "${APPROVED_MACHINE_IDS}" --arg image "${ROLLBACK_SOURCE_IMAGE}" '
+            def runtime_config: .config | del(
+              .metadata.fly_release_id, .metadata.fly_release_version,
+              .metadata.fly_flyctl_version, .metadata.fly_builder_id);
+            def source_image: .image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest;
+            def stable_source: {id, region, image: source_image, config: runtime_config};
+            def healthy: .state == "started" and .host_status == "ok" and
+              all(.checks[]?; .status == "passing");
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array" and length == 5) and
+            ($source | length == 1 and ($source[0] | type == "array" and length == 5)) and
+            ([.[].id] | sort) == ($ids | sort) and
+            ([$source[0][].id] | sort) == ($ids | sort) and
+            all(.[]; healthy and source_image == $image) and
+            (map(stable_source) | sort_by(.id)) ==
+              ($source[0] | map(stable_source) | sort_by(.id))
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::Source fleet identity, image, health, or runtime configuration changed after capture; deploy stopped."
+            exit 1
+          fi
+          mapfile -t machine_ids < <(jq -r '.[].id' <<<"${machines}")
+          for id in "${machine_ids[@]}"; do
+            if ! release=$(flyctl machine exec "${id}" \
+              "bun -e 'const release = process.env.POSTIL_RELEASE_SHA ?? \"\"; if (!/^[0-9a-f]{40}$/.test(release)) process.exit(64); process.stdout.write(release)'" \
+              --app postil-web --timeout 15 2>/dev/null) ||
+              [[ "${release}" != "${ROLLBACK_SOURCE_SHA}" ]]; then
+              echo "::error::A source machine release changed after capture; deploy stopped."
+              exit 1
+            fi
+          done
           echo "attempted=true" >> "${GITHUB_OUTPUT}"
           flyctl deploy \
             --remote-only \
@@ -346,6 +539,17 @@ jobs:
           set -euo pipefail
           source scripts/probe-managed-runtime.sh
           machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The deployed fleet differs from the five approved Machine IDs."
+            exit 1
+          fi
           if ! jq -ce -f scripts/verify-managed-fleet.jq <<<"${machines}" >/dev/null; then
             echo "::error::Release verification failed: fleet image, process, or hosted-inference configuration is inconsistent."
             exit 1
@@ -376,6 +580,11 @@ jobs:
              .config.metadata.fly_process_group == "monitor")
           ) | .id' <<<"${machines}")
           for id in "${machine_ids[@]}"; do
+            if ! feedback_off=$(probe_managed_runtime "${id}" \
+              "bun -e 'process.stdout.write(process.env.POSTIL_REVIEW_FEEDBACK_ENABLED === \"0\" ? \"true\" : \"false\")'") || [[ "${feedback_off}" != "true" ]]; then
+              echo "::error::A target machine did not prove feedback runtime is off."
+              exit 1
+            fi
             if ! release_contract=$(probe_managed_runtime "${id}" \
               "bun -e 'const contract = [process.env.POSTIL_RELEASE_SHA, process.env.POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA, process.env.POSTIL_RELEASE_PROTOCOL, process.env.POSTIL_MANAGED_RELEASE]; process.stdout.write(JSON.stringify(contract))'"); then
               echo "::error::A managed machine did not report its release contract."
@@ -392,7 +601,9 @@ jobs:
           done
           fly_secrets=$(flyctl secrets list --app postil-web --json)
           if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
-            (map({name, digest, status}) | sort_by(.name)) == $source[0]
+            (map({name, digest, status}) | sort_by(.name)) ==
+              ($source[0] | map(if .name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and
+                .status == "Staged" then .status = "Deployed" else . end))
           ' <<<"${fly_secrets}" >/dev/null; then
             echo "::error::Fly secret metadata changed during deployment; target verification failed."
             exit 1
@@ -407,13 +618,25 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          machine_id=$(flyctl machine list --app postil-web --json | jq -er '
+          machines=$(flyctl machine list --app postil-web --json)
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array") and
+            ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::The deployed fleet differs from the five approved Machine IDs."
+            exit 1
+          fi
+          machine_id=$(jq -er '
             [.[] | select(
               .state == "started" and
               .config.metadata.fly_platform_version == "v2" and
               .config.metadata.fly_process_group == "worker"
             ) | .id] | if length >= 1 then .[0] else error("no managed worker is available") end
-          ')
+          ' <<<"${machines}")
           # Activation (5m), automatic rollback (10m), and margin (5m).
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
@@ -453,9 +676,17 @@ jobs:
             local fly_secrets
             fly_secrets=$(flyctl secrets list --app postil-web --json) || return 1
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
-              (map({name, digest, status}) | sort_by(.name)) == $source[0]
+              (map({name, digest, status}) | sort_by(.name)) as $observed |
+              ($observed | map({name, digest})) ==
+                ($source[0] | map({name, digest})) and
+              all($observed[]; . as $secret |
+                any($source[0][]; .name == $secret.name and
+                  (.status == $secret.status or
+                    (.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and
+                     .status == "Staged" and
+                     ($secret.status == "Partial" or $secret.status == "Deployed")))))
             ' <<<"${fly_secrets}" >/dev/null; then
-              echo "::error::Fly secret metadata changed; rollback cannot apply staged or changed secrets."
+              echo "::error::Fly secret metadata changed beyond the approved staged flag transition; rollback stopped."
               return 1
             fi
           }
@@ -532,15 +763,19 @@ jobs:
               [.[] | select(
                 managed_group == "web" or managed_group == "worker" or managed_group == "monitor"
               )] as $managed |
+              ($managed | map(select(.id == $id)) | .[0]) as $target |
               ([$managed[].id] | sort) == ([$source[0][].id] | sort) and
               all($managed[]; . as $machine |
                 any($source[0][];
                   .id == $machine.id and .region == $machine.region and
                   runtime_config == ($machine | runtime_config))) and
-              all(["web", "worker"][]; . as $group |
-                any($managed[]; .id != $id and managed_group == $group and healthy))
+              (if ($target | managed_group) == "monitor" then true else
+                any($managed[];
+                  .id != $id and managed_group == ($target | managed_group) and healthy) or
+                ($target | healthy | not)
+              end)
             ' <<<"${current_machines}" >/dev/null; then
-              echo "::error::Rollback requires unchanged machine bindings and a healthy web and worker peer before each update."
+              echo "::error::Rollback requires unchanged machine bindings and a healthy same-group peer before updating a healthy machine."
               exit 1
             fi
             verify_source_secrets

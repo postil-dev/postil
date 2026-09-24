@@ -295,7 +295,7 @@ describe("release database connection", () => {
       "bun run scripts/run-release-migrations.ts",
     );
     expect(deployWorkflow).toContain("Verify runtime secret contract");
-    expect(deployWorkflow).not.toContain("flyctl secrets import");
+    expect(deployWorkflow).toContain("flyctl secrets import --stage --app postil-web");
     expect(deployWorkflow).not.toContain("flyctl secrets unset");
     expect(deployWorkflow).not.toContain("POSTIL_DIRECT_DATABASE_URL");
     expect(deployWorkflow).not.toContain(

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 
 import { getDb, getPool } from "@/lib/db";
@@ -77,9 +77,76 @@ export interface ReviewFeedbackJobPayload extends Record<string, unknown> {
   installationId: number;
 }
 
-/** Activate only after every review consumer supports the feedback file contract. */
-export function reviewFeedbackEnabled(): boolean {
-  return process.env.POSTIL_REVIEW_FEEDBACK_ENABLED === "1";
+/** Read every admission from the durable control; a failed read cannot enable feedback. */
+export async function reviewFeedbackEnabled(pool: Pick<Pool, "query"> = getPool()): Promise<boolean> {
+  let result: { rows: { mode: string }[] };
+  try {
+    result = await pool.query<{ mode: string }>(
+      "SELECT mode FROM review_feedback_control WHERE id = 1",
+    );
+  } catch {
+    console.warn("Review feedback control read failed; admission remains disabled");
+    return false;
+  }
+  return feedbackModeEnabled(result.rows);
+}
+
+export function feedbackModeEnabled(rows: { mode: string }[]): boolean {
+  if (rows.length !== 1) {
+    console.warn("Review feedback control row is unavailable; admission remains disabled");
+    return false;
+  }
+  switch (rows[0]?.mode) {
+    case "enabled": return true;
+    case "disabled": return false;
+    case "inherit": return process.env.POSTIL_REVIEW_FEEDBACK_ENABLED === "1";
+    default:
+      console.warn("Review feedback control mode is invalid; admission remains disabled");
+      return false;
+  }
+}
+
+/** Hold the control row until the admitted job has committed. A mode update
+ * waits for this transaction, so a confirmed disable excludes later inserts.
+ */
+async function withFeedbackAdmission<T>(
+  pool: Pool,
+  enqueue: (client: PoolClient) => Promise<T>,
+  disabledValue: T,
+): Promise<T> {
+  let client: PoolClient;
+  try {
+    client = await pool.connect();
+  } catch {
+    console.warn("Review feedback control connection failed; admission remains disabled");
+    return disabledValue;
+  }
+  try {
+    await client.query("BEGIN");
+    let enabled: boolean;
+    try {
+      const result = await client.query<{ mode: string }>(
+        "SELECT mode FROM review_feedback_control WHERE id = 1 FOR SHARE",
+      );
+      enabled = feedbackModeEnabled(result.rows);
+    } catch {
+      console.warn("Review feedback control read failed; admission remains disabled");
+      await client.query("ROLLBACK");
+      return disabledValue;
+    }
+    if (!enabled) {
+      await client.query("ROLLBACK");
+      return disabledValue;
+    }
+    const inserted = await enqueue(client);
+    await client.query("COMMIT");
+    return inserted;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function positiveId(value: unknown): value is number {
@@ -165,10 +232,10 @@ export async function admitReviewFeedbackEvent(input: ReviewFeedbackJobPayload &
   actor: { id?: number; login?: string; type?: string };
   rootCommentId: number;
 }, pool: Pool = getPool()): Promise<boolean> {
-  if (!reviewFeedbackEnabled() || !positiveId(input.actor?.id) ||
-      typeof input.actor.login !== "string" || !input.actor.login ||
+  if (!positiveId(input.actor?.id) || typeof input.actor.login !== "string" || !input.actor.login ||
       input.actor.type === "Bot" || input.actor.login.endsWith("[bot]") ||
       isPostilBotLogin(input.actor.login) || !positiveId(input.rootCommentId)) return false;
+  if (!await reviewFeedbackEnabled(pool)) return false;
   const repository = await loadFeedbackRepository(pool, input);
   if (!repository) return false;
   const publication = await pool.query(`
@@ -190,32 +257,26 @@ export async function admitReviewFeedbackEvent(input: ReviewFeedbackJobPayload &
 }
 
 async function enqueueReviewFeedbackJob(pool: Pool, payload: ReviewFeedbackJobPayload): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+  return withFeedbackAdmission(pool, (client) => enqueueReviewFeedbackJobOnClient(client, payload), false);
+}
+
+async function enqueueReviewFeedbackJobOnClient(client: PoolClient, payload: ReviewFeedbackJobPayload): Promise<boolean> {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
       `postil:feedback-poll:${payload.githubRepoId}:${payload.prNumber}`,
-    ]);
-    const result = await client.query(`
+  ]);
+  const result = await client.query(`
       INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
       SELECT $1, $2::jsonb, 'queued', now() + interval '10 seconds', 5
        WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND status IN ('queued', 'running')
                            AND payload->>'githubRepoId' = $3 AND payload->>'prNumber' = $4)
       RETURNING id`, [REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND, JSON.stringify(payload), String(payload.githubRepoId), String(payload.prNumber)]);
-    await client.query("COMMIT");
-    return (result.rowCount ?? 0) > 0;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** Bound each watchdog pass to twenty due pull requests, independent of webhook subscriptions. */
 export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now = new Date()): Promise<number> {
-  if (!reviewFeedbackEnabled()) return 0;
-  const result = await pool.query<ReviewFeedbackJobPayload>(`
+  return withFeedbackAdmission(pool, async (client) => {
+    const result = await client.query<ReviewFeedbackJobPayload>(`
     WITH candidates AS MATERIALIZED (
       SELECT DISTINCT ON (review.repository_id, review.pr_number)
              review.repository_id, review.pr_number, repository.github_repo_id,
@@ -240,13 +301,14 @@ export async function scheduleReviewFeedbackReconciliationJobs(pool: Pool, now =
     SELECT github_repo_id AS "githubRepoId", pr_number AS "prNumber", github_installation_id AS "installationId"
       FROM candidates ORDER BY due_at, repository_id, pr_number LIMIT 20
     `, [now, REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND]);
-  let scheduled = 0;
-  for (const row of result.rows) {
-    if (await enqueueReviewFeedbackJob(pool, {
-      githubRepoId: Number(row.githubRepoId), prNumber: Number(row.prNumber), installationId: Number(row.installationId),
-    })) scheduled += 1;
-  }
-  return scheduled;
+    let scheduled = 0;
+    for (const row of result.rows) {
+      if (await enqueueReviewFeedbackJobOnClient(client, {
+        githubRepoId: Number(row.githubRepoId), prNumber: Number(row.prNumber), installationId: Number(row.installationId),
+      })) scheduled += 1;
+    }
+    return scheduled;
+  }, 0);
 }
 
 /** Poll live human evidence, then use the existing review queue and publication pipeline. */
@@ -254,7 +316,7 @@ export async function reconcileReviewFeedback(
   payload: ReviewFeedbackJobPayload,
   pool: Pool = getPool(),
 ): Promise<void> {
-  if (!reviewFeedbackEnabled()) return;
+  if (!await reviewFeedbackEnabled(pool)) return;
   const repository = await loadFeedbackRepository(pool, payload);
   if (!repository) return;
   let nextPollAt = new Date(Date.now() + POLL_INTERVAL_MS);
@@ -319,12 +381,12 @@ export async function reconcileReviewFeedback(
     signal.throwIfAborted();
     if (!live.open || live.merged || live.draft || live.headSha !== observed.headSha) return;
     await enqueueReviewJobOnce(pool, {
-      installationId: payload.installationId, sourceInstallationId: repository.sourceInstallationId,
-      sourceOrgId: repository.orgId, githubRepoId: repository.githubRepoId, repoFullName: repository.fullName,
-      repositoryPrivate: repository.private, prNumber: payload.prNumber,
-      authorGithubId: live.authorGithubId, authorLogin: live.authorLogin,
-      headSha: live.headSha, baseSha: live.baseSha, forceFullReview: true, reviewFeedback,
-      trigger: { source: "finding_feedback", feedbackDigest: digest },
+        installationId: payload.installationId, sourceInstallationId: repository.sourceInstallationId,
+        sourceOrgId: repository.orgId, githubRepoId: repository.githubRepoId, repoFullName: repository.fullName,
+        repositoryPrivate: repository.private, prNumber: payload.prNumber,
+        authorGithubId: live.authorGithubId, authorLogin: live.authorLogin,
+        headSha: live.headSha, baseSha: live.baseSha, forceFullReview: true, reviewFeedback,
+        trigger: { source: "finding_feedback", feedbackDigest: digest },
     });
   } catch (error) {
     lastError = redactAndTruncate(error, 1_000);

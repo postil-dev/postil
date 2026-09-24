@@ -191,7 +191,8 @@ describe("iLert operator stream protocol", () => {
       "(map({name, digest, status}) | sort_by(.name)) == $source[0]",
     );
     expect(deploy).not.toContain("flyctl secrets set");
-    expect(deploy).not.toContain("flyctl secrets import");
+    expect(deploy.match(/flyctl secrets import --stage --app postil-web/g)).toHaveLength(1);
+    expect(deploy).not.toMatch(/flyctl secrets import(?! --stage --app postil-web)/);
   });
 
   test("uses a session endpoint for Supabase LISTEN connections", () => {
