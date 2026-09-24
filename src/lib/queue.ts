@@ -1169,35 +1169,44 @@ export function nextClaimPollDelay(
  * a worker finishing late cannot stamp `done` over a job the watchdog already
  * requeued and a second worker re-claimed under a new lock (which would mask a
  * concurrent double-run). Only the current lock holder can complete the row.
- * A coalesced feedback payload already admitted before disabling feedback is
- * retained on the same row, so completion does not create a new job after disable.
+ * A coalesced feedback payload was admitted when it was attached to the
+ * running job. Completion carries it forward even if admission is disabled.
  */
 export async function completeJob(
   pool: Pool,
   job: Pick<ClaimedJob, "id" | "lockedBy">,
 ): Promise<"done" | "coalesced" | "lost"> {
-  return withFeedbackControl(pool, async (client, enabled) => {
-  if (!enabled) {
-    const retained = await client.query<{ id: string }>(
-      `UPDATE jobs
-          SET status = 'queued', attempts = 0, run_after = now(),
-              locked_at = NULL, locked_by = NULL, last_error = NULL
-        WHERE id = $1 AND status = 'running' AND locked_by = $2
-          AND kind IN ('review', 'review-feedback')
-          AND jsonb_typeof(payload -> $3) = 'object'
-          AND (payload -> $3) ? 'reviewFeedback'
-      RETURNING id`,
-      [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
-    );
-    if (retained.rowCount) {
-      // The publication-identity trigger permits this kind change only from queued.
-      await client.query(
-        `UPDATE jobs
-            SET kind = 'review-feedback', payload = payload -> $2
-          WHERE id = $1 AND status = 'queued'`,
-        [job.id, COALESCED_REVIEW_PAYLOAD_KEY],
-      );
-      return "coalesced";
+  return withFeedbackControl(pool, async (client) => {
+  // Enqueue takes these advisory locks before its job-row lock. The insert
+  // trigger takes the stable identity lock, so take the same order here before
+  // transitioning the row and inserting any previously admitted payload.
+  const candidate = await client.query<{ payload: StoredReviewJobPayload }>(
+    `SELECT payload FROM jobs
+      WHERE id = $1 AND status = 'running' AND locked_by = $2
+        AND kind IN ('review', 'review-feedback')
+        AND jsonb_typeof(payload -> $3) = 'object'`,
+    [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
+  );
+  const payload = candidate.rows[0]?.payload;
+  if (payload) {
+    const repositoryId = Number.isSafeInteger(payload.githubRepoId) && payload.githubRepoId > 0
+      ? payload.githubRepoId
+      : (await client.query<{ github_repo_id: string }>(
+          "SELECT github_repo_id FROM repositories WHERE full_name = $1 LIMIT 1",
+          [payload.repoFullName],
+        )).rows[0]?.github_repo_id;
+    if (repositoryId) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `postil:review-pr:${[String(repositoryId), String(payload.prNumber)].join("\u001f")}`,
+      ]);
+    }
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `postil:active-review:${[payload.repoFullName, String(payload.prNumber), payload.headSha].join("\u001f")}`,
+    ]);
+    if (repositoryId) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `postil:active-review:${[String(repositoryId), String(payload.prNumber), payload.headSha].join("\u001f")}`,
+      ]);
     }
   }
   const result = await client.query<{ outcome: "done" | "coalesced" | "lost" }>(
@@ -1212,7 +1221,6 @@ export async function completeJob(
        SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
          FROM transitioned
         WHERE kind IN ('review', 'review-feedback') AND jsonb_typeof(pending) = 'object'
-          AND (NOT pending ? 'reviewFeedback' OR $4::boolean)
        RETURNING id
      )
      SELECT CASE
@@ -1220,7 +1228,7 @@ export async function completeJob(
        WHEN EXISTS (SELECT 1 FROM transitioned) THEN 'done'
        ELSE 'lost'
      END AS outcome`,
-    [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled],
+    [job.id, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY],
   );
   return result.rows[0]?.outcome ?? "lost";
   });

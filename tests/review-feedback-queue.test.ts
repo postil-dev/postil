@@ -671,7 +671,9 @@ describeDb("durable review feedback admission", () => {
         expect(final.rows[0].count).toBe(transition === "complete" ? 2 : 1);
         if (transition === "complete") {
           const retained = await pool.query("SELECT kind, payload, status FROM jobs WHERE id = $1", [secondId]);
-          expect(retained.rows[0]).toEqual({ kind: "review-feedback", payload: pending, status: "queued" });
+          expect(retained.rows[0]).toEqual({ kind: "review", payload: {
+            ...reviewPayload(), prNumber, _postilCoalescedReviewPayload: pending,
+          }, status: "done" });
         }
         if (transition === "terminal-followup") {
           const followups = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE kind = 'respond-failure-comment' AND payload->>'prNumber' = $1", [String(prNumber)]);
@@ -702,11 +704,15 @@ describeDb("durable review feedback admission", () => {
     try {
       expect(await completeJob(pool, { id, lockedBy: "completion-owner" })).toBe("coalesced");
       const rows = (await pool.query(
-        "SELECT id, kind, payload, status, locked_by, locked_at, attempts FROM jobs WHERE payload->>'prNumber' = $1",
+        "SELECT id, kind, payload, status, locked_by, locked_at, attempts FROM jobs WHERE payload->>'prNumber' = $1 ORDER BY id",
         [String(prNumber)],
       )).rows;
-      expect(rows).toEqual([{ id: String(id), kind: "review-feedback", payload: pending,
-        status: "queued", locked_by: null, locked_at: null, attempts: 0 }]);
+      expect(rows).toEqual([
+        { id: String(id), kind: "review", payload: original,
+          status: "done", locked_by: null, locked_at: null, attempts: 0 },
+        { id: expect.any(String), kind: "review-feedback", payload: pending,
+          status: "queued", locked_by: null, locked_at: null, attempts: 0 },
+      ]);
       expect(await enqueueReviewJobOnce(pool, { ...pending, prNumber: prNumber + 1,
         reviewFeedback: { ...pending.reviewFeedback, prNumber: prNumber + 1 } })).toBeNull();
       expect((await pool.query("SELECT count(*)::int AS count FROM jobs WHERE payload->>'prNumber' = $1",
@@ -715,6 +721,82 @@ describeDb("durable review feedback admission", () => {
       await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
     }
   });
+
+  test("disabled completion preserves feedback queued behind a recovery job", async () => {
+    const pool = database.pool;
+    const prNumber = 231;
+    const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+      version: 1 as const, repository: "octo/repository", prNumber, headSha, threads: [],
+    } };
+    const original = { ...reviewPayload(), prNumber, recoveryReviewId: 123456,
+      _postilCoalescedReviewPayload: pending };
+    const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+      (kind, payload, status, locked_by, locked_at)
+      VALUES ('review', $1, 'running', 'recovery-completion-owner', now()) RETURNING id`,
+    [JSON.stringify(original)]);
+    const id = Number(inserted.rows[0]!.id);
+    await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+    try {
+      expect(await completeJob(pool, { id, lockedBy: "recovery-completion-owner" })).toBe("coalesced");
+      const rows = (await pool.query(
+        "SELECT id, kind, payload, status FROM jobs WHERE payload->>'prNumber' = $1 ORDER BY id",
+        [String(prNumber)],
+      )).rows;
+      expect(rows).toEqual([
+        { id: String(id), kind: "review", payload: original, status: "done" },
+        { id: expect.any(String), kind: "review-feedback", payload: pending, status: "queued" },
+      ]);
+    } finally {
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  });
+
+  test("feedback completion takes enqueue identity lock before the job row", async () => {
+    const pool = database.pool;
+    const prNumber = 232;
+    const pending = { ...reviewPayload(), prNumber, reviewFeedback: {
+      version: 1 as const, repository: "octo/repository", prNumber, headSha, threads: [],
+    } };
+    const original = { ...reviewPayload(), prNumber, recoveryReviewId: 123457,
+      _postilCoalescedReviewPayload: pending };
+    const inserted = await pool.query<{ id: string }>(`INSERT INTO jobs
+      (kind, payload, status, locked_by, locked_at)
+      VALUES ('review', $1, 'running', 'lock-order-owner', now()) RETURNING id`,
+    [JSON.stringify(original)]);
+    const id = Number(inserted.rows[0]!.id);
+    const blocker = await pool.connect();
+    const completionPool = new Pool({ connectionString: database.url,
+      application_name: "feedback-completion-lock-order" });
+    let completing: Promise<unknown> | undefined;
+    await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `postil:review-pr:${["71", String(prNumber)].join("\u001f")}`,
+      ]);
+      completing = completeJob(completionPool, { id, lockedBy: "lock-order-owner" });
+      let waiting = false;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const state = await pool.query(`SELECT EXISTS (
+          SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+            AND application_name = 'feedback-completion-lock-order'
+            AND wait_event_type = 'Lock' AND wait_event = 'advisory'
+        ) AS waiting`);
+        if (state.rows[0].waiting) { waiting = true; break; }
+        await Bun.sleep(10);
+      }
+      expect(waiting).toBe(true);
+      await blocker.query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE NOWAIT", [id]);
+      await blocker.query("COMMIT");
+      expect(await completing).toBe("coalesced");
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await Promise.allSettled([completing].filter((value) => value !== undefined));
+      await completionPool.end();
+      await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    }
+  }, 15_000);
 
   test("concurrent webhook admissions bound guard connections with a one-client pool", async () => {
     const pool = database.pool;
