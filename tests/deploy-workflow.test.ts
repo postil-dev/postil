@@ -510,6 +510,49 @@ describe("managed deployment contract", () => {
     }
   });
 
+  test("feedback staging revalidates the captured source before importing secrets", () => {
+    const stage = steps.find((step) => step.id === "stage-feedback")!.run!;
+    expect(stage.indexOf("postil-source-machines.json")).toBeLessThan(stage.indexOf("secrets import"));
+    expect(stage.indexOf("machine exec")).toBeLessThan(stage.indexOf("secrets import"));
+    const source = fleet();
+    const changes: Array<(machines: ReturnType<typeof fleet>) => void> = [
+      (machines) => { machines[4]!.config.metadata.fly_process_group = "unexpected"; },
+      (machines) => { machines[1]!.config.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0"; },
+      (machines) => { machines[1]!.config.mounts.push({ volume: "vol_other", path: "/data" }); },
+      (machines) => { machines[1]!.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`; },
+      (machines) => { machines[1]!.release = targetSha; },
+      (machines) => { machines[1]!.checks[0]!.status = "critical"; },
+    ];
+    for (const change of changes) {
+      const machines = structuredClone(source);
+      change(machines);
+      const result = runStep("stage-feedback", machines, source, secretMetadata, undefined,
+        machines, undefined, {}, secretMetadata);
+      expect(result.code, result.error).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.stagedInput).toBe("");
+      expect(result.observedSecrets).toEqual(secretMetadata);
+    }
+    const changedProcess = structuredClone(source);
+    changedProcess[4]!.config.metadata.fly_process_group = "unexpected";
+    expect(runStep("feedback-preflight", changedProcess).code).toBe(0);
+
+    const omittedChecks = structuredClone(source);
+    delete (omittedChecks[2] as Partial<(typeof omittedChecks)[number]>).checks;
+    const accepted = runStep("stage-feedback", omittedChecks, source, secretMetadata, undefined,
+      omittedChecks, undefined, {}, secretMetadata);
+    expect(accepted.code, accepted.error).toBe(0);
+    expect(accepted.updates).toBe("stage-feedback\n");
+
+    const generatedMetadata = structuredClone(source);
+    Object.assign(generatedMetadata[1]!.config.metadata, {
+      fly_release_id: "changed", fly_release_version: "changed",
+      fly_flyctl_version: "changed", fly_builder_id: "changed",
+    });
+    expect(runStep("stage-feedback", generatedMetadata, source, secretMetadata, undefined,
+      generatedMetadata, undefined, {}, secretMetadata).code).toBe(0);
+  });
+
   test("stages feedback OFF after source fleet verification and before capturing its digest", () => {
     const ids = steps.map((step) => step.id);
     expect(ids.indexOf("source-fleet")).toBeLessThan(ids.indexOf("stage-feedback"));

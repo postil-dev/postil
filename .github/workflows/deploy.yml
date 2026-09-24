@@ -356,6 +356,43 @@ jobs:
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
+          machines=$(flyctl machine list --app postil-web --json)
+          # Revalidate the captured source immediately before the first mutation.
+          # Fly may regenerate these four metadata fields without changing the runtime.
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" \
+            --arg approved "${APPROVED_MACHINE_IDS}" --arg image "${ROLLBACK_SOURCE_IMAGE}" '
+            def runtime_config: .config | del(
+              .metadata.fly_release_id, .metadata.fly_release_version,
+              .metadata.fly_flyctl_version, .metadata.fly_builder_id);
+            def source_image: .image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest;
+            def stable_source: {id, region, image: source_image, config: runtime_config};
+            def healthy: .state == "started" and .host_status == "ok" and
+              all(.checks[]?; .status == "passing");
+            ($approved | fromjson) as $ids |
+            ($ids | type == "array" and length == 5 and
+              all(.[]; type == "string" and test("^[0-9a-f]+$")) and
+              (unique | length) == 5) and
+            (type == "array" and length == 5) and
+            ($source | length == 1 and ($source[0] | type == "array" and length == 5)) and
+            ([.[].id] | sort) == ($ids | sort) and
+            ([$source[0][].id] | sort) == ($ids | sort) and
+            all(.[]; healthy and source_image == $image) and
+            (map(stable_source) | sort_by(.id)) ==
+              ($source[0] | map(stable_source) | sort_by(.id))
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::Source fleet identity, image, health, or runtime configuration changed before feedback staging."
+            exit 1
+          fi
+          mapfile -t machine_ids < <(jq -r '.[].id' <<<"${machines}")
+          for id in "${machine_ids[@]}"; do
+            if ! release=$(flyctl machine exec "${id}" \
+              "bun -e 'const release = process.env.POSTIL_RELEASE_SHA ?? \"\"; if (!/^[0-9a-f]{40}$/.test(release)) process.exit(64); process.stdout.write(release)'" \
+              --app postil-web --timeout 15 2>/dev/null) ||
+              [[ "${release}" != "${ROLLBACK_SOURCE_SHA}" ]]; then
+              echo "::error::A source machine release changed before feedback staging."
+              exit 1
+            fi
+          done
           printf '%s\n' 'POSTIL_REVIEW_FEEDBACK_ENABLED=0' | flyctl secrets import --stage --app postil-web >/dev/null
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
