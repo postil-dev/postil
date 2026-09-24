@@ -226,12 +226,20 @@ jobs:
             echo "::error::The app fleet must match exactly the five approved Machine IDs."
             exit 1
           fi
-          jq '[.[] | select(
+          managed_machines=$(jq -c '[.[] | select(
             .config.metadata.fly_process_group == "web" or
             .config.metadata.fly_process_group == "worker" or
             .config.metadata.fly_process_group == "monitor"
-          )]' <<<"${machines}" > "${RUNNER_TEMP}/postil-source-machines.json"
-          machines=$(cat "${RUNNER_TEMP}/postil-source-machines.json")
+          )]' <<<"${machines}")
+          if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
+            ($approved | fromjson) as $ids |
+            length == 5 and ([.[].id] | sort) == ($ids | sort)
+          ' <<<"${managed_machines}" >/dev/null; then
+            echo "::error::The managed source fleet must match exactly the five approved Machine IDs."
+            exit 1
+          fi
+          printf '%s\n' "${managed_machines}" > "${RUNNER_TEMP}/postil-source-machines.json"
+          machines="${managed_machines}"
           if ! jq -e 'length >= 4 and all(.[];
             .state == "started" and .host_status == "ok" and
             all(.checks[]?; .status == "passing")
@@ -443,7 +451,7 @@ jobs:
             def source_image: .image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest;
             def stable_source: {id, region, image: source_image, config: runtime_config};
             def healthy: .state == "started" and .host_status == "ok" and
-              (.checks | type == "array") and all(.checks[]; .status == "passing");
+              all(.checks[]?; .status == "passing");
             ($approved | fromjson) as $ids |
             ($ids | type == "array" and length == 5 and
               all(.[]; type == "string" and test("^[0-9a-f]+$")) and

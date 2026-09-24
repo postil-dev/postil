@@ -251,6 +251,33 @@ describe("managed deployment contract", () => {
     }
   });
 
+  test("source fleet rejects an approved machine with an unknown process group before staging", () => {
+    const machines = fleet();
+    machines[4]!.config.metadata.fly_process_group = "unexpected";
+    const result = runStep("source-fleet", machines, fleet(), secretMetadata, undefined,
+      machines, undefined, {}, secretMetadata);
+    expect(result.code).not.toBe(0);
+    expect(result.updates).toBe("");
+    expect(result.stagedInput).toBe("");
+    expect(result.observedSecrets).toEqual(secretMetadata);
+  });
+
+  test("predeploy accepts omitted checks but rejects a present failing check", () => {
+    const machines = fleet();
+    delete (machines[2] as Partial<(typeof machines)[number]>).checks;
+    delete (machines[3] as Partial<(typeof machines)[number]>).checks;
+    const accepted = runStep("deploy", machines, structuredClone(machines));
+    expect(accepted.code, accepted.error).toBe(0);
+    expect(accepted.updates).toBe("deploy");
+
+    const unhealthy = structuredClone(machines);
+    unhealthy[0]!.checks[0]!.status = "critical";
+    const rejected = runStep("deploy", unhealthy, structuredClone(unhealthy));
+    expect(rejected.code).not.toBe(0);
+    expect(rejected.updates).toBe("");
+    expect(rejected.output).not.toContain("attempted=true");
+  });
+
   test("deploy revalidates the captured source fleet immediately before replacement", () => {
     const deploy = steps.find((step) => step.id === "deploy")?.run ?? "";
     expect(deploy.indexOf("postil-source-machines.json")).toBeLessThan(deploy.indexOf("attempted=true"));
