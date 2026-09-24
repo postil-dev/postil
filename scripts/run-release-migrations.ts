@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import {
   COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
   applyReviewedFeedbackControlMigration,
+  applyReviewedMonitoringDeliveryMigration,
   type ManagedReleaseMigrationIdentity,
   prepareCompatibleManagedRelease,
   restoreAllManagedReleasePreparations,
@@ -166,15 +167,44 @@ export async function prepareReviewedAdditiveMigration(
   }
   const pool = existingPool ?? new Pool({ connectionString: databaseEnvironment.DATABASE_URL });
   try {
-    return await applyReviewedFeedbackControlMigration(
+    const sourceReleaseSha = compatibleSourceReleaseSha(databaseEnvironment);
+    const releaseSha = databaseEnvironment.POSTIL_RELEASE_SHA ?? "";
+    const protocol = requireCompatibleReleaseProtocol(databaseEnvironment);
+    const migrations = checkedInReleaseMigrations();
+    const predecessor = migrations.at(-2);
+    const latest = migrations.at(-1);
+    if (!predecessor || !latest) throw new Error("reviewed release migration identities are missing");
+    const journal = await pool.query<{ created_at: string }>(
+      "SELECT created_at::text FROM drizzle.__drizzle_migrations WHERE created_at = ANY($1::bigint[])",
+      [[predecessor.folderMillis, latest.folderMillis]],
+    );
+    const applied = new Set(journal.rows.map((row) => row.created_at));
+    if (applied.has(String(latest.folderMillis)) && !applied.has(String(predecessor.folderMillis))) {
+      throw new Error("reviewed feedback control migration is missing its monitoring predecessor");
+    }
+    let monitoringPending = false;
+    if (!applied.has(String(latest.folderMillis))) {
+      monitoringPending = await applyReviewedMonitoringDeliveryMigration(
+        pool,
+        sourceReleaseSha,
+        releaseSha,
+        protocol,
+        migrations.slice(0, -1),
+        await readFile(new URL("../drizzle/0062_monitor_delivery_receipt.sql", import.meta.url), "utf8"),
+        { dryRun },
+      );
+      if (dryRun && monitoringPending) return true;
+    }
+    const feedbackPending = await applyReviewedFeedbackControlMigration(
       pool,
-      compatibleSourceReleaseSha(databaseEnvironment),
-      databaseEnvironment.POSTIL_RELEASE_SHA ?? "",
-      requireCompatibleReleaseProtocol(databaseEnvironment),
-      checkedInReleaseMigrations(),
+      sourceReleaseSha,
+      releaseSha,
+      protocol,
+      migrations,
       await readFile(new URL("../drizzle/0063_review_feedback_control.sql", import.meta.url), "utf8"),
       { dryRun },
     );
+    return monitoringPending || feedbackPending;
   } finally {
     if (!existingPool) await pool.end();
   }

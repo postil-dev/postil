@@ -12,6 +12,7 @@ import {
   PRIVATE_REVIEW_AUTHOR_CAPABILITY,
   RELEASE_V1_JOBS_CAPABILITY,
   applyReviewedFeedbackControlMigration,
+  applyReviewedMonitoringDeliveryMigration,
   compatibleManagedReleaseProtocolCapability,
   hostedInferenceCapability,
   prepareCompatibleManagedRelease,
@@ -62,6 +63,173 @@ describe("compatible managed release identity", () => {
       ).toThrow("exact lowercase release SHA");
     }
   });
+});
+
+describeDatabase("managed release upgrade from monitoring migration 0061", () => {
+  const databaseName = `postil_release_upgrade_${process.pid}_${Date.now()}`;
+  const cleanDatabaseName = `${databaseName}_clean`;
+  const sourceRelease = COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS[0]!;
+  const targetRelease = "a".repeat(40);
+  const migrations = checkedInReleaseMigrations();
+  const monitoring = migrations.at(-2)!;
+  const feedback = migrations.at(-1)!;
+  let admin: Client;
+  let pool: Pool;
+  let cleanPool: Pool;
+  let environment: Record<string, string>;
+  let cleanEnvironment: Record<string, string>;
+
+  beforeAll(async () => {
+    admin = new Client({ connectionString: TEST_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+    const url = new URL(TEST_URL!);
+    url.pathname = `/${databaseName}`;
+    const migration = new Client({ connectionString: url.toString() });
+    await migration.connect();
+    for (const file of (await readdir(join(import.meta.dir, "..", "drizzle")))
+      .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !/^006[23]_/.test(name))
+      .sort()) {
+      const source = await readFile(join(import.meta.dir, "..", "drizzle", file), "utf8");
+      for (const statement of source.split("--> statement-breakpoint")) {
+        if (statement.trim()) await migration.query(statement);
+      }
+    }
+    await migration.query("CREATE SCHEMA drizzle");
+    await migration.query(`CREATE TABLE drizzle.__drizzle_migrations (
+      id serial PRIMARY KEY, hash text NOT NULL, created_at bigint
+    )`);
+    for (const identity of migrations.slice(0, -2)) {
+      await migration.query(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+        [identity.hash, identity.folderMillis],
+      );
+    }
+    await migration.end();
+    await admin.query(`CREATE DATABASE "${cleanDatabaseName}" TEMPLATE "${databaseName}"`);
+    pool = new Pool({ connectionString: url.toString() });
+    const cleanUrl = new URL(TEST_URL!);
+    cleanUrl.pathname = `/${cleanDatabaseName}`;
+    cleanPool = new Pool({ connectionString: cleanUrl.toString() });
+    for (const database of [pool, cleanPool]) await database.query(
+      `INSERT INTO deployment_capabilities (name)
+       SELECT unnest($1::text[]) ON CONFLICT (name) DO NOTHING`, [[
+        "publication-lifecycle-fleet-active",
+        "hosted-inference-fleet-active",
+        RELEASE_V1_JOBS_CAPABILITY,
+        PRIVATE_REVIEW_AUTHOR_CAPABILITY,
+        hostedInferenceCapability(sourceRelease),
+      ]],
+    );
+    environment = {
+      DATABASE_URL: url.toString(),
+      POSTIL_MANAGED_RELEASE: "1",
+      POSTIL_RELEASE_SHA: targetRelease,
+      POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA: sourceRelease,
+      POSTIL_RELEASE_PROTOCOL: COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
+    };
+    cleanEnvironment = { ...environment, DATABASE_URL: cleanUrl.toString() };
+  }, 30_000);
+
+  afterAll(async () => {
+    await pool?.end();
+    await cleanPool?.end();
+    if (process.env.POSTIL_KEEP_TEST_DATABASE === "1") {
+      console.error(`Preserved test database ${databaseName}`);
+      console.error(`Preserved test database ${cleanDatabaseName}`);
+    } else {
+      await admin?.query(`DROP DATABASE IF EXISTS "${databaseName}"`);
+      await admin?.query(`DROP DATABASE IF EXISTS "${cleanDatabaseName}"`);
+    }
+    await admin?.end();
+  }, 30_000);
+
+  test("rolls back a failed 0062, then applies 0062 and 0063 once in order", async () => {
+    const commands: string[][] = [];
+    const release = () => runReleaseMigrations(environment,
+      (command) => { commands.push([...command]); return { exited: Promise.resolve(0) }; },
+      undefined, async () => true);
+    const journal = async () => (await pool.query<{ created_at: string; hash: string }>(
+      "SELECT created_at::text, hash FROM drizzle.__drizzle_migrations WHERE created_at >= $1 ORDER BY created_at",
+      [monitoring.folderMillis],
+    )).rows;
+
+    const feedbackSource = await readFile(join(import.meta.dir, "..", "drizzle", "0063_review_feedback_control.sql"), "utf8");
+    await expect(applyReviewedFeedbackControlMigration(pool, sourceRelease, targetRelease,
+      COMPATIBLE_MANAGED_RELEASE_PROTOCOL, migrations, feedbackSource))
+      .rejects.toThrow("pending migrations");
+    expect(await journal()).toEqual([]);
+    const monitoringSource = await readFile(join(import.meta.dir, "..", "drizzle", "0062_monitor_delivery_receipt.sql"), "utf8");
+    await expect(applyReviewedMonitoringDeliveryMigration(pool, sourceRelease, targetRelease,
+      COMPATIBLE_MANAGED_RELEASE_PROTOCOL, migrations.slice(0, -1), monitoringSource + "\n"))
+      .rejects.toThrow("reviewed identity");
+    expect(await journal()).toEqual([]);
+
+    await pool.query(`CREATE FUNCTION reject_monitor_journal_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.created_at = ${monitoring.folderMillis} THEN RAISE EXCEPTION 'injected 0062 journal failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER reject_monitor_journal_insert BEFORE INSERT ON drizzle.__drizzle_migrations
+      FOR EACH ROW EXECUTE FUNCTION reject_monitor_journal_insert()`);
+    await expect(release()).rejects.toThrow("injected 0062 journal failure");
+    expect(await journal()).toEqual([]);
+    expect((await pool.query("SELECT to_regclass('public.review_feedback_control') AS relation")).rows[0].relation).toBeNull();
+    expect((await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name='private_monitor_incidents' AND column_name='last_delivery_receipt'")).rows).toEqual([]);
+    expect(commands).toEqual([]);
+    await pool.query("ALTER TABLE drizzle.__drizzle_migrations DISABLE TRIGGER reject_monitor_journal_insert");
+
+    await pool.query(`CREATE FUNCTION reject_feedback_journal_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.created_at = ${feedback.folderMillis} THEN RAISE EXCEPTION 'injected 0063 journal failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER reject_feedback_journal_insert BEFORE INSERT ON drizzle.__drizzle_migrations
+      FOR EACH ROW EXECUTE FUNCTION reject_feedback_journal_insert()`);
+    await expect(release()).rejects.toThrow("injected 0063 journal failure");
+    expect(await journal()).toEqual([
+      { created_at: String(monitoring.folderMillis), hash: monitoring.hash },
+    ]);
+    expect((await pool.query("SELECT to_regclass('public.review_feedback_control') AS relation")).rows[0].relation).toBeNull();
+    expect(commands).toEqual([]);
+    await pool.query("ALTER TABLE drizzle.__drizzle_migrations DISABLE TRIGGER reject_feedback_journal_insert");
+
+    await release();
+    expect(await journal()).toEqual([
+      { created_at: String(monitoring.folderMillis), hash: monitoring.hash },
+      { created_at: String(feedback.folderMillis), hash: feedback.hash },
+    ]);
+    expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows)
+      .toEqual([{ id: 1, mode: "disabled" }]);
+    expect((await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name='private_monitor_incidents' AND column_name='last_delivery_receipt'")).rows)
+      .toEqual([{ column_name: "last_delivery_receipt" }]);
+    await withHostedInferenceReleaseActive(pool, sourceRelease, async () => {
+      const inserted = await pool.query(
+        "INSERT INTO jobs(kind,payload) VALUES('review',$1::jsonb) RETURNING status",
+        [JSON.stringify({ githubRepoId: 123, repoFullName: "fixture/repository", prNumber: 63, headSha: "d".repeat(40) })],
+      );
+      expect(inserted.rows).toEqual([{ status: "queued" }]);
+    });
+    await release();
+    expect(await journal()).toHaveLength(2);
+    expect(commands).toEqual([
+      ["bun", "run", "hosted:verify-provider"],
+      ["bun", "run", "hosted:verify-provider"],
+    ]);
+  }, 30_000);
+
+  test("upgrades directly from 0061 and leaves a rerun unchanged", async () => {
+    const release = () => runReleaseMigrations(cleanEnvironment,
+      () => ({ exited: Promise.resolve(0) }), undefined, async () => true);
+    await release();
+    const journal = async () => (await cleanPool.query<{ created_at: string; hash: string }>(
+      "SELECT created_at::text, hash FROM drizzle.__drizzle_migrations WHERE created_at >= $1 ORDER BY created_at",
+      [monitoring.folderMillis],
+    )).rows;
+    const expected = [
+      { created_at: String(monitoring.folderMillis), hash: monitoring.hash },
+      { created_at: String(feedback.folderMillis), hash: feedback.hash },
+    ];
+    expect(await journal()).toEqual(expected);
+    await release();
+    expect(await journal()).toEqual(expected);
+    expect((await cleanPool.query("SELECT id, mode FROM review_feedback_control")).rows)
+      .toEqual([{ id: 1, mode: "disabled" }]);
+  }, 30_000);
 });
 
 for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
