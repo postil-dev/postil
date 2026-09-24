@@ -142,6 +142,13 @@ async function defaultPrepareAndVerifyCompatibleRelease(
       requireCompatibleReleaseProtocol(environment),
       checkedInReleaseMigrations(),
     );
+    const feedbackControl = await pool.query<{ id: number; mode: string }>(
+      "SELECT id, mode FROM review_feedback_control",
+    );
+    if (feedbackControl.rows.length !== 1 || feedbackControl.rows[0]?.id !== 1 ||
+        feedbackControl.rows[0].mode !== "disabled") {
+      throw new Error("release feedback control must be disabled");
+    }
   } finally {
     await pool.end();
   }

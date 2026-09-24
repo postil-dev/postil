@@ -82,7 +82,9 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
               "$RUNNER_TEMP/secrets.json" > "$RUNNER_TEMP/next-secrets.json"
             mv "$RUNNER_TEMP/next-secrets.json" "$RUNNER_TEMP/secrets.json"
             printf 'staged\n' ;;
-          "deploy --remote-only") printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
+          "deploy --remote-only")
+            if [[ "\${TEST_RELEASE_COMMAND_FAILURE:-0}" == "1" ]]; then return 1; fi
+            printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
             if [[ "$4" == "bun run jobs:activate-release" ]]; then printf 'activate' >> "$RUNNER_TEMP/updates"; return 0; fi
             local count_file="$RUNNER_TEMP/exec-$3" count=0
@@ -414,6 +416,16 @@ describe("managed deployment contract", () => {
     const deployScript = steps.find((step) => step.id === "deploy")!.run!;
     expect(deployScript.lastIndexOf("flyctl machine list")).toBeGreaterThan(deployScript.indexOf("flyctl secrets list"));
     expect(deployScript.lastIndexOf("flyctl machine list")).toBeLessThan(deployScript.indexOf("flyctl deploy"));
+  });
+
+  test("stops before Machine updates when the Fly release command fails", () => {
+    expect(readFileSync("fly.toml", "utf8"))
+      .toContain('release_command = "bun scripts/start-managed-process.ts release"');
+    const result = runStep("deploy", fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
+      { TEST_RELEASE_COMMAND_FAILURE: "1" });
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("attempted=true");
+    expect(result.updates).toBe("");
   });
 
   test("source feedback preflight checks every approved running Machine before staging", () => {

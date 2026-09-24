@@ -226,6 +226,32 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       }
     }, 30_000);
 
+    test("rejects a rerun unless the applied feedback control remains disabled", async () => {
+      const url = new URL(TEST_URL!);
+      url.pathname = `/${databaseName}`;
+      const environment = {
+        DATABASE_URL: url.toString(),
+        POSTIL_MANAGED_RELEASE: "1",
+        POSTIL_RELEASE_SHA: targetRelease,
+        POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA: sourceRelease,
+        POSTIL_RELEASE_PROTOCOL: COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
+      };
+      const commands: string[][] = [];
+      try {
+        for (const mode of ["enabled", "inherit"]) {
+          await pool.query("UPDATE review_feedback_control SET mode = $1 WHERE id = 1", [mode]);
+          await expect(runReleaseMigrations(environment,
+            (command) => { commands.push([...command]); return { exited: Promise.resolve(0) }; },
+            undefined,
+            async () => false,
+          )).rejects.toThrow("feedback control must be disabled");
+        }
+        expect(commands).toEqual([]);
+      } finally {
+        await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+      }
+    }, 30_000);
+
     test("bootstraps the reviewed protocol and authorizes old and new releases together", async () => {
       await verifyCompatibleManagedRelease(
         pool,
