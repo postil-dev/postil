@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.19",
+    date: "September 30, 2026",
+    summary:
+      "Incremental re-reviews are judged against the complete pull-request change instead of each new commit in isolation.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A follow-up commit that cleans up references to code removed earlier in the pull request is no longer reported as a regression; incremental reviews compare against the complete change under review.",
+      },
+      {
+        label: "Fixed",
+        text: "An unresolved check of a finding on a file deleted later in the pull request no longer fails the whole review.",
+      },
+    ],
+  },
+  {
     version: "0.9.17",
     date: "September 23, 2026",
     summary:
