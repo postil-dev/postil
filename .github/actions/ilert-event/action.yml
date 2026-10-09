@@ -43,12 +43,15 @@ runs:
         if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
           if [[ "${REQUIRE_DELIVERY}" == "true" ]]; then
             # A required event that reached nobody must fail this step.
-            echo "::error title=External alerting is not configured::ILERT_INTEGRATION_KEY is unset, so this ${EVENT_TYPE} reached nobody. Set it in the alerting secret path and run this again."
+            echo "::error title=External alerting is not configured::ILERT_INTEGRATION_KEY is unset, so this ${EVENT_TYPE} reached nobody. Configure the alerting secret and review the failed event in this run."
             {
               echo "### External alert delivery failed"
               echo
               echo "\`ILERT_INTEGRATION_KEY\` is unset, so ilert received nothing."
-              echo "Alert delivery is unavailable; inspect the triggering workflow condition."
+              echo "- **Event:** ${EVENT_TYPE}"
+              echo "- **Summary:** ${SUMMARY}"
+              echo "- **Alert key:** \`${ALERT_KEY}\`"
+              echo "Configure the alerting secret and review the failed event in this run."
             } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             exit 1
           fi
@@ -60,11 +63,6 @@ runs:
             echo "ILERT_INTEGRATION_KEY is not configured; nothing to resolve"
             exit 0
           fi
-          # Undelivered paging is a gap in alerting, not a second production
-          # fault. Failing here adds a red job that carries no information
-          # beyond the check that already failed, and it buries the alert
-          # text that names the condition. Record the event where an operator
-          # will find it and let the failing check remain the only signal.
           echo "::warning title=External alerting is not configured::ILERT_INTEGRATION_KEY is unset, so this ${EVENT_TYPE} was not delivered to ilert. The condition it describes still needs attention."
           {
             echo "### External alert not delivered"

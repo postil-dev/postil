@@ -572,9 +572,7 @@ jobs:
                 && 'Production checks failed. Run log:'
                 || 'Operator-requested test alert; production checks passed. Run log:' }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
-          # A failed monitor, failed recovery, or test alert must expose a
-          # missing integration key as a failed notification job.
-          require-delivery: ${{ inputs.test_alert == true || needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' }}
+          require-delivery: true
 
   resolve-release-recovery:
     name: Resolve release recovery alert

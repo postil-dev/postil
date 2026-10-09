@@ -192,7 +192,7 @@ describe("/api/health/monitor", () => {
 });
 
 describe("production monitor workflow", () => {
-  test("fails a smoke alert with no integration key without attempting delivery", async () => {
+  test("requires notification delivery and preserves optional events", async () => {
     const workflow = parse(
       await readFile(
         new URL("../.github/workflows/production-monitor.yml", import.meta.url),
@@ -201,9 +201,10 @@ describe("production monitor workflow", () => {
     ) as {
       jobs: {
         notify: {
+          if: string;
           steps: Array<{
             name: string;
-            with?: Record<string, string>;
+            with?: Record<string, unknown>;
           }>;
         };
       };
@@ -211,9 +212,10 @@ describe("production monitor workflow", () => {
     const notification = workflow.jobs.notify.steps.find(
       (step) => step.name === "Send ilert event",
     );
-    expect(notification?.with?.["require-delivery"]).toContain(
-      "needs.smoke.result == 'failure'",
+    expect(workflow.jobs.notify.if).toBe(
+      "${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || inputs.test_alert == true) }}",
     );
+    expect(notification?.with?.["require-delivery"]).toBe(true);
 
     const action = parse(
       await readFile(
@@ -256,7 +258,11 @@ describe("production monitor workflow", () => {
       const requiredAlert = run("ALERT", "true");
       expect(requiredAlert.status).toBe(1);
       expect(requiredAlert.stdout).toContain("::error title=External alerting is not configured");
-      expect(await readFile(summary, "utf8")).toContain("### External alert delivery failed");
+      const failureSummary = await readFile(summary, "utf8");
+      expect(failureSummary).toContain("### External alert delivery failed");
+      expect(failureSummary).toContain("**Event:** ALERT");
+      expect(failureSummary).toContain("**Summary:** Postil production monitor failed");
+      expect(failureSummary).toContain("**Alert key:** `postil-production-monitor`");
       expect(await Bun.file(curlMarker).exists()).toBe(false);
 
       const legacyAlert = run("ALERT", "false");
