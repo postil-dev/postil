@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -192,6 +192,109 @@ describe("/api/health/monitor", () => {
 });
 
 describe("production monitor workflow", () => {
+  test("requires notification delivery and preserves optional events", async () => {
+    const workflow = parse(
+      await readFile(
+        new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      jobs: {
+        notify: {
+          if: string;
+          steps: Array<{
+            name: string;
+            with?: Record<string, unknown>;
+          }>;
+        };
+        "resolve-release-recovery": {
+          steps: Array<{ name: string; with?: Record<string, unknown> }>;
+        };
+        resolve: {
+          steps: Array<{ name: string; with?: Record<string, unknown> }>;
+        };
+      };
+    };
+    const notification = workflow.jobs.notify.steps.find(
+      (step) => step.name === "Send ilert event",
+    );
+    expect(workflow.jobs.notify.if).toBe(
+      "${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || inputs.test_alert == true) }}",
+    );
+    expect(notification?.with?.["require-delivery"]).toBe(true);
+    for (const [steps, name] of [
+      [workflow.jobs["resolve-release-recovery"].steps, "Resolve ilert release recovery alert"],
+      [workflow.jobs.resolve.steps, "Resolve ilert alert"],
+    ] as const) {
+      const resolveStep = steps.find((step) => step.name === name);
+      expect(resolveStep).toBeDefined();
+      expect(resolveStep?.with?.["require-delivery"]).toBeUndefined();
+    }
+
+    const action = parse(
+      await readFile(
+        new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as { runs: { steps: Array<{ run: string }> } };
+    const workingDirectory = mkdtempSync(join(tmpdir(), "postil-ilert-action-"));
+    const curlMarker = join(workingDirectory, "curl-invoked");
+    const summary = join(workingDirectory, "summary");
+    const curl = join(workingDirectory, "curl");
+    writeFileSync(curl, `#!/bin/sh\ntouch "${curlMarker}"\nexit 1\n`);
+    chmodSync(curl, 0o700);
+    const environment: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${workingDirectory}:${process.env.PATH ?? ""}`,
+      GITHUB_STEP_SUMMARY: summary,
+      RUNNER_TEMP: workingDirectory,
+      EVENT_TYPE: "ALERT",
+      SUMMARY: "Postil production monitor failed",
+      ALERT_KEY: "postil-production-monitor",
+      DETAILS: "Production checks failed",
+      PRIORITY: "HIGH",
+      REQUIRE_DELIVERY: "true",
+    };
+    delete environment.ILERT_INTEGRATION_KEY;
+
+    try {
+      const run = (eventType: string, requireDelivery: string) =>
+        spawnSync("bash", ["-c", action.runs.steps[0]!.run], {
+          cwd: workingDirectory,
+          env: {
+            ...environment,
+            EVENT_TYPE: eventType,
+            REQUIRE_DELIVERY: requireDelivery,
+          },
+          encoding: "utf8",
+        });
+
+      const requiredAlert = run("ALERT", "true");
+      expect(requiredAlert.status).toBe(1);
+      expect(requiredAlert.stdout).toContain("::error title=External alerting is not configured");
+      const failureSummary = await readFile(summary, "utf8");
+      expect(failureSummary).toContain("### External alert delivery failed");
+      expect(failureSummary).toContain("ilert received nothing.\n\n- **Event:** ALERT");
+      expect(failureSummary).toContain("**Event:** ALERT");
+      expect(failureSummary).toContain("**Summary:** Postil production monitor failed");
+      expect(failureSummary).toContain("**Alert key:** `postil-production-monitor`");
+      expect(failureSummary).toContain("**Alert key:** `postil-production-monitor`\n\nConfigure the alerting secret");
+      expect(await Bun.file(curlMarker).exists()).toBe(false);
+
+      const legacyAlert = run("ALERT", "false");
+      expect(legacyAlert.status).toBe(0);
+      expect(legacyAlert.stdout).toContain("::warning title=External alerting is not configured");
+      expect(await Bun.file(curlMarker).exists()).toBe(false);
+
+      const resolve = run("RESOLVE", "false");
+      expect(resolve.status).toBe(0);
+      expect(resolve.stdout).toContain("nothing to resolve");
+      expect(await Bun.file(curlMarker).exists()).toBe(false);
+    } finally {
+      rmSync(workingDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {
     const source = await readFile(
       new URL("../.github/workflows/production-monitor.yml", import.meta.url),

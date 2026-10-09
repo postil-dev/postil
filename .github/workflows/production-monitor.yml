@@ -572,10 +572,7 @@ jobs:
                 && 'Production checks failed. Run log:'
                 || 'Operator-requested test alert; production checks passed. Run log:' }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
-          # A routine monitor failure records an alerting gap without masking
-          # the original signal. Recovery failure and test events require
-          # delivery because they validate the fail-safe notification path.
-          require-delivery: ${{ inputs.test_alert == true || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' }}
+          require-delivery: true
 
   resolve-release-recovery:
     name: Resolve release recovery alert
