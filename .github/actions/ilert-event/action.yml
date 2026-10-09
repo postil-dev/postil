@@ -48,9 +48,11 @@ runs:
               echo "### External alert delivery failed"
               echo
               echo "\`ILERT_INTEGRATION_KEY\` is unset, so ilert received nothing."
+              echo
               echo "- **Event:** ${EVENT_TYPE}"
               echo "- **Summary:** ${SUMMARY}"
               echo "- **Alert key:** \`${ALERT_KEY}\`"
+              echo
               echo "Configure the alerting secret and review the failed event in this run."
             } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             exit 1

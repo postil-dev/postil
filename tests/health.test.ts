@@ -207,6 +207,12 @@ describe("production monitor workflow", () => {
             with?: Record<string, unknown>;
           }>;
         };
+        "resolve-release-recovery": {
+          steps: Array<{ name: string; with?: Record<string, unknown> }>;
+        };
+        resolve: {
+          steps: Array<{ name: string; with?: Record<string, unknown> }>;
+        };
       };
     };
     const notification = workflow.jobs.notify.steps.find(
@@ -216,6 +222,14 @@ describe("production monitor workflow", () => {
       "${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || inputs.test_alert == true) }}",
     );
     expect(notification?.with?.["require-delivery"]).toBe(true);
+    for (const [steps, name] of [
+      [workflow.jobs["resolve-release-recovery"].steps, "Resolve ilert release recovery alert"],
+      [workflow.jobs.resolve.steps, "Resolve ilert alert"],
+    ] as const) {
+      const resolveStep = steps.find((step) => step.name === name);
+      expect(resolveStep).toBeDefined();
+      expect(resolveStep?.with?.["require-delivery"]).toBeUndefined();
+    }
 
     const action = parse(
       await readFile(
@@ -260,9 +274,11 @@ describe("production monitor workflow", () => {
       expect(requiredAlert.stdout).toContain("::error title=External alerting is not configured");
       const failureSummary = await readFile(summary, "utf8");
       expect(failureSummary).toContain("### External alert delivery failed");
+      expect(failureSummary).toContain("ilert received nothing.\n\n- **Event:** ALERT");
       expect(failureSummary).toContain("**Event:** ALERT");
       expect(failureSummary).toContain("**Summary:** Postil production monitor failed");
       expect(failureSummary).toContain("**Alert key:** `postil-production-monitor`");
+      expect(failureSummary).toContain("**Alert key:** `postil-production-monitor`\n\nConfigure the alerting secret");
       expect(await Bun.file(curlMarker).exists()).toBe(false);
 
       const legacyAlert = run("ALERT", "false");
