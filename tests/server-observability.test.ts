@@ -185,6 +185,10 @@ describe("server operational observability", () => {
     observability.reportModelIncident(recoveredIncident);
     observability.reportModelIncident(unrecoveredIncident);
     observability.reportModelIncident({
+      phase: "review", category: "coverageCapacity", recovered: false,
+      source: "coverage_receipt",
+    });
+    observability.reportModelIncident({
       phase: hostile,
       category: hostile,
       recovered: false,
@@ -217,11 +221,12 @@ describe("server operational observability", () => {
     }
     await observability.shutdown();
 
-    expect(postHogBatchSize(requests)).toBe(2);
+    expect(postHogBatchSize(requests)).toBe(3);
     const outbound = requests.join("\n");
     expect(outbound).toContain("postil_model_incident");
     expect(outbound).toContain("invalidOutput");
     expect(outbound).toContain("providerError");
+    expect(outbound).toContain("coverageCapacity");
     expect(outbound).not.toContain(hostile);
     expect(exporter.records.map((record) => record.attributes)).toEqual([
       {
@@ -240,6 +245,14 @@ describe("server operational observability", () => {
         "incident.category": "providerError",
         "incident.recovered": false,
         "incident.source": "provider_sentinel",
+      },
+      {
+        "event.name": "postil.model.incident",
+        outcome: "failure",
+        "incident.phase": "review",
+        "incident.category": "coverageCapacity",
+        "incident.recovered": false,
+        "incident.source": "coverage_receipt",
       },
     ]);
     expect(JSON.stringify(exporter.records)).not.toContain(hostile);

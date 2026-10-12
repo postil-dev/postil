@@ -87,7 +87,7 @@ const ilertWebhookSchema = z.object({
     name: z.string().min(1).max(256),
   }),
   mergeState: z.enum(["NONE", "MAIN", "MERGED"]),
-  alertKey: z.string().min(1).max(512).optional(),
+  alertKey: z.string().max(512).optional(),
   resolvedOn: boundedTimestamp.optional(),
   mergedOn: boundedTimestamp.optional(),
   mergedIntoId: z.string().regex(/^[1-9][0-9]{0,63}$/u).optional(),
@@ -234,7 +234,9 @@ export async function recordIlertAlertEvent(
       .values({
         eventId: event.eventId,
         alertId: event.id,
-        alertKey: event.alertKey ?? null,
+        // iLert may send an empty key for an alert without one; the column
+        // holds NULL for every event that carries no usable key.
+        alertKey: event.alertKey || null,
         eventType: event.eventType,
         status: event.status,
         priority: event.priority,

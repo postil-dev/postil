@@ -136,6 +136,7 @@ async function main(): Promise<void> {
         runPublicMonitoringChecks(publicOrigin),
         runDatabaseMonitoringChecks(pool, {
           workerHeartbeatMaxAgeSeconds,
+          externalHeartbeatConfigured: Boolean(heartbeatUrl),
         }),
         runOpenRouterCapMonitoringChecks({
           managementKey: openRouterManagementKey,
@@ -143,12 +144,21 @@ async function main(): Promise<void> {
           reviewOutageThresholdUsd: openRouterReviewOutageThresholdUsd,
         }),
       ]);
-      await finishPrivateMonitoringPass(
-        pool,
-        pass,
-        [...publicChecks, ...databaseChecks, ...openRouterChecks],
-        new Date(),
-      );
+      const checks = [...publicChecks, ...databaseChecks, ...openRouterChecks];
+      await finishPrivateMonitoringPass(pool, pass, checks, new Date());
+      // Failure evidence goes to the process log as well as the database so
+      // platform log capture retains it independently of incident state.
+      for (const check of checks) {
+        if (!check.healthy) {
+          console.error(
+            `[monitor] check ${check.key} unhealthy (${check.severity}): ${check.detail}`,
+          );
+        } else if ((check.attemptFailures?.length ?? 0) > 0) {
+          console.warn(
+            `[monitor] check ${check.key} recovered on attempt ${check.attempts}: ${check.attemptFailures?.[0]}`,
+          );
+        }
+      }
       await recordServiceHeartbeat(pool, "monitor", owner, new Date());
       monitorFailureState = recordMonitorPassSuccess(monitorFailureState);
 

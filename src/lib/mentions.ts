@@ -35,6 +35,11 @@ export function removePostilMentions(text: string): string {
   );
 }
 
+/** Remove one attribution marker only when it precedes a command. */
+function commandProse(text: string): string {
+  return stripCode(text).trim().replace(/^🤖 /u, "");
+}
+
 /**
  * An exact request to run the structured pull-request reviewer.
  *
@@ -45,9 +50,7 @@ export function removePostilMentions(text: string): string {
  */
 export function isPostilReviewCommand(text: string | undefined | null): boolean {
   if (!text) return false;
-  const prose = stripCode(text)
-    .trim()
-    .replace(/\s+/g, " ");
+  const prose = commandProse(text).replace(/\s+/g, " ");
   const boundary = prose.search(/[.!?]\s+/u);
   const firstSentence = (boundary === -1 ? prose : prose.slice(0, boundary + 1)).replace(
     /[.!?]+$/,
@@ -75,7 +78,7 @@ export function parsePostilApproveCommand(
   text: string | undefined | null,
 ): PostilApproveCommand | null {
   if (!text) return null;
-  const prose = stripCode(text).trim();
+  const prose = commandProse(text);
   const handle = handlePattern();
   if (!new RegExp(`^@${handle}(?:\\s|$)`, "i").test(prose)) return null;
   if (!new RegExp(`^@${handle}\\s+approve(?:\\s|$)`, "i").test(prose)) return null;
@@ -110,7 +113,7 @@ export function parsePostilDismissCommand(
   text: string | undefined | null,
 ): PostilDismissCommand | null {
   if (!text) return null;
-  const prose = stripCode(text).trim();
+  const prose = commandProse(text);
   const handle = handlePattern();
   if (!new RegExp(`^@${handle}(?:\\s|$)`, "i").test(prose)) return null;
   if (!new RegExp(`^@${handle}\\s+dismiss(?:\\s|$)`, "i").test(prose)) return null;

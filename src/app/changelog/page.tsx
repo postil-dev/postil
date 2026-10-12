@@ -35,6 +35,54 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.19",
+    date: "September 30, 2026",
+    summary:
+      "Incremental re-reviews are judged against the complete pull-request change instead of each new commit in isolation.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A follow-up commit that cleans up references to code removed earlier in the pull request is no longer reported as a regression; incremental reviews compare against the complete change under review.",
+      },
+      {
+        label: "Fixed",
+        text: "An unresolved check of a finding on a file deleted later in the pull request no longer fails the whole review.",
+      },
+    ],
+  },
+  {
+    version: "0.9.17",
+    date: "September 23, 2026",
+    summary:
+      "Hosted reviews keep blocking findings tied to the changes under review.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A new finding on unchanged code must cite an exact added or removed line as its cause before it can block a pull request. Complete diff evidence excludes new findings that predate the change; existing published findings keep their recorded state.",
+      },
+      {
+        label: "Fixed",
+        text: "Review summaries group duplicate suppressed copies separately and avoid repeating their inline finding text.",
+      },
+    ],
+  },
+  {
+    version: "0.9.8",
+    date: "September 11, 2026",
+    summary:
+      "Hosted reviews cover more changed source within their review limits and recover from unsupported dismissals through independent scoring.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Large hosted reviews use the available review budget to cover more changed source. When required source remains unreviewed, the review reports incomplete coverage and keeps the gate blocked.",
+      },
+      {
+        label: "Fixed",
+        text: "Reviews can recover from unsupported dismissals of new findings after a complete independent scoring check. Those findings are suppressed only when scored below the reporting threshold. An unavailable or incomplete check preserves findings and prior review state and keeps the gate blocked.",
+      },
+    ],
+  },
+  {
     version: "0.9.4",
     date: "August 27, 2026",
     summary:

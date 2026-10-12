@@ -4,8 +4,11 @@ import { join } from "node:path";
 
 import { Client, Pool } from "pg";
 
-import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
-import alertKeySnapshot from "../drizzle/meta/0060_snapshot.json";
+import {
+  ensureOperationalIndexes,
+  MANAGED_RELEASE_OPERATIONAL_INDEXES,
+} from "../scripts/ensure-operational-indexes";
+import alertKeySnapshot from "../drizzle/meta/0064_snapshot.json";
 
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
@@ -14,7 +17,7 @@ describe("iLert canary alert key migration metadata", () => {
   test("records the applied schema as the latest generated snapshot", async () => {
     const previousSnapshot = JSON.parse(
       await readFile(
-        new URL("../drizzle/meta/0059_snapshot.json", import.meta.url),
+        new URL("../drizzle/meta/0063_snapshot.json", import.meta.url),
         "utf8",
       ),
     ) as { id: string };
@@ -71,10 +74,10 @@ describe("iLert canary alert key migration metadata", () => {
       events.checkConstraints.ilert_alert_events_alert_key_check?.value,
     ).toContain('length("ilert_alert_events"."alert_key") BETWEEN 1 AND 512');
     expect(journal.entries.at(-1)).toEqual({
-      idx: 59,
+      idx: 63,
       version: "7",
-      when: 1788454502113,
-      tag: "0060_ilert_canary_alert_key",
+      when: 1791572108139,
+      tag: "0064_ilert_canary_alert_key",
       breakpoints: true,
     });
   });
@@ -106,7 +109,7 @@ describeDb("iLert canary alert key migration", () => {
 
     const migrationsDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDirectory))
-      .filter((file) => file.endsWith(".sql") && file < "0060_")
+      .filter((file) => file.endsWith(".sql") && file < "0064_")
       .sort();
     for (const migration of migrations) {
       await applyMigration(client, join(migrationsDirectory, migration));
@@ -128,8 +131,11 @@ describeDb("iLert canary alert key migration", () => {
        ) AS completed`,
     )).rows[0]?.completed ?? false;
 
+    // A row written before the migration stands in for existing production data.
+    await insertAlertEvent(client, PRE_MIGRATION_EVENT_ID);
+
     migrationSource = await readFile(
-      join(migrationsDirectory, "0060_ilert_canary_alert_key.sql"),
+      join(migrationsDirectory, "0064_ilert_canary_alert_key.sql"),
       "utf8",
     );
     await client.query("BEGIN");
@@ -178,6 +184,78 @@ describeDb("iLert canary alert key migration", () => {
        ) AS exists`,
     );
     expect(column.rows[0]?.exists).toBe(true);
+  });
+
+  test("adds the alert key check without validating existing rows", async () => {
+    expect(migrationSource).toContain(
+      'ADD CONSTRAINT "ilert_alert_events_alert_key_check" CHECK',
+    );
+    expect(migrationSource.trimEnd().endsWith(" NOT VALID;")).toBe(true);
+    expect(migrationSource).not.toContain("VALIDATE CONSTRAINT");
+
+    const constraint = await client!.query<{
+      definition: string;
+      type: string;
+      validated: boolean;
+    }>(
+      `SELECT pg_get_constraintdef(oid) AS definition,
+              contype::text AS type,
+              convalidated AS validated
+         FROM pg_constraint
+        WHERE conrelid = 'public.ilert_alert_events'::regclass
+          AND conname = 'ilert_alert_events_alert_key_check'`,
+    );
+    expect(constraint.rows).toEqual([
+      {
+        definition: expect.stringMatching(/^CHECK \(.*alert_key.*\) NOT VALID$/),
+        type: "c",
+        validated: false,
+      },
+    ]);
+    const existing = await client!.query<{ alert_key: string | null }>(
+      "SELECT alert_key FROM ilert_alert_events WHERE event_id = $1",
+      [PRE_MIGRATION_EVENT_ID],
+    );
+    expect(existing.rows).toEqual([{ alert_key: null }]);
+  });
+
+  test("enforces the alert key check on every new and updated row", async () => {
+    const boundaryKey = "k".repeat(512);
+    // The deployed release writes rows without naming the new column.
+    await insertAlertEvent(client!, "00000000-0000-4000-8000-000000000002");
+    await insertAlertEvent(client!, "00000000-0000-4000-8000-000000000003", null);
+    await insertAlertEvent(client!, "00000000-0000-4000-8000-000000000004", "k");
+    await insertAlertEvent(client!, "00000000-0000-4000-8000-000000000005", boundaryKey);
+
+    for (const [eventId, invalid] of [
+      ["00000000-0000-4000-8000-000000000006", ""],
+      ["00000000-0000-4000-8000-000000000007", `${boundaryKey}k`],
+    ] as const) {
+      await expect(insertAlertEvent(client!, eventId, invalid)).rejects.toMatchObject({
+        code: "23514",
+        constraint: "ilert_alert_events_alert_key_check",
+      });
+      await expect(client!.query(
+        "UPDATE ilert_alert_events SET alert_key = $2 WHERE event_id = $1",
+        [PRE_MIGRATION_EVENT_ID, invalid],
+      )).rejects.toMatchObject({
+        code: "23514",
+        constraint: "ilert_alert_events_alert_key_check",
+      });
+    }
+
+    const stored = await client!.query<{ event_id: string; key_length: number | null }>(
+      `SELECT event_id::text, length(alert_key) AS key_length
+         FROM ilert_alert_events
+        ORDER BY event_id`,
+    );
+    expect(stored.rows).toEqual([
+      { event_id: PRE_MIGRATION_EVENT_ID, key_length: null },
+      { event_id: "00000000-0000-4000-8000-000000000002", key_length: null },
+      { event_id: "00000000-0000-4000-8000-000000000003", key_length: null },
+      { event_id: "00000000-0000-4000-8000-000000000004", key_length: 1 },
+      { event_id: "00000000-0000-4000-8000-000000000005", key_length: 512 },
+    ]);
   });
 
   test("repairs and idempotently verifies the exact partial composite index", async () => {
@@ -229,7 +307,133 @@ describeDb("iLert canary alert key migration", () => {
       },
     ]);
   });
+
+  test("leaves a valid index with an unexpected definition in place and fails closed", async () => {
+    // A unique index under the repairable name still enforces an invariant.
+    const canaryIndex = "ilert_alert_events_canary_observation_idx";
+    await client!.query(`DROP INDEX "${canaryIndex}"`);
+    await client!.query(
+      `CREATE UNIQUE INDEX "${canaryIndex}" ON "ilert_alert_events" ("event_id")`,
+    );
+    const uniqueCanary = await indexIdentity(client!, canaryIndex);
+    expect(uniqueCanary).toMatchObject({ unique: true, valid: true });
+    await expect(ensureOperationalIndexes(pool!)).rejects.toThrow(
+      `operational index ${canaryIndex} has an unexpected definition`,
+    );
+    expect(await indexIdentity(client!, canaryIndex)).toEqual(uniqueCanary);
+
+    await client!.query(`DROP INDEX "${canaryIndex}"`);
+    expect(await ensureOperationalIndexes(pool!)).toEqual(firstReconciliation);
+
+    // Indexes that predate the canary lookup never opt in to repair, whether
+    // or not the drifted index is unique.
+    for (const [name, drifted] of [
+      [
+        "finding_approvals_github_delivery_idx",
+        'CREATE UNIQUE INDEX "finding_approvals_github_delivery_idx" ON "finding_approvals" ("id")',
+      ],
+      [
+        "reviews_running_started_at_idx",
+        'CREATE INDEX "reviews_running_started_at_idx" ON "reviews" ("id")',
+      ],
+    ] as const) {
+      const expected = (await client!.query<{ definition: string }>(
+        "SELECT pg_get_indexdef(to_regclass($1)) AS definition",
+        [`public.${name}`],
+      )).rows[0]!.definition;
+      await client!.query(`DROP INDEX "${name}"`);
+      await client!.query(drifted);
+      const before = await indexIdentity(client!, name);
+      expect(before?.valid).toBe(true);
+      await expect(ensureOperationalIndexes(pool!)).rejects.toThrow(
+        `operational index ${name} has an unexpected definition`,
+      );
+      expect(await indexIdentity(client!, name)).toEqual(before);
+      await client!.query(`DROP INDEX "${name}"`);
+      await client!.query(expected);
+    }
+    expect(await ensureOperationalIndexes(pool!)).toEqual(firstReconciliation);
+  }, 60_000);
+
+  test("builds only the canary index on the managed release path", async () => {
+    const canaryIndex = "ilert_alert_events_canary_observation_idx";
+    const unrelated = "reviews_running_started_at_idx";
+    const expected = (await client!.query<{ definition: string }>(
+      "SELECT pg_get_indexdef(to_regclass($1)) AS definition",
+      [`public.${unrelated}`],
+    )).rows[0]!.definition;
+    const releaseStep = async () => (await client!.query<{ completed_at: Date; details: unknown }>(
+      "SELECT completed_at, details FROM release_steps WHERE name = 'operational-indexes-v6'",
+    )).rows;
+    const stepBefore = await releaseStep();
+    expect(stepBefore).toHaveLength(1);
+
+    // The managed path neither inspects nor repairs an unrelated index.
+    await client!.query(`DROP INDEX "${unrelated}"`);
+    await client!.query(`CREATE INDEX "${unrelated}" ON "reviews" ("id")`);
+    const driftedUnrelated = await indexIdentity(client!, unrelated);
+    await client!.query(`DROP INDEX "${canaryIndex}"`);
+
+    expect(MANAGED_RELEASE_OPERATIONAL_INDEXES).toEqual([canaryIndex]);
+    expect(await ensureOperationalIndexes(pool!, { managedRelease: true })).toEqual([
+      canaryIndex,
+    ]);
+    expect(await indexIdentity(client!, canaryIndex)).toMatchObject({
+      unique: false,
+      valid: true,
+    });
+    expect(await indexIdentity(client!, unrelated)).toEqual(driftedUnrelated);
+    expect(await releaseStep()).toEqual(stepBefore);
+    expect((await client!.query<{ statement_timeout: string }>(
+      "SELECT current_setting('statement_timeout') AS statement_timeout",
+    )).rows[0]?.statement_timeout).toBe("0");
+    const pooled = await pool!.query<{ statement_timeout: string }>(
+      "SELECT current_setting('statement_timeout') AS statement_timeout",
+    );
+    expect(pooled.rows[0]?.statement_timeout).toBe("0");
+    // A second managed run verifies the built index without rebuilding it.
+    const built = await indexIdentity(client!, canaryIndex);
+    await ensureOperationalIndexes(pool!, { managedRelease: true });
+    expect(await indexIdentity(client!, canaryIndex)).toEqual(built);
+
+    await client!.query(`DROP INDEX "${unrelated}"`);
+    await client!.query(expected);
+    expect(await ensureOperationalIndexes(pool!)).toEqual(firstReconciliation);
+  }, 60_000);
 });
+
+const PRE_MIGRATION_EVENT_ID = "00000000-0000-4000-8000-000000000001";
+
+/** Insert one event, naming the alert key column only when a key is supplied. */
+async function insertAlertEvent(
+  client: Client,
+  eventId: string,
+  alertKey?: string | null,
+): Promise<void> {
+  const keyed = alertKey !== undefined;
+  await client.query(
+    `INSERT INTO ilert_alert_events
+       (event_id, alert_id, event_type, status, priority, summary, details,
+        alert_source_id, alert_source_name, report_time, occurred_at,
+        payload_sha256${keyed ? ", alert_key" : ""})
+     VALUES ($1, '20000001', 'alert-created', 'PENDING', 'HIGH', 'Fixture alert',
+             '', 2269078, 'Postil production', now(), now(), repeat('a', 64)${keyed ? ", $2" : ""})`,
+    keyed ? [eventId, alertKey] : [eventId],
+  );
+}
+
+async function indexIdentity(
+  client: Client,
+  name: string,
+): Promise<{ oid: string; unique: boolean; valid: boolean } | null> {
+  const result = await client.query<{ oid: string; unique: boolean; valid: boolean }>(
+    `SELECT indexrelid::text AS oid, indisunique AS unique, indisvalid AS valid
+       FROM pg_index
+      WHERE indexrelid = to_regclass($1)`,
+    [`public.${name}`],
+  );
+  return result.rows[0] ?? null;
+}
 
 async function applyMigration(client: Client, path: string): Promise<void> {
   const sql = await readFile(path, "utf8");

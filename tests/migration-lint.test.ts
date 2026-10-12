@@ -414,7 +414,7 @@ describe("migration lint", () => {
         import.meta.dir,
         "..",
         "drizzle",
-        "0060_ilert_canary_alert_key.sql",
+        "0064_ilert_canary_alert_key.sql",
       ),
       "utf8",
     );
@@ -448,6 +448,11 @@ describe("migration lint", () => {
       "hashtextextended('postil:publication-lifecycle-release-v2', 0)",
     );
     expect(ilertCanaryAlertKeyMigration).not.toContain("CREATE INDEX");
+    // Validating the check would scan the live table under its exclusive lock.
+    expect(ilertCanaryAlertKeyMigration).toMatch(
+      /ADD CONSTRAINT "ilert_alert_events_alert_key_check" CHECK \(.*\) NOT VALID;\s*$/,
+    );
+    expect(ilertCanaryAlertKeyMigration).not.toContain("VALIDATE CONSTRAINT");
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx"',
     );

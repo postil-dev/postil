@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { Pool, PoolClient } from "pg";
 
@@ -21,13 +21,22 @@ export const RELEASE_V1_JOB_KINDS = [
   "webhook-comment",
 ] as const;
 
-const CAPABILITY = "release-v1-jobs";
+export const RELEASE_V1_JOBS_CAPABILITY = "release-v1-jobs";
 const ADVISORY_LOCK_NAME = "postil:release-v1-jobs";
 export const PRIVATE_REVIEW_AUTHOR_CAPABILITY = "private-review-author-v1";
 const PRIVATE_REVIEW_AUTHOR_LOCK = "postil:private-review-author-v1";
 const HOSTED_INFERENCE_CAPABILITY_PREFIX = "hosted-inference-release:";
 const HOSTED_INFERENCE_DARK_PREFIX = "hosted-inference-dark:";
 const MANAGED_RELEASE_PREPARATION_PREFIX = "managed-release-preparation:";
+const MANAGED_RELEASE_PROTOCOL_PREFIX = "managed-release-protocol:";
+export const COMPATIBLE_MANAGED_RELEASE_PROTOCOL =
+  "additive-publication-hosted-v1";
+export const COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHA =
+  "35dd695af19e817bd7b87be5be808b45cefaa7a7";
+export const COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS: readonly string[] = [
+  COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHA,
+  "2a36982828c85d1c700f8a60a0956596e2e9a178",
+];
 export const HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY =
   "hosted-inference-fleet-active";
 export const HOSTED_INFERENCE_LOCK = "postil:hosted-inference-release";
@@ -37,6 +46,8 @@ const PUBLICATION_LIFECYCLE_DARK_PAYLOAD_KEY =
   "_postilPublicationLifecycleDark";
 const PUBLICATION_LIFECYCLE_LOCK_TIMEOUT_MS = 30_000;
 const LEGACY_PUBLICATION_DRAIN_TIMEOUT_MS = 120_000;
+const COMPATIBLE_RELEASE_LOCK_TIMEOUT = "5s";
+const COMPATIBLE_RELEASE_STATEMENT_TIMEOUT = "30s";
 
 function databaseClientError(error: unknown, fallback: string): Error {
   return error instanceof Error ? error : new Error(fallback);
@@ -350,7 +361,7 @@ export async function activatePublicationLifecycleRelease(
          AND NOT EXISTS (
            SELECT 1
              FROM jobs AS active_recovery
-            WHERE active_recovery.kind = 'review'
+            WHERE active_recovery.kind IN ('review', 'review-feedback')
               AND active_recovery.status IN ('queued', 'running')
               AND active_recovery.payload->>'recoveryReviewId' = review.id::text
          )`,
@@ -429,6 +440,530 @@ function normalizedReleaseSha(releaseSha: string): string {
     throw new Error("hosted inference activation requires a release SHA");
   }
   return normalized;
+}
+
+function normalizedManagedReleaseSha(releaseSha: string): string {
+  if (!/^[0-9a-f]{40}$/.test(releaseSha)) {
+    throw new Error(
+      "managed release compatibility requires an exact lowercase release SHA",
+    );
+  }
+  return releaseSha;
+}
+
+export interface ManagedReleaseMigrationIdentity {
+  folderMillis: number;
+  hash: string;
+}
+
+const REVIEWED_ADDITIVE_MIGRATION = {
+  folderMillis: 1790035237566,
+  hash: "1844328bea9c5817896c9d6a56075879168781379c7d959022c8dd34bbce89da",
+} as const;
+
+const REVIEWED_MONITOR_DELIVERY_MIGRATION = {
+  folderMillis: 1790162457485,
+  hash: "210d4d77736bc55ffd6975b72967c4d0ba91ebffcba80e5242600e895cfd908e",
+} as const;
+
+const REVIEWED_FEEDBACK_CONTROL_MIGRATION = {
+  folderMillis: 1790186892052,
+  hash: "ae760e265f2a6f6fbaf1bad71c6e3552bb25f819a285f8e9f02db2f7a110d8d8",
+} as const;
+
+const REVIEWED_ILERT_CANARY_ALERT_KEY_MIGRATION = {
+  folderMillis: 1791572108139,
+  hash: "5c86858f27d8b7311bbe863468b421648dbe8a76853680f93a56425acdadb9c4",
+} as const;
+
+/** Apply the alert key column only after the reviewed feedback control schema. */
+export async function applyReviewedIlertCanaryAlertKeyMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const predecessor = migrations.filter((migration) =>
+    migration.folderMillis < REVIEWED_ILERT_CANARY_ALERT_KEY_MIGRATION.folderMillis
+  ).sort((left, right) => right.folderMillis - left.folderMillis)[0];
+  if (predecessor?.folderMillis !== REVIEWED_FEEDBACK_CONTROL_MIGRATION.folderMillis ||
+      predecessor.hash !== REVIEWED_FEEDBACK_CONTROL_MIGRATION.hash) {
+    throw new Error("alert key migration requires the reviewed feedback control predecessor");
+  }
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_ILERT_CANARY_ALERT_KEY_MIGRATION, options);
+}
+
+/** Apply the feedback control only after the reviewed monitor delivery schema. */
+export async function applyReviewedFeedbackControlMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const predecessor = migrations.filter((migration) =>
+    migration.folderMillis < REVIEWED_FEEDBACK_CONTROL_MIGRATION.folderMillis
+  ).sort((left, right) => right.folderMillis - left.folderMillis)[0];
+  if (predecessor?.folderMillis !== REVIEWED_MONITOR_DELIVERY_MIGRATION.folderMillis ||
+      predecessor.hash !== REVIEWED_MONITOR_DELIVERY_MIGRATION.hash) {
+    throw new Error("feedback control migration requires the reviewed monitor delivery predecessor");
+  }
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_FEEDBACK_CONTROL_MIGRATION, options);
+}
+
+/** Apply only the reviewed delivery receipt transition from the feedback schema. */
+export async function applyReviewedMonitoringDeliveryMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const predecessor = migrations.filter((migration) =>
+    migration.folderMillis < REVIEWED_MONITOR_DELIVERY_MIGRATION.folderMillis
+  ).sort((left, right) => right.folderMillis - left.folderMillis)[0];
+  if (predecessor?.folderMillis !== REVIEWED_ADDITIVE_MIGRATION.folderMillis ||
+      predecessor.hash !== REVIEWED_ADDITIVE_MIGRATION.hash) {
+    throw new Error("monitor delivery migration requires the reviewed feedback predecessor");
+  }
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_MONITOR_DELIVERY_MIGRATION, options);
+}
+
+/** Apply only the reviewed feedback migration while preserving source capabilities. */
+export async function applyReviewedManagedReleaseMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_ADDITIVE_MIGRATION, options);
+}
+
+async function applyExactReviewedMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  reviewed: ManagedReleaseMigrationIdentity,
+  options: { dryRun?: boolean },
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const identity = migrations.find(
+    (migration) => migration.folderMillis === reviewed.folderMillis,
+  );
+  if (identity?.hash !== reviewed.hash ||
+      createHash("sha256").update(source).digest("hex") !== reviewed.hash) {
+    throw new Error("managed additive migration does not match its reviewed identity");
+  }
+  return withCompatibleManagedReleaseState(
+    pool, sourceReleaseSha, releaseSha, protocol, migrations,
+    { readOnly: options.dryRun === true, requirePreparedRelease: false,
+      lockLifecycle: options.dryRun !== true, reviewedMigration: { source, identity: reviewed } },
+    async (_client, state) => state.migrationApplied,
+  );
+}
+
+function requireCompatibleManagedReleaseProtocol(protocol: string): void {
+  if (protocol !== COMPATIBLE_MANAGED_RELEASE_PROTOCOL) {
+    throw new Error(
+      `managed release protocol must be ${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}`,
+    );
+  }
+}
+
+export function compatibleManagedReleaseProtocolCapability(
+  releaseSha: string,
+): string {
+  return `${MANAGED_RELEASE_PROTOCOL_PREFIX}${normalizedManagedReleaseSha(releaseSha)}:${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}`;
+}
+
+function checkedMigrationIdentities(
+  expected: readonly ManagedReleaseMigrationIdentity[],
+): Map<string, ManagedReleaseMigrationIdentity> {
+  if (
+    expected.length === 0 ||
+    expected.some(
+      (migration) =>
+        !Number.isSafeInteger(migration.folderMillis) ||
+        migration.folderMillis <= 0 ||
+        !/^[0-9a-f]{64}$/.test(migration.hash),
+    )
+  ) {
+    throw new Error("checked-in managed release migration identities are invalid");
+  }
+  const expectedByCreatedAt = new Map(
+    expected.map((migration) => [String(migration.folderMillis), migration]),
+  );
+  if (expectedByCreatedAt.size !== expected.length) {
+    throw new Error("checked-in managed release migration identities are invalid");
+  }
+  return expectedByCreatedAt;
+}
+
+async function assertManagedReleaseMigrationsCurrent(
+  client: PoolClient,
+  expected: readonly ManagedReleaseMigrationIdentity[],
+): Promise<void> {
+  const expectedByCreatedAt = checkedMigrationIdentities(expected);
+  const table = await client.query<{ present: boolean }>(
+    `SELECT to_regclass('drizzle.__drizzle_migrations') IS NOT NULL AS present`,
+  );
+  if (table.rows[0]?.present !== true) {
+    throw new Error("managed release migration journal is missing");
+  }
+  const actual = await client.query<{ hash: string; created_at: string }>(
+    `SELECT hash, created_at::text
+       FROM drizzle.__drizzle_migrations`,
+  );
+  const actualByCreatedAt = new Map<string, string>();
+  const unknown = actual.rows.some((migration) => {
+    if (
+      !expectedByCreatedAt.has(migration.created_at) ||
+      actualByCreatedAt.has(migration.created_at)
+    ) {
+      return true;
+    }
+    actualByCreatedAt.set(migration.created_at, migration.hash);
+    return false;
+  });
+  if (unknown) {
+    throw new Error(
+      "managed release migration journal has unknown migrations " +
+        `(database=${actual.rows.length}, checked_in=${expected.length})`,
+    );
+  }
+  for (const [createdAt, actualHash] of actualByCreatedAt) {
+    if (actualHash !== expectedByCreatedAt.get(createdAt)!.hash) {
+      throw new Error(
+        `managed release migration journal mismatch at ${createdAt}`,
+      );
+    }
+  }
+  // Drizzle applies migrations above its recorded timestamp watermark.
+  // Older journal gaps can coexist with later migrations that repair their schema.
+  const latestExpected = expected.reduce((latest, migration) =>
+    migration.folderMillis > latest.folderMillis ? migration : latest,
+  );
+  if (
+    actualByCreatedAt.get(String(latestExpected.folderMillis)) !== latestExpected.hash
+  ) {
+    throw new Error("managed release migration journal has pending migrations");
+  }
+}
+
+async function assertCompatibleManagedReleaseDatabaseState(
+  client: PoolClient,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  requirePreparedRelease: boolean,
+): Promise<{ bootstrap: boolean }> {
+  await assertManagedReleaseMigrationsCurrent(client, migrations);
+  const sourceCapability = hostedInferenceCapability(sourceReleaseSha);
+  const targetCapability = hostedInferenceCapability(releaseSha);
+  const sourceProtocolCapability =
+    compatibleManagedReleaseProtocolCapability(sourceReleaseSha);
+  const targetProtocolCapability =
+    compatibleManagedReleaseProtocolCapability(releaseSha);
+  const state = await client.query<{
+    publication_active: boolean;
+    hosted_fleet_active: boolean;
+    release_jobs_active: boolean;
+    private_review_author_active: boolean;
+    hosted_release_active: boolean;
+    source_release_active: boolean;
+    target_release_active: boolean;
+    source_protocol_active: boolean;
+    target_protocol_active: boolean;
+    preparation_pending: boolean;
+    hosted_dark: boolean;
+    protocols: string[];
+  }>(
+    `SELECT
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $1)
+         AS publication_active,
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $2)
+         AS hosted_fleet_active,
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $3)
+         AS release_jobs_active,
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $4)
+         AS private_review_author_active,
+       EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name LIKE $5
+       ) AS hosted_release_active,
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $6)
+         AS source_release_active,
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $7)
+         AS target_release_active,
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $8)
+         AS source_protocol_active,
+       EXISTS (SELECT 1 FROM deployment_capabilities WHERE name = $9)
+         AS target_protocol_active,
+       EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name LIKE $10
+       ) AS preparation_pending,
+       EXISTS (
+         SELECT 1 FROM deployment_capabilities WHERE name LIKE $11
+       ) AS hosted_dark,
+       ARRAY(
+         SELECT name FROM deployment_capabilities
+          WHERE name LIKE $12
+          ORDER BY name
+       ) AS protocols`,
+    [
+      PUBLICATION_LIFECYCLE_FLEET_ACTIVE_CAPABILITY,
+      HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
+      RELEASE_V1_JOBS_CAPABILITY,
+      PRIVATE_REVIEW_AUTHOR_CAPABILITY,
+      `${HOSTED_INFERENCE_CAPABILITY_PREFIX}%`,
+      sourceCapability,
+      targetCapability,
+      sourceProtocolCapability,
+      targetProtocolCapability,
+      `${MANAGED_RELEASE_PREPARATION_PREFIX}%`,
+      `${HOSTED_INFERENCE_DARK_PREFIX}%`,
+      `${MANAGED_RELEASE_PROTOCOL_PREFIX}%`,
+    ],
+  );
+  const observed = state.rows[0];
+  if (
+    !observed?.publication_active ||
+    !observed.hosted_fleet_active ||
+    !observed.release_jobs_active ||
+    !observed.private_review_author_active
+  ) {
+    throw new Error("managed release requires every active baseline capability");
+  }
+  if (!observed.hosted_release_active) {
+    throw new Error("managed release requires an active hosted release capability");
+  }
+  if (observed.preparation_pending || observed.hosted_dark) {
+    throw new Error("managed release requires no preparation journal or hosted dark capability");
+  }
+  const compatibleProtocolPattern = new RegExp(
+    `^${MANAGED_RELEASE_PROTOCOL_PREFIX}[0-9a-f]{40}:${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}$`,
+  );
+  if (observed.protocols.some((name) => !compatibleProtocolPattern.test(name))) {
+    throw new Error("managed release database has an incompatible protocol capability");
+  }
+  const bootstrap = observed.protocols.length === 0;
+  if (bootstrap && !COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS.includes(sourceReleaseSha)) {
+    throw new Error(
+      "managed release protocol bootstrap requires the known live fleet release",
+    );
+  }
+  if (!observed.source_release_active) {
+    throw new Error("managed release source hosted capability is not active");
+  }
+  if (!bootstrap && !observed.source_protocol_active) {
+    throw new Error("managed release source protocol capability is missing");
+  }
+  if (
+    requirePreparedRelease &&
+    (!observed.target_protocol_active || !observed.target_release_active)
+  ) {
+    throw new Error("managed release exact capability is not prepared");
+  }
+  return { bootstrap };
+}
+
+async function withCompatibleManagedReleaseState<T>(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  options: {
+    readOnly: boolean;
+    requirePreparedRelease: boolean;
+    lockLifecycle: boolean;
+    reviewedMigration?: { source: string; identity: ManagedReleaseMigrationIdentity };
+  },
+  operation: (
+    client: PoolClient,
+    state: { bootstrap: boolean; migrationApplied: boolean },
+  ) => Promise<T>,
+): Promise<T> {
+  requireCompatibleManagedReleaseProtocol(protocol);
+  const normalizedSourceRelease = normalizedManagedReleaseSha(sourceReleaseSha);
+  const normalizedRelease = normalizedManagedReleaseSha(releaseSha);
+  const client = await pool.connect();
+  let releaseError: Error | undefined;
+  try {
+    await client.query(
+      options.readOnly
+        ? "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+        : "BEGIN",
+    );
+    await client.query(
+      `SELECT
+         set_config('lock_timeout', $1, true),
+         set_config('statement_timeout', $2, true)`,
+      [COMPATIBLE_RELEASE_LOCK_TIMEOUT, COMPATIBLE_RELEASE_STATEMENT_TIMEOUT],
+    );
+    if (options.lockLifecycle) {
+      const publicationLock = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_xact_lock_shared(hashtextextended($1, 0)) AS locked",
+        [PUBLICATION_LIFECYCLE_LOCK],
+      );
+      if (publicationLock.rows[0]?.locked !== true) {
+        throw new Error("managed release publication lifecycle lock is busy");
+      }
+      const hostedLock = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS locked",
+        [HOSTED_INFERENCE_LOCK],
+      );
+      if (hostedLock.rows[0]?.locked !== true) {
+        throw new Error("managed release hosted lifecycle lock is busy");
+      }
+    }
+    let migrationApplied = false;
+    let compatibleMigrations = migrations;
+    if (options.reviewedMigration !== undefined) {
+      // Serialize the journal decision with other writers, including Drizzle.
+      if (!options.readOnly) {
+        await client.query("LOCK TABLE drizzle.__drizzle_migrations IN SHARE ROW EXCLUSIVE MODE");
+      }
+      const applied = await client.query<{ present: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE created_at = $1) AS present",
+        [options.reviewedMigration!.identity.folderMillis],
+      );
+      if (!applied.rows[0]?.present) {
+        if (migrations.some((migration) => migration.folderMillis > options.reviewedMigration!.identity.folderMillis)) {
+          throw new Error("managed release has unapproved pending migrations");
+        }
+        compatibleMigrations = migrations.filter(
+          (migration) => migration.folderMillis < options.reviewedMigration!.identity.folderMillis,
+        );
+        migrationApplied = true;
+      }
+    }
+    const state = await assertCompatibleManagedReleaseDatabaseState(
+      client,
+      normalizedSourceRelease,
+      normalizedRelease,
+      compatibleMigrations,
+      options.requirePreparedRelease,
+    );
+    if (migrationApplied && !options.readOnly) {
+      await client.query(options.reviewedMigration!.source);
+      await client.query(
+        "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
+        [options.reviewedMigration!.identity.hash, options.reviewedMigration!.identity.folderMillis],
+      );
+      await assertCompatibleManagedReleaseDatabaseState(
+        client, normalizedSourceRelease, normalizedRelease, migrations, options.requirePreparedRelease,
+      );
+    }
+    const result = await operation(client, { ...state, migrationApplied });
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = databaseClientError(rollbackError, "managed release rollback failed");
+      throw new AggregateError([error, releaseError], "managed release transaction and rollback failed");
+    }
+    throw error;
+  } finally {
+    client.release(releaseError);
+  }
+}
+
+/** Verify rolling compatibility without changing release availability. */
+export async function verifyCompatibleManagedRelease(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+): Promise<void> {
+  await withCompatibleManagedReleaseState(
+    pool,
+    sourceReleaseSha,
+    releaseSha,
+    protocol,
+    migrations,
+    { readOnly: true, requirePreparedRelease: false, lockLifecycle: false },
+    async () => undefined,
+  );
+}
+
+/** Add only the reviewed protocol identity and exact new release capability. */
+export async function prepareCompatibleManagedRelease(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+): Promise<boolean> {
+  return withCompatibleManagedReleaseState(
+    pool,
+    sourceReleaseSha,
+    releaseSha,
+    protocol,
+    migrations,
+    { readOnly: false, requirePreparedRelease: false, lockLifecycle: true },
+    async (client, state) => {
+      const protocolCapabilities = [
+        compatibleManagedReleaseProtocolCapability(releaseSha),
+        ...(state.bootstrap
+          ? [compatibleManagedReleaseProtocolCapability(sourceReleaseSha)]
+          : []),
+      ];
+      const inserted = await client.query(
+        `INSERT INTO deployment_capabilities (name)
+         SELECT unnest($1::text[])
+         ON CONFLICT (name) DO NOTHING`,
+        [
+          [
+            ...protocolCapabilities,
+            hostedInferenceCapability(releaseSha),
+          ],
+        ],
+      );
+      return (inserted.rowCount ?? 0) > 0;
+    },
+  );
+}
+
+/** Verify the exact prepared release after homogeneous-fleet proof. */
+export async function verifyPreparedCompatibleManagedRelease(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+): Promise<void> {
+  await withCompatibleManagedReleaseState(
+    pool,
+    sourceReleaseSha,
+    releaseSha,
+    protocol,
+    migrations,
+    { readOnly: true, requirePreparedRelease: true, lockLifecycle: false },
+    async () => undefined,
+  );
 }
 
 export function hostedInferenceCapability(releaseSha: string): string {
@@ -609,7 +1144,7 @@ export async function activateHostedInferenceRelease(
               AND NOT EXISTS (
                 SELECT 1
                   FROM jobs AS active
-                 WHERE active.kind = 'review'
+                 WHERE active.kind IN ('review', 'review-feedback')
                    AND active.status IN ('queued', 'running')
                    AND active.id <> job.id
                    AND active.payload->>'githubRepoId' = job.payload->>'githubRepoId'
@@ -630,7 +1165,7 @@ export async function activateHostedInferenceRelease(
       `UPDATE jobs
           SET run_after = now(),
               payload = payload - 'releaseDarkSha'
-        WHERE kind IN ('review', $1)
+        WHERE kind IN ('review', 'review-feedback', $1)
           AND status = 'queued'
           AND run_after = 'infinity'::timestamptz
           AND payload ? 'releaseDarkSha'`,
@@ -1013,7 +1548,7 @@ async function restoreManagedReleaseCapabilitiesOnClient(
     await client.query(
       `UPDATE jobs
           SET run_after = now(), payload = payload - 'releaseDarkSha'
-        WHERE kind IN ('review', $1)
+        WHERE kind IN ('review', 'review-feedback', $1)
           AND status = 'queued'
           AND run_after = 'infinity'::timestamptz
           AND payload ? 'releaseDarkSha'`,
@@ -1132,10 +1667,10 @@ export async function restoreAllManagedReleasePreparations(
 /** Atomically park a claimed hosted review until a verified managed release activates. */
 export async function deferHostedReviewForRelease(
   pool: Pool,
-  job: { id: number; lockedBy: string },
+  job: { id: number; lockedBy: string; kind?: string },
   releaseSha: string,
 ): Promise<"deferred" | "released"> {
-  return deferHostedJobForRelease(pool, job, releaseSha, "review");
+  return deferHostedJobForRelease(pool, job, releaseSha, job.kind === "review-feedback" ? "review-feedback" : "review");
 }
 
 /** Atomically park provider-key work until a verified managed release activates. */
@@ -1156,7 +1691,7 @@ async function deferHostedJobForRelease(
   pool: Pool,
   job: { id: number; lockedBy: string },
   releaseSha: string,
-  kind: "review" | typeof HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  kind: "review" | "review-feedback" | typeof HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
 ): Promise<"deferred" | "released"> {
   const normalized = normalizedReleaseSha(releaseSha);
   const client = await pool.connect();
@@ -1350,7 +1885,7 @@ export async function activateReleaseJobs(pool: Pool): Promise<number> {
       `INSERT INTO deployment_capabilities (name)
        VALUES ($1)
        ON CONFLICT (name) DO NOTHING`,
-      [CAPABILITY],
+      [RELEASE_V1_JOBS_CAPABILITY],
     );
     const released = await client.query(
       `UPDATE jobs

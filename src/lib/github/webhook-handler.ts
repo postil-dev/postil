@@ -65,6 +65,7 @@ import {
 } from "@/lib/mentions";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
 import { applyPublicationThreadObservations } from "@/lib/publication-receipt";
+import { admitReviewFeedbackEvent } from "@/lib/review-feedback";
 import {
   enqueueOperatorAlert,
   installationRemovedAlertPayload,
@@ -235,6 +236,15 @@ interface IssuesEventPayload {
   issue?: { number: number; body?: string; author_association?: string };
 }
 
+interface ReviewThreadEventPayload {
+  action?: string;
+  installation?: { id: number };
+  repository?: RepoSummary;
+  sender?: GithubUser;
+  pull_request?: { number: number };
+  thread?: { comments?: Array<{ id?: number }> };
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const bodyResult = await readBoundedWebhookBody(request);
   if (!bodyResult.ok) {
@@ -352,6 +362,19 @@ export async function dispatchWebhookDelivery(
         triggerFollowupDrain,
       );
       break;
+    case "pull_request_review_thread": {
+      const thread = payload as ReviewThreadEventPayload;
+      if (!["resolved", "unresolved"].includes(thread.action ?? "") || !thread.installation ||
+          !thread.repository || !thread.pull_request || !thread.sender || isBot(thread.sender)) break;
+      const rootCommentId = thread.thread?.comments?.[0]?.id;
+      if (!Number.isSafeInteger(rootCommentId) || !rootCommentId || rootCommentId <= 0) break;
+      const admitted = await admitReviewFeedbackEvent({
+        installationId: thread.installation.id, githubRepoId: thread.repository.id,
+        prNumber: thread.pull_request.number, actor: thread.sender, rootCommentId,
+      });
+      if (admitted && triggerFollowupDrain) triggerQueueDrain("review-thread-feedback");
+      break;
+    }
     case "issues":
       await handleIssues(
         payload as IssuesEventPayload,
@@ -1191,6 +1214,19 @@ async function handleReviewComment(
       { githubCommentId: String(payload.comment.id), state: "deleted" },
     ]);
     return;
+  }
+  if (["created", "edited"].includes(payload.action ?? "") && payload.comment?.body &&
+      !isBot(payload.comment.user) && !isBot(payload.sender) &&
+      !isGratitudeOnly(payload.comment.body) && !isPostilReviewCommand(payload.comment.body) &&
+      !parsePostilApproveCommand(payload.comment.body) && !parsePostilDismissCommand(payload.comment.body) &&
+      payload.comment.user && payload.installation && payload.repository && payload.pull_request &&
+      Number.isSafeInteger(payload.comment.in_reply_to_id) && payload.comment.in_reply_to_id! > 0) {
+    const admitted = await admitReviewFeedbackEvent({
+      installationId: payload.installation.id, githubRepoId: payload.repository.id,
+      prNumber: payload.pull_request.number, actor: payload.comment.user,
+      rootCommentId: payload.comment.in_reply_to_id!,
+    });
+    if (admitted && triggerFollowupDrain) triggerQueueDrain("review-comment-feedback");
   }
   if (payload.action !== "created") return;
   const body = payload.comment?.body;

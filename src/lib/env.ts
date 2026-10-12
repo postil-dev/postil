@@ -146,6 +146,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_PROVIDER_ADDRESS_FAMILY",
+    purpose: "Provider connection address family: auto or ipv4",
+    example: "auto",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_ENDPOINT_AUTH_HEADER",
     purpose:
       "Optional additional authentication header for a private provider gateway",
@@ -437,6 +444,7 @@ const ENV_SPECS: EnvVarSpec[] = [
       "ilert alert-source integration key that receives monitoring alerts; without it alert delivery fails closed and remains retryable",
     example: "il1agst...",
     scope: ["monitor"],
+    optional: true,
   },
   {
     name: "POSTIL_MONITOR_HEARTBEAT_URL",

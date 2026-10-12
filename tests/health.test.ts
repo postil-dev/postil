@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -231,7 +232,7 @@ describe("production monitor workflow", () => {
     };
     expect(source).toContain("reconcile_alert_stream:");
     expect(source).toContain(
-      "description: Reconcile the iLert webhook action and send then resolve a HIGH-priority production test alert; it can invoke the escalation path",
+      "description: Reconcile the iLert webhook action and send then resolve a HIGH-priority production test alert; it can invoke the escalation path; cannot be combined with test_alert",
     );
     const architecture = await readFile(
       new URL("../ARCHITECTURE.md", import.meta.url),
@@ -249,7 +250,9 @@ describe("production monitor workflow", () => {
     expect(source).toContain(
       "but this job still sweeps iLert management inventory for a delayed Event",
     );
-    expect(source).not.toContain("test_alert");
+    expect(source).toContain(
+      "      test_alert:\n        description: Send a HIGH-priority test alert only after production checks pass, then attempt to resolve it; it can invoke the escalation path; cannot be combined with reconcile_alert_stream",
+    );
     expect(source).toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");
     const alertStream = workflow.jobs["alert-stream"];
     expect(alertStream?.needs).toEqual(["deployment-trust", "smoke", "release-recovery"]);
@@ -390,7 +393,7 @@ describe("production monitor workflow", () => {
     expect(finalizer?.steps?.filter((step) => step.with?.["secret-name"])
       .every((step) => step.if === undefined)).toBe(true);
     expect(workflow.jobs.notify?.if).toBe(
-      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled') && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || (inputs.test_alert == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
     );
     const notifySecret = workflow.jobs.notify?.steps?.find(
       (step) => step.name === "Load required iLert integration secret from Infisical",
@@ -409,8 +412,178 @@ describe("production monitor workflow", () => {
         with: { "require-delivery": true },
       });
     expect(workflow.jobs.resolve?.if).toBe(
-      "${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
+      "${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) && inputs.test_alert != true }}",
     );
+  });
+
+  test("finalizes only a successful manual test alert after notification settles", async () => {
+    const workflow = parse(await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    )) as {
+      jobs: Record<string, {
+        if?: string;
+        needs?: string[];
+        "timeout-minutes"?: number;
+        steps: Array<{
+          name?: string;
+          uses?: string;
+          "timeout-minutes"?: number;
+          with?: Record<string, unknown>;
+        }>;
+      }>;
+    };
+    const notify = workflow.jobs.notify!;
+    const finalizer = workflow.jobs["resolve-test-alert"]!;
+    expect(finalizer.needs).toEqual(["deployment-trust", "smoke", "release-recovery", "notify"]);
+    expect(finalizer.if).toBe(
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.test_alert == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' }}",
+    );
+    expect(finalizer.if).not.toContain("needs.notify.result == 'success'");
+    expect(finalizer["timeout-minutes"]).toBe(5);
+    expect(finalizer.steps.map((step) => step["timeout-minutes"])).toEqual([1, 1, 2]);
+    const secretLoad = (job: typeof notify) => job.steps.find(
+      (step) => step.with?.["secret-name"] === "ILERT_INTEGRATION_KEY",
+    );
+    expect(secretLoad(finalizer)).toEqual(secretLoad(notify));
+    expect(finalizer.steps.filter((step) => step.with?.["secret-name"])).toHaveLength(1);
+    const notification = notify.steps.find((step) => step.name === "Send ilert event")!;
+    const resolution = finalizer.steps.find((step) => step.name === "Resolve ilert test alert")!;
+    expect(notification.with?.["alert-key"]).toContain("postil-production-monitor-test");
+    expect(resolution).toMatchObject({
+      uses: "./.github/actions/ilert-event",
+      with: {
+        "event-type": "RESOLVE",
+        "alert-key": "postil-production-monitor-test",
+        "require-delivery": true,
+      },
+    });
+    expect(resolution.with?.["alert-key"]).not.toBe("postil-production-monitor");
+    expect(workflow.jobs.resolve!.if).toContain("inputs.test_alert != true");
+  });
+
+  test("routes manual test alerts only when their own resolver can run", async () => {
+    const workflow = parse(await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    )) as {
+      jobs: Record<string, {
+        if: string;
+        steps: Array<{ name?: string; with?: Record<string, string> }>;
+      }>;
+    };
+    const alertKey = workflow.jobs.notify!.steps.find((step) =>
+      step.name === "Send ilert event"
+    )!.with!["alert-key"];
+    expect(alertKey).toBeDefined();
+    for (const [smoke, release, notification, resolution, key] of [
+      ["cancelled", "success", false, false, null],
+      ["failure", "success", true, false, "postil-production-monitor"],
+      ["success", "failure", true, false, "postil-release-recovery"],
+      ["success", "cancelled", true, false, "postil-release-recovery"],
+      ["cancelled", "failure", true, false, "postil-release-recovery"],
+      ["success", "success", true, true, "postil-production-monitor-test"],
+    ] as const) {
+      const context = {
+        needs: {
+          deploymentTrust: { outputs: { trusted: "true" } },
+          smoke: { result: smoke },
+          releaseRecovery: { result: release },
+        },
+        inputs: { test_alert: true },
+        github: { event_name: "workflow_dispatch", ref: "refs/heads/main" },
+      };
+      const sends = evaluateMonitorExpression(workflow.jobs.notify!.if, context);
+      const resolves = evaluateMonitorExpression(
+        workflow.jobs["resolve-test-alert"]!.if,
+        context,
+      );
+      expect(sends).toBe(notification);
+      expect(resolves).toBe(resolution);
+      expect(sends ? evaluateMonitorExpression(alertKey!, context) : null).toBe(key);
+    }
+  });
+
+  test("resolves an accepted test alert after its response is lost without closing production", async () => {
+    const workflow = parse(await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    )) as {
+      jobs: Record<string, { steps: Array<{ name?: string; with?: Record<string, string | boolean> }> }>;
+    };
+    const action = parse(await readFile(
+      new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+      "utf8",
+    )) as { runs: { steps: Array<{ run: string }> } };
+    const notification = workflow.jobs.notify!.steps.find((step) => step.name === "Send ilert event")!;
+    const resolution = workflow.jobs["resolve-test-alert"]!.steps.find(
+      (step) => step.name === "Resolve ilert test alert",
+    )!;
+    const workingDirectory = mkdtempSync(join(tmpdir(), "postil-test-alert-"));
+    const eventsFile = join(workingDirectory, "events.ndjson");
+    const integrationIdentity = randomUUID();
+    const testKey = resolution.with!["alert-key"] as string;
+    const notificationKey = notification.with!["alert-key"] as string;
+    expect(notificationKey).toContain(testKey);
+    const curl = join(workingDirectory, "curl");
+    writeFileSync(curl, `#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+  if [[ "$argument" == @* ]]; then payload="\${argument#@}"; fi
+done
+jq -c . "$payload" >> "${eventsFile}"
+if jq -e '.eventType == "ALERT"' "$payload" >/dev/null; then
+  printf '500'
+else
+  printf '202'
+fi
+`);
+    chmodSync(curl, 0o700);
+    const runEvent = (eventType: string, summary: string, alertKey: string, required: boolean) =>
+      spawnSync("bash", ["-c", action.runs.steps[0]!.run], {
+        cwd: workingDirectory,
+        env: {
+          ...process.env,
+          PATH: `${workingDirectory}:${process.env.PATH ?? ""}`,
+          GITHUB_STEP_SUMMARY: join(workingDirectory, "summary"),
+          RUNNER_TEMP: workingDirectory,
+          ILERT_INTEGRATION_KEY: integrationIdentity,
+          EVENT_TYPE: eventType,
+          SUMMARY: summary,
+          ALERT_KEY: alertKey,
+          DETAILS: "",
+          PRIORITY: "HIGH",
+          REQUIRE_DELIVERY: String(required),
+        },
+        encoding: "utf8",
+      });
+    try {
+      const alert = runEvent("ALERT", "Postil production monitor test alert", testKey, true);
+      expect(alert.status).toBe(1);
+      const resolved = runEvent(
+        String(resolution.with!["event-type"]),
+        String(resolution.with!["summary"]),
+        testKey,
+        resolution.with!["require-delivery"] === true,
+      );
+      expect(resolved.status).toBe(0);
+      const events = (await readFile(eventsFile, "utf8")).trim().split("\n").map(
+        (line) => JSON.parse(line) as { integrationKey: string; eventType: string; alertKey: string },
+      );
+      expect(events.map(({ eventType, alertKey }) => ({ eventType, alertKey }))).toEqual([
+        { eventType: "ALERT", alertKey: testKey },
+        { eventType: "RESOLVE", alertKey: testKey },
+      ]);
+      expect(events.every((event) => event.integrationKey === integrationIdentity)).toBe(true);
+      const openAlerts = new Set(["postil-production-monitor"]);
+      for (const event of events) {
+        if (event.eventType === "ALERT") openAlerts.add(event.alertKey);
+        if (event.eventType === "RESOLVE") openAlerts.delete(event.alertKey);
+      }
+      expect([...openAlerts]).toEqual(["postil-production-monitor"]);
+    } finally {
+      rmSync(workingDirectory, { recursive: true, force: true });
+    }
   });
 
   test("fits finalizer cleanup inside GitHub's cancellation grace", async () => {
@@ -471,22 +644,27 @@ describe("production monitor workflow", () => {
       "release-recovery",
       "resolve",
       "resolve-release-recovery",
+      "resolve-test-alert",
       "smoke",
     ]);
     for (const [name, job] of protectedJobs) {
-      expect(job.if).toContain(
-        "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'",
-      );
+      expect(job.if).toContain("github.ref == 'refs/heads/main'");
+      if (name !== "resolve-test-alert") {
+        expect(job.if).toContain("github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'");
+      }
     }
 
     const deploySource = await readFile(
       new URL("../.github/workflows/deploy.yml", import.meta.url),
       "utf8",
     );
-    const deploy = parse(deploySource) as { jobs: { authorize: { if: string } } };
-    expect(deploy.jobs.authorize.if).toContain(
-      "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
-    );
+    const deploy = parse(deploySource) as {
+      on: Record<string, unknown>;
+      jobs: Record<string, { if?: string }>;
+    };
+    expect(Object.keys(deploy.on)).toEqual(["workflow_dispatch"]);
+    expect(Object.keys(deploy.jobs)).toEqual(["deploy"]);
+    expect(deploy.jobs.deploy!.if).toContain("github.event_name == 'workflow_dispatch'");
   });
 
   test("accepts deploy workflow runs only from the main deployment branch", async () => {
@@ -556,6 +734,7 @@ describe("production monitor workflow", () => {
       "notify",
       "resolve",
       "resolve-release-recovery",
+      "resolve-test-alert",
     ]);
 
     // retry-max-time includes failed requests and retry delays, but curl may
@@ -599,7 +778,7 @@ describe("production monitor workflow", () => {
     };
     const sweep = workflow.jobs["canary-orphan-sweep"];
     expect(sweep.if).toBe(
-      "${{ needs.deployment-trust.outputs.trusted == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+      "${{ needs.deployment-trust.outputs.trusted == 'true' && vars.POSTIL_ILERT_CANARY_SWEEP_ENABLED == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true && inputs.test_alert != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
     );
     expect(sweep["timeout-minutes"]).toBe(21);
     const managementLoad = sweep.steps.find(
@@ -626,124 +805,6 @@ describe("production monitor workflow", () => {
     });
   });
 
-  test("deploy validates and stages required iLert runtime secrets before any Fly mutation", async () => {
-    const source = await readFile(
-      new URL("../.github/workflows/deploy.yml", import.meta.url),
-      "utf8",
-    );
-    const workflow = parse(source) as {
-      jobs: {
-        deploy: {
-          steps: Array<{
-            env?: Record<string, string>;
-            name?: string;
-            run?: string;
-          }>;
-        };
-      };
-    };
-    const stage = workflow.jobs.deploy.steps.find(
-      (step) => step.name === "Stage runtime secrets",
-    );
-    const validation = workflow.jobs.deploy.steps.find(
-      (step) => step.name === "Validate receiver secret before Fly mutation",
-    );
-    const stageRun = stage?.run ?? "";
-    expect(validation?.run).toBe(
-      "bun run scripts/reconcile-ilert-alert-stream.ts --validate-webhook-secret",
-    );
-    const validationIndex = workflow.jobs.deploy.steps.indexOf(validation!);
-    const firstFlyMutationIndex = workflow.jobs.deploy.steps.findIndex((step) =>
-      /flyctl (?:secrets import|secrets unset|volumes create|deploy|machine start|machine exec|ssh console)/u.test(step.run ?? "")
-    );
-    const directReceiverSecretStaging =
-      'staged+="POSTIL_ILERT_WEBHOOK_SECRET=${POSTIL_ILERT_WEBHOOK_SECRET}"$\'\\n\'';
-    const operatorSecrets = stageRun.match(
-      /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
-    )?.[1];
-    expect(validationIndex).toBeGreaterThanOrEqual(0);
-    expect(validationIndex).toBeLessThan(firstFlyMutationIndex);
-    expect(stageRun.split(directReceiverSecretStaging)).toHaveLength(2);
-    expect(operatorSecrets).not.toContain("POSTIL_ILERT_WEBHOOK_SECRET");
-    expect(operatorSecrets).toContain("ILERT_INTEGRATION_KEY");
-    expect(stageRun).toContain("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.");
-    expect(stageRun).toContain("Infisical did not provide ILERT_INTEGRATION_KEY.");
-    expect(stageRun.indexOf("Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.")).toBeLessThan(
-      stageRun.indexOf("flyctl secrets import --stage"),
-    );
-    expect(stageRun.indexOf("Infisical did not provide ILERT_INTEGRATION_KEY.")).toBeLessThan(
-      stageRun.indexOf("flyctl secrets import --stage"),
-    );
-    const staged = spawnSync("bash", ["-c", stageRun], {
-      encoding: "utf8",
-      env: { DATABASE_URL: "postgresql://test", NODE_ENV: "test" } as NodeJS.ProcessEnv,
-    });
-    expect(staged.status).toBe(1);
-    expect(staged.stdout).toContain(
-      "Infisical did not provide POSTIL_ILERT_WEBHOOK_SECRET.",
-    );
-    expect(stage?.env).not.toHaveProperty("POSTIL_ILERT_WEBHOOK_SECRET");
-
-    const missingIntegrationKey = spawnSync("bash", ["-c", stageRun], {
-      encoding: "utf8",
-      env: {
-        DATABASE_URL: "postgresql://test",
-        NODE_ENV: "test",
-        POSTIL_ILERT_WEBHOOK_SECRET: "test-runtime-webhook-secret-with-32-bytes",
-      } as NodeJS.ProcessEnv,
-    });
-    expect(missingIntegrationKey.status).toBe(1);
-    expect(missingIntegrationKey.stdout).toContain(
-      "Infisical did not provide ILERT_INTEGRATION_KEY.",
-    );
-
-    const temporaryDirectory = mkdtempSync(join(tmpdir(), "postil-stage-runtime-secret-"));
-    const binaryDirectory = join(temporaryDirectory, "bin");
-    const capturePath = join(temporaryDirectory, "staged-secrets");
-    const webhookSecret = "test-runtime-webhook-secret-with-32-bytes";
-    const integrationKey = "test-runtime-ilert-integration-key";
-    mkdirSync(binaryDirectory);
-    const flyctlPath = join(binaryDirectory, "flyctl");
-    writeFileSync(flyctlPath, [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      'if [[ "$1" == "secrets" && "$2" == "import" && "$3" == "--stage" ]]; then',
-      '  cat > "${POSTIL_STAGE_CAPTURE:?}"',
-      "  exit 0",
-      "fi",
-      'if [[ "$1" == "secrets" && "$2" == "list" && "$3" == "--json" ]]; then',
-      "  printf '[]'",
-      "  exit 0",
-      "fi",
-      'echo "unexpected flyctl command" >&2',
-      "exit 1",
-    ].join("\n"));
-    chmodSync(flyctlPath, 0o755);
-    try {
-      const stagedWithInfisicalEnvironment = spawnSync("bash", ["-c", stageRun], {
-        encoding: "utf8",
-        env: {
-          DATABASE_URL: "postgresql://test",
-          NODE_ENV: "test",
-          PATH: `${binaryDirectory}:${process.env.PATH}`,
-          ILERT_INTEGRATION_KEY: integrationKey,
-          POSTIL_ILERT_WEBHOOK_SECRET: webhookSecret,
-          POSTIL_STAGE_CAPTURE: capturePath,
-        } as NodeJS.ProcessEnv,
-      });
-      expect(stagedWithInfisicalEnvironment.status).toBe(0);
-      expect(stagedWithInfisicalEnvironment.stdout).not.toContain(webhookSecret);
-      expect(stagedWithInfisicalEnvironment.stderr).not.toContain(webhookSecret);
-      expect(readFileSync(capturePath, "utf8")).toBe(
-        `DATABASE_URL=postgresql://test\n` +
-        `POSTIL_ILERT_WEBHOOK_SECRET=${webhookSecret}\n` +
-        `ILERT_INTEGRATION_KEY=${integrationKey}\n`,
-      );
-    } finally {
-      rmSync(temporaryDirectory, { recursive: true, force: true });
-    }
-  });
-
   test("resolves a production failure after manual success and scheduled success", async () => {
     const source = await readFile(
       new URL("../.github/workflows/production-monitor.yml", import.meta.url),
@@ -766,7 +827,7 @@ describe("production monitor workflow", () => {
     };
     const resolve = workflow.jobs.resolve;
     expect(resolve.if).toBe(
-      "${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) }}",
+      "${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) && inputs.test_alert != true }}",
     );
     expect(resolve.steps.some((step) => step.name === "Check whether the previous run failed")).toBe(false);
     expect(resolve.steps.find((step) => step.name === "Load iLert integration secret from Infisical")).toMatchObject({
@@ -869,6 +930,109 @@ describe("production monitor workflow", () => {
     });
     expect(result.status).toBe(1);
     expect(result.stdout).toContain("ILERT_INTEGRATION_KEY is unset");
+  });
+
+  test("requires notification delivery and preserves optional events", async () => {
+    const workflow = parse(
+      await readFile(
+        new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      jobs: {
+        notify: {
+          if: string;
+          steps: Array<{
+            name: string;
+            with?: Record<string, unknown>;
+          }>;
+        };
+        "resolve-release-recovery": {
+          steps: Array<{ name: string; with?: Record<string, unknown> }>;
+        };
+        resolve: {
+          steps: Array<{ name: string; with?: Record<string, unknown> }>;
+        };
+      };
+    };
+    const notification = workflow.jobs.notify.steps.find(
+      (step) => step.name === "Send ilert event",
+    );
+    expect(workflow.jobs.notify.if).toBe(
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || (inputs.test_alert == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+    );
+    expect(notification?.with?.["require-delivery"]).toBe(true);
+    for (const [steps, name] of [
+      [workflow.jobs["resolve-release-recovery"].steps, "Resolve ilert release recovery alert"],
+      [workflow.jobs.resolve.steps, "Resolve ilert alert"],
+    ] as const) {
+      const resolveStep = steps.find((step) => step.name === name);
+      expect(resolveStep).toBeDefined();
+      expect(resolveStep?.with?.["require-delivery"]).toBe(true);
+    }
+
+    const action = parse(
+      await readFile(
+        new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as { runs: { steps: Array<{ run: string }> } };
+    const workingDirectory = mkdtempSync(join(tmpdir(), "postil-ilert-action-"));
+    const curlMarker = join(workingDirectory, "curl-invoked");
+    const summary = join(workingDirectory, "summary");
+    const curl = join(workingDirectory, "curl");
+    writeFileSync(curl, `#!/bin/sh\ntouch "${curlMarker}"\nexit 1\n`);
+    chmodSync(curl, 0o700);
+    const environment: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${workingDirectory}:${process.env.PATH ?? ""}`,
+      GITHUB_STEP_SUMMARY: summary,
+      RUNNER_TEMP: workingDirectory,
+      EVENT_TYPE: "ALERT",
+      SUMMARY: "Postil production monitor failed",
+      ALERT_KEY: "postil-production-monitor",
+      DETAILS: "Production checks failed",
+      PRIORITY: "HIGH",
+      REQUIRE_DELIVERY: "true",
+    };
+    delete environment.ILERT_INTEGRATION_KEY;
+
+    try {
+      const run = (eventType: string, requireDelivery: string) =>
+        spawnSync("bash", ["-c", action.runs.steps[0]!.run], {
+          cwd: workingDirectory,
+          env: {
+            ...environment,
+            EVENT_TYPE: eventType,
+            REQUIRE_DELIVERY: requireDelivery,
+          },
+          encoding: "utf8",
+        });
+
+      const requiredAlert = run("ALERT", "true");
+      expect(requiredAlert.status).toBe(1);
+      expect(requiredAlert.stdout).toContain("::error title=External alerting is not configured");
+      const failureSummary = await readFile(summary, "utf8");
+      expect(failureSummary).toContain("### External alert delivery failed");
+      expect(failureSummary).toContain("ilert received nothing.\n\n- **Event:** ALERT");
+      expect(failureSummary).toContain("**Event:** ALERT");
+      expect(failureSummary).toContain("**Summary:** Postil production monitor failed");
+      expect(failureSummary).toContain("**Alert key:** `postil-production-monitor`");
+      expect(failureSummary).toContain("**Alert key:** `postil-production-monitor`\n\nConfigure the alerting secret");
+      expect(await Bun.file(curlMarker).exists()).toBe(false);
+
+      const legacyAlert = run("ALERT", "false");
+      expect(legacyAlert.status).toBe(0);
+      expect(legacyAlert.stdout).toContain("::warning title=External alerting is not configured");
+      expect(await Bun.file(curlMarker).exists()).toBe(false);
+
+      const resolve = run("RESOLVE", "false");
+      expect(resolve.status).toBe(0);
+      expect(resolve.stdout).toContain("nothing to resolve");
+      expect(await Bun.file(curlMarker).exists()).toBe(false);
+    } finally {
+      rmSync(workingDirectory, { recursive: true, force: true });
+    }
   });
 
   test("enforces monitor health, collection, delivery, failure, and stuck-pass signals", async () => {
@@ -1069,6 +1233,23 @@ exit "${"${stale_found}"}"
     }
   });
 });
+
+function evaluateMonitorExpression(
+  expression: string,
+  context: { needs: unknown; inputs: unknown; github: unknown },
+): unknown {
+  const body = /^\$\{\{\s*(.*?)\s*\}\}$/u.exec(expression)?.[1];
+  if (!body || !/^[a-z0-9_.\s'()&|=!/\-]+$/iu.test(body)) {
+    throw new Error("Unsupported monitor expression");
+  }
+  const javascript = body
+    .replaceAll("needs.deployment-trust", "needs.deploymentTrust")
+    .replaceAll("needs.release-recovery", "needs.releaseRecovery");
+  const evaluate = new Function(
+    "needs", "inputs", "github", "always", `return (${javascript});`,
+  ) as (needs: unknown, inputs: unknown, github: unknown, always: () => boolean) => unknown;
+  return evaluate(context.needs, context.inputs, context.github, () => true);
+}
 
 function resolveFinalizerAttempt(
   expression: string | undefined,

@@ -7,6 +7,7 @@ import { checkRunExternalId } from "@/lib/github/checks";
 import { reviewDetailsUrl } from "@/lib/oauth";
 import {
   COALESCED_REVIEW_PAYLOAD_KEY,
+  FEEDBACK_REVIEW_JOB_KIND,
   PUBLICATION_RECONCILIATION_BUDGET_MS,
 } from "@/lib/queue";
 import {
@@ -19,6 +20,7 @@ import {
   sweepExpiredSelfServiceTrials,
 } from "@/lib/operator-alerts";
 import { scheduleBillingSettlementJobs } from "@/lib/paddle-billing";
+import { scheduleReviewFeedbackReconciliationJobs } from "@/lib/review-feedback";
 import { REVIEW_DEADLINE_MS } from "./review";
 
 export const WATCHDOG_ERROR_PREFIX = "watchdog:";
@@ -244,24 +246,26 @@ export async function watchdogPass(
   // worker is not a handled attempt. Check-run cleanup is deliberately absent:
   // an ambiguous check-run can remain absent forever, so cleanup honors its
   // declared retry budget in both the runner and watchdog recovery paths.
+  // Full feedback reviews carry publication recovery and coalesced snapshots.
+  // Feedback polling jobs use the generic attempts budget below.
   const pool = getPool();
   await pool.query(
     `WITH updated AS (
        UPDATE jobs
        SET status = CASE
-             WHEN kind = 'review'
+             WHEN kind IN ('review', $3)
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
                THEN 'failed'::job_status
              WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
-                  OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                  OR (kind IN ('review', $3) AND payload ? 'recoveryReviewId')
                   OR attempts < max_attempts
                THEN 'queued'::job_status
              ELSE 'failed'::job_status
            END,
            locked_at = NULL, locked_by = NULL, run_after = now(),
            last_error = CASE
-             WHEN kind = 'review'
+             WHEN kind IN ('review', $3)
                   AND NOT payload ? 'recoveryReviewId'
                   AND jsonb_typeof(payload -> $2) = 'object'
                THEN concat_ws(
@@ -271,7 +275,7 @@ export async function watchdogPass(
              ELSE COALESCE(last_error, '') ||
                CASE
                  WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
-                      OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                      OR (kind IN ('review', $3) AND payload ? 'recoveryReviewId')
                       OR attempts < max_attempts
                    THEN ' [watchdog: requeued stuck job]'
                  ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
@@ -292,7 +296,7 @@ export async function watchdogPass(
        payload -> $2,
        max_attempts
      FROM updated
-     WHERE kind = 'review'
+     WHERE kind IN ('review', $3)
        AND status = 'failed'
        AND jsonb_typeof(payload -> $2) = 'object'
      UNION ALL
@@ -302,7 +306,7 @@ export async function watchdogPass(
        5
      FROM updated
      WHERE kind = 'respond' AND status = 'failed'`,
-    [cutoff, COALESCED_REVIEW_PAYLOAD_KEY],
+    [cutoff, COALESCED_REVIEW_PAYLOAD_KEY, FEEDBACK_REVIEW_JOB_KIND],
   );
 
   const scheduledFeedbackReconciliations = await scheduleFindingFeedbackReconciliationJobs(
@@ -310,6 +314,7 @@ export async function watchdogPass(
     now,
     findingFeedbackDigestPeriodEnd(now),
   );
+  await scheduleReviewFeedbackReconciliationJobs(pool, now);
   if (scheduledFeedbackReconciliations > 0) {
     console.log(`[finding feedback] scheduled=${scheduledFeedbackReconciliations}`);
   }

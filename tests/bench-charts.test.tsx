@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { CostAgainstGateChart } from "@/components/bench-charts";
-import { SCORED_MODELS } from "@/components/bench-table";
+import {
+  CostAgainstGateChart,
+  DetectionSpreadChart,
+} from "@/components/bench-charts";
+import { BENCH, SCORED_MODELS } from "@/components/bench-table";
 
 const markup = renderToStaticMarkup(<CostAgainstGateChart />);
+const spreadMarkup = renderToStaticMarkup(<DetectionSpreadChart />);
 
 const plotted = SCORED_MODELS.filter(
   (model) => model.totalCostUsd !== undefined && model.gateVerdictCorrectness !== undefined,
@@ -31,19 +35,34 @@ describe("cost against gate correctness", () => {
     expect(markCentre(byCost.at(-1)!.id)).toBeLessThan(markCentre(byCost[0]!.id));
   });
 
-  test("says which way the axis runs wherever it is described", () => {
+  test("labels the inverted cost axis and its screening-run unit", () => {
     expect(markup).toContain("cheaper to the right");
-    expect(markup).toContain("right is cheaper");
-    expect(markup).toContain("sits top right");
+    expect(markup).toContain("right is less expensive");
+    expect(markup).toContain("Total cost for 70 fixtures (USD, log scale)");
+    expect(markup).toContain("one screening run across 70 attempted fixtures");
+    expect(markup).toContain("gate correctness uses cases with valid output");
     expect(markup).not.toContain("left is cheaper");
     expect(markup).not.toContain("top left");
   });
 
-  test("ranks the selected model's spend as the report ranks it", () => {
-    const winner = plotted.find((model) => model.id === "openai/gpt-5.6-luna")!;
-    const cheaper = plotted.filter((model) => model.totalCostUsd! < winner.totalCostUsd!).length;
-    expect(cheaper).toBe(2);
-    expect(markup).toContain("third-lowest spend");
+  test("keeps repeated-run spread labels inside the SVG", () => {
+    expect(spreadMarkup).toContain("21.1 pt spread");
+    expect(spreadMarkup).not.toContain("5.3 pt spread");
+    expect(spreadMarkup).toContain("16 unavailable results");
+    const labels = [
+      ...spreadMarkup.matchAll(
+        /<text x="([0-9.]+)" y="[0-9.]+" text-anchor="(start|end)"[^>]*>([0-9.]+ pt spread)<\/text>/g,
+      ),
+    ];
+    expect(labels).toHaveLength(3);
+
+    for (const [, rawX, anchor, text] of labels) {
+      if (!rawX || !anchor || !text) throw new Error("invalid spread label");
+      const x = Number(rawX);
+      const width = text.length * 7;
+      expect(anchor === "start" ? x + width : x - width).toBeGreaterThanOrEqual(0);
+      expect(anchor === "start" ? x + width : x - width).toBeLessThanOrEqual(720);
+    }
   });
 
   test("draws no rule across the plot beyond the axis baseline", () => {
@@ -53,12 +72,29 @@ describe("cost against gate correctness", () => {
     expect(y1).toBe(y2!);
   });
 
+  test("shows every repeated run separately while preserving its exact metric position", () => {
+    for (const model of BENCH.repeatRuns!.models) {
+      const marks = [...spreadMarkup.matchAll(/<circle cx="([0-9.]+)" cy="([0-9.]+)"[^>]*aria-label="([^"]+)"/g)]
+        .filter(mark => mark[3]!.startsWith(`${model.id}, run `));
+      expect(marks).toHaveLength(4);
+      expect(new Set(marks.map(mark => `${mark[1]},${mark[2]}`)).size).toBe(4);
+      for (const [index, mark] of marks.entries()) {
+        const expectedX = 168 + ((model.detectionRates[index]! * 100 - 70) / 30) * (720 - 168 - 28);
+        expect(Number(mark[1])).toBeCloseTo(expectedX, 10);
+      }
+    }
+    expect(spreadMarkup).toContain("Runs with equal percentages stack vertically");
+  });
+
   test("gives every mark a focus stop that names the figures it plots", () => {
-    const marks = markup.match(/tabindex="0"/g) ?? [];
+    const marks = markup.match(/<circle[^>]*tabindex="0"/g) ?? [];
     expect(marks).toHaveLength(plotted.length);
     for (const model of plotted) {
+      const scoredCases = model.casesRun - model.unscoredCases;
       expect(markup).toContain(
-        `aria-label="${model.id}. Gate correct ${(model.gateVerdictCorrectness! * 100).toFixed(1)}%.` +
+        `aria-label="${model.id}. Gate correct ${(model.gateVerdictCorrectness! * 100).toFixed(1)}% (` +
+          `${Math.round(model.gateVerdictCorrectness! * scoredCases)}/${scoredCases}).` +
+          ` No envelope ${model.unscoredCases}/${model.casesRun}.` +
           ` Total cost $${model.totalCostUsd!.toFixed(3)}.` +
           ` Detected ${(model.detectionRate! * 100).toFixed(1)}%.` +
           ` p95 latency ${(model.latencyMsP95! / 1000).toFixed(1)}s."`,

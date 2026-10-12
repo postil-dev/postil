@@ -1,10 +1,18 @@
+import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { Pool } from "pg";
 
 import {
-  type ManagedReleaseCapabilitySnapshot,
-  prepareManagedReleaseCapabilities,
+  COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
+  applyReviewedFeedbackControlMigration,
+  applyReviewedIlertCanaryAlertKeyMigration,
+  applyReviewedMonitoringDeliveryMigration,
+  type ManagedReleaseMigrationIdentity,
+  prepareCompatibleManagedRelease,
   restoreAllManagedReleasePreparations,
-  restoreManagedReleaseCapabilities,
+  verifyCompatibleManagedRelease,
 } from "@/lib/release-job-rollout";
 import { resolveDirectDatabaseUrl } from "./resolve-direct-database-url";
 
@@ -17,13 +25,12 @@ type SpawnReleaseDatabaseCommand = (
   command: readonly string[],
   environment: Environment,
 ) => MigrationProcess;
-type PrepareReleaseCapabilities = (
+type PrepareAndVerifyCompatibleRelease = (
   environment: Environment,
-) => Promise<ManagedReleaseCapabilitySnapshot | undefined>;
-type RestoreReleaseCapabilities = (
-  environment: Environment,
-  snapshot: ManagedReleaseCapabilitySnapshot,
 ) => Promise<void>;
+type PrepareCompatibleRelease = (
+  environment: Environment,
+) => Promise<boolean>;
 
 class ReleaseCommandStateUncertainError extends Error {
   override name = "ReleaseCommandStateUncertainError";
@@ -43,46 +50,200 @@ export function releaseMigrationEnvironment(environment: Environment): Environme
 export async function runReleaseMigrations(
   environment: Environment = process.env,
   spawnCommand: SpawnReleaseDatabaseCommand = defaultSpawnReleaseDatabaseCommand,
-  prepareCapabilities: PrepareReleaseCapabilities = defaultPrepareReleaseCapabilities,
-  restoreCapabilities: RestoreReleaseCapabilities = defaultRestoreReleaseCapabilities,
+  prepareAndVerifyCompatibleRelease: PrepareAndVerifyCompatibleRelease = defaultPrepareAndVerifyCompatibleRelease,
+  prepareCompatibleRelease: PrepareCompatibleRelease = defaultPrepareCompatibleRelease,
   signal?: AbortSignal,
 ): Promise<void> {
   const databaseEnvironment = releaseMigrationEnvironment(environment);
-  const snapshot = await prepareCapabilities(databaseEnvironment);
+  const managedRelease = databaseEnvironment.POSTIL_MANAGED_RELEASE;
+  if (managedRelease !== undefined && managedRelease !== "0" && managedRelease !== "1") {
+    throw new Error("POSTIL_MANAGED_RELEASE must be 0 or 1");
+  }
+  const releaseSha = databaseEnvironment.POSTIL_RELEASE_SHA;
+  if (managedRelease !== "1") {
+    await runUnmanagedReleaseMigrations(
+      databaseEnvironment,
+      spawnCommand,
+      signal,
+    );
+    return;
+  }
+  if (!releaseSha) {
+    throw new Error("managed release requires a non-empty POSTIL_RELEASE_SHA");
+  }
+
+  requireCompatibleReleaseProtocol(databaseEnvironment);
+  await prepareAndVerifyCompatibleRelease(databaseEnvironment);
+  await runReleaseDatabaseCommand(
+    ["bun", "run", "hosted:verify-provider"],
+    "hosted provider preflight",
+    databaseEnvironment,
+    spawnCommand,
+    signal,
+  );
+  // The reviewed migrations above add columns only. Their lookup index is
+  // built concurrently here, before preparation, so a failed or blocked build
+  // stops the release while the running fleet is unchanged.
+  await runReleaseDatabaseCommand(
+    ["bun", "run", "operational:indexes", "--managed-release"],
+    "release managed operational indexes",
+    databaseEnvironment,
+    spawnCommand,
+    signal,
+  );
+  await prepareCompatibleRelease(databaseEnvironment);
+}
+
+async function runUnmanagedReleaseMigrations(
+  environment: Environment,
+  spawnCommand: SpawnReleaseDatabaseCommand,
+  signal?: AbortSignal,
+): Promise<void> {
+  for (const [command, label] of [
+    [["bun", "run", "db:migrate"], "release database migration"],
+    [["bun", "run", "operational:indexes"], "release operational indexes"],
+    [["bun", "run", "notifications:quiesce"], "release notification quiescence"],
+  ] as const) {
+    await runReleaseDatabaseCommand(
+      command,
+      label,
+      environment,
+      spawnCommand,
+      signal,
+    );
+  }
+}
+
+function requireCompatibleReleaseProtocol(environment: Environment): string {
+  const protocol = environment.POSTIL_RELEASE_PROTOCOL;
+  if (protocol !== COMPATIBLE_MANAGED_RELEASE_PROTOCOL) {
+    throw new Error(
+      `POSTIL_RELEASE_PROTOCOL must be ${COMPATIBLE_MANAGED_RELEASE_PROTOCOL}`,
+    );
+  }
+  return protocol;
+}
+
+function compatibleSourceReleaseSha(environment: Environment): string {
+  const releaseSha = environment.POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA;
+  if (!releaseSha) {
+    throw new Error(
+      "POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA must identify the verified live fleet",
+    );
+  }
+  return releaseSha;
+}
+
+export function checkedInReleaseMigrations(): ManagedReleaseMigrationIdentity[] {
+  return readMigrationFiles({
+    migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)),
+  }).map(({ folderMillis, hash }) => ({ folderMillis, hash }));
+}
+
+async function defaultPrepareAndVerifyCompatibleRelease(
+  inputEnvironment: Environment,
+): Promise<void> {
+  const environment = releaseMigrationEnvironment(inputEnvironment);
+  const pool = new Pool({ connectionString: environment.DATABASE_URL });
   try {
-    await runReleaseDatabaseCommand(
-      ["bun", "run", "db:migrate"],
-      "release database migration",
-      databaseEnvironment,
-      spawnCommand,
-      signal,
+    await prepareReviewedAdditiveMigration(environment, false, pool);
+    await verifyCompatibleManagedRelease(
+      pool,
+      compatibleSourceReleaseSha(environment),
+      environment.POSTIL_RELEASE_SHA!,
+      requireCompatibleReleaseProtocol(environment),
+      checkedInReleaseMigrations(),
     );
-    await runReleaseDatabaseCommand(
-      ["bun", "run", "operational:indexes"],
-      "release operational indexes",
-      databaseEnvironment,
-      spawnCommand,
-      signal,
+    const feedbackControl = await pool.query<{ id: number; mode: string }>(
+      "SELECT id, mode FROM review_feedback_control",
     );
-    await runReleaseDatabaseCommand(
-      ["bun", "run", "notifications:quiesce"],
-      "release notification quiescence",
-      databaseEnvironment,
-      spawnCommand,
-      signal,
-    );
-  } catch (error) {
-    if (snapshot && !(error instanceof ReleaseCommandStateUncertainError)) {
-      try {
-        await restoreCapabilities(databaseEnvironment, snapshot);
-      } catch (restoreError) {
-        throw new AggregateError(
-          [error, restoreError],
-          "release database preparation and capability compensation failed",
-        );
-      }
+    if (feedbackControl.rows.length !== 1 || feedbackControl.rows[0]?.id !== 1 ||
+        feedbackControl.rows[0].mode !== "disabled") {
+      throw new Error("release feedback control must be disabled");
     }
-    throw error;
+  } finally {
+    await pool.end();
+  }
+}
+
+/** Return whether the reviewed migration is pending; dry-run does not apply it. */
+export async function prepareReviewedAdditiveMigration(
+  environment: Environment = process.env,
+  dryRun = true,
+  existingPool?: Pool,
+): Promise<boolean> {
+  const databaseEnvironment = releaseMigrationEnvironment(environment);
+  if (databaseEnvironment.POSTIL_MANAGED_RELEASE !== "1") {
+    throw new Error("reviewed additive preparation requires a managed release");
+  }
+  const pool = existingPool ?? new Pool({ connectionString: databaseEnvironment.DATABASE_URL });
+  try {
+    const sourceReleaseSha = compatibleSourceReleaseSha(databaseEnvironment);
+    const releaseSha = databaseEnvironment.POSTIL_RELEASE_SHA ?? "";
+    const protocol = requireCompatibleReleaseProtocol(databaseEnvironment);
+    const migrations = checkedInReleaseMigrations();
+    // The reviewed migrations occupy the journal tail in application order.
+    const reviewed = [
+      { apply: applyReviewedMonitoringDeliveryMigration, file: "0062_monitor_delivery_receipt.sql" },
+      { apply: applyReviewedFeedbackControlMigration, file: "0063_review_feedback_control.sql" },
+      { apply: applyReviewedIlertCanaryAlertKeyMigration, file: "0064_ilert_canary_alert_key.sql" },
+    ].map((step, index, steps) => {
+      const through = migrations.slice(0, migrations.length - (steps.length - 1 - index));
+      return { ...step, through, identity: through.at(-1) };
+    });
+    if (migrations.length < reviewed.length || reviewed.some((step) => !step.identity)) {
+      throw new Error("reviewed release migration identities are missing");
+    }
+    const journal = await pool.query<{ created_at: string }>(
+      "SELECT created_at::text FROM drizzle.__drizzle_migrations WHERE created_at = ANY($1::bigint[])",
+      [reviewed.map((step) => step.identity!.folderMillis)],
+    );
+    const journaled = new Set(journal.rows.map((row) => row.created_at));
+    const applied = reviewed.map((step) => journaled.has(String(step.identity!.folderMillis)));
+    const latestApplied = applied.lastIndexOf(true);
+    if (applied[1] && !applied[0]) {
+      throw new Error("reviewed feedback control migration is missing its monitoring predecessor");
+    }
+    if (applied[2] && !applied[1]) {
+      throw new Error("reviewed alert key migration is missing its feedback control predecessor");
+    }
+    // The latest journaled step is verified against exactly its own history,
+    // and every later step applies in order. A retry therefore never presents
+    // an already journaled migration to an earlier step as unknown.
+    let pending = false;
+    for (const step of reviewed.slice(Math.max(latestApplied, 0))) {
+      const stepPending = await step.apply(
+        pool,
+        sourceReleaseSha,
+        releaseSha,
+        protocol,
+        step.through,
+        await readFile(new URL(`../drizzle/${step.file}`, import.meta.url), "utf8"),
+        { dryRun },
+      );
+      if (dryRun && stepPending) return true;
+      pending ||= stepPending;
+    }
+    return pending;
+  } finally {
+    if (!existingPool) await pool.end();
+  }
+}
+
+async function defaultPrepareCompatibleRelease(
+  environment: Environment,
+): Promise<boolean> {
+  const pool = new Pool({ connectionString: environment.DATABASE_URL });
+  try {
+    return await prepareCompatibleManagedRelease(
+      pool,
+      compatibleSourceReleaseSha(environment),
+      environment.POSTIL_RELEASE_SHA!,
+      requireCompatibleReleaseProtocol(environment),
+      checkedInReleaseMigrations(),
+    );
+  } finally {
+    await pool.end();
   }
 }
 
@@ -110,37 +271,6 @@ async function releaseSchemaState(pool: Pool): Promise<{
     hostedReady: false,
     publicationLifecycleReady: false,
   };
-}
-
-async function defaultPrepareReleaseCapabilities(
-  environment: Environment,
-): Promise<ManagedReleaseCapabilitySnapshot | undefined> {
-  const releaseSha = environment.POSTIL_RELEASE_SHA?.trim();
-  if (!releaseSha) return undefined;
-  const pool = new Pool({ connectionString: environment.DATABASE_URL });
-  try {
-    const schema = await releaseSchemaState(pool);
-    if (!schema.hostedReady) return undefined;
-    return await prepareManagedReleaseCapabilities(
-      pool,
-      releaseSha,
-      schema.publicationLifecycleReady,
-    );
-  } finally {
-    await pool.end();
-  }
-}
-
-async function defaultRestoreReleaseCapabilities(
-  environment: Environment,
-  snapshot: ManagedReleaseCapabilitySnapshot,
-): Promise<void> {
-  const pool = new Pool({ connectionString: environment.DATABASE_URL });
-  try {
-    await restoreManagedReleaseCapabilities(pool, snapshot);
-  } finally {
-    await pool.end();
-  }
 }
 
 export async function compensateReleasePreparation(
@@ -259,7 +389,7 @@ async function runReleaseDatabaseCommand(
     exitCode = await process.exited;
   } catch (cause) {
     throw new ReleaseCommandStateUncertainError(
-      `${label} termination could not be observed; durable compensation remains pending`,
+      `${label} termination could not be observed`,
       { cause },
     );
   } finally {
@@ -285,6 +415,11 @@ function defaultSpawnReleaseDatabaseCommand(
 }
 
 if (import.meta.main) {
+  if (process.argv[2] === "--inspect-additive") {
+    const pending = await prepareReviewedAdditiveMigration();
+    console.log(`reviewed additive migration: ${pending ? "pending and compatible" : "already applied"}`);
+    process.exit(0);
+  }
   if (process.argv[2] === "--compensate") {
     const restored = await compensateReleasePreparation();
     console.log(
@@ -316,8 +451,8 @@ if (import.meta.main) {
     await runReleaseMigrations(
       process.env,
       defaultSpawnReleaseDatabaseCommand,
-      defaultPrepareReleaseCapabilities,
-      defaultRestoreReleaseCapabilities,
+      defaultPrepareAndVerifyCompatibleRelease,
+      defaultPrepareCompatibleRelease,
       controller.signal,
     );
   } finally {

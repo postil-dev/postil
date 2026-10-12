@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 
 import {
   ALERT_TRIGGER_TYPES,
@@ -18,11 +19,15 @@ import {
   verifyIlertWebhookCanary,
 } from "../scripts/reconcile-ilert-alert-stream";
 
-const API_KEY = "test-api-key";
-const INTEGRATION_KEY = "test-integration-key";
+// Credential fixtures are generated per run so the source carries no
+// credential-shaped literal.
+const fixtureCredential = (bytes = 24): string => randomBytes(bytes).toString("hex");
+const API_KEY = fixtureCredential();
+const INTEGRATION_KEY = fixtureCredential();
+const REPLACEMENT_INTEGRATION_KEY = fixtureCredential();
 const SOURCE_ID = 42;
 const RECEIVER_ORIGIN = "https://postil.example";
-const WEBHOOK_SECRET = "test-webhook-secret-with-at-least-32-bytes";
+const WEBHOOK_SECRET = fixtureCredential();
 const RUN_ID = "12345";
 const RUN_ATTEMPT = "1";
 const SOURCE = {
@@ -73,7 +78,8 @@ describe("iLert webhook-action reconciliation", () => {
   });
 
   test("builds an unfiltered default-body action for a documented API source", () => {
-    const secret = "test-webhook-secret-with-special-:/?#%value";
+    const prefix = fixtureCredential();
+    const secret = `${prefix}:/?#%value`;
     const desired = desiredAlertAction(SOURCE, secret, RECEIVER_ORIGIN);
     expect(desired).toMatchObject({
       alertSources: [{ id: SOURCE_ID }],
@@ -85,7 +91,7 @@ describe("iLert webhook-action reconciliation", () => {
       params: {
         bodyTemplate: "",
         webhookUrl:
-          "https://postil-ilert:test-webhook-secret-with-special-%3A%2F%3F%23%25value@postil.example/api/webhooks/ilert",
+          `https://postil-ilert:${prefix}%3A%2F%3F%23%25value@postil.example/api/webhooks/ilert`,
       },
     });
   });
@@ -110,10 +116,13 @@ describe("iLert webhook-action reconciliation", () => {
   });
 
   test("rejects receiver URLs with unsafe schemes, credentials, or non-origin data", () => {
+    const receiverPassword = fixtureCredential();
+    const receiverWithCredentials = `https://user:${receiverPassword}@postil.example`;
+    expect(new URL(receiverWithCredentials).password).toBe(receiverPassword);
     expect(parseReceiverOrigin("https://postil.example/")).toBe(RECEIVER_ORIGIN);
     for (const value of [
       "http://postil.example",
-      "https://user:password@postil.example",
+      receiverWithCredentials,
       "https://postil.example/path",
       "https://postil.example?query=1",
       "https://postil.example/#fragment",
@@ -160,7 +169,7 @@ describe("iLert webhook-action reconciliation", () => {
       fetchFn: async (input, init) => {
         const request = new Request(input, init);
         requests.push(request);
-        return Response.json({ ...SOURCE, integrationKey: "different-integration-key" });
+        return Response.json({ ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY });
       },
     })).rejects.toThrow("integration binding validation failed");
     expect(new URL(requests[0]!.url).pathname).toBe(`/api/alert-sources/${SOURCE_ID}`);
@@ -168,8 +177,8 @@ describe("iLert webhook-action reconciliation", () => {
   });
 
   test("redacts a sensitive binding failure and emits no Event API mutation", async () => {
-    const integrationKey = "sensitive-integration-key";
-    const apiKey = "sensitive-management-key";
+    const integrationKey = fixtureCredential();
+    const apiKey = fixtureCredential();
     const requests: Request[] = [];
     const logs: string[] = [];
     let error: unknown;
@@ -293,6 +302,185 @@ describe("iLert webhook-action reconciliation", () => {
     expect(body.params).toMatchObject({ bodyTemplate: "" });
   });
 
+  test("preserves writable action fields from the boundary detail without echoing server fields", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const existing = {
+      ...desired,
+      id: "72",
+      conditions: "alert.priority == 'HIGH'",
+      alertSources: [{ id: SOURCE_ID, integrationKey: INTEGRATION_KEY, name: "Expanded source" }],
+      teams: [{ id: 9, name: "Operations", managedBy: { id: 1 } }],
+      escalationEndedDelaySec: 0,
+      notResolvedDelaySec: 0,
+      connectorId: "connector-9",
+      connector: { id: "connector-9", name: "Expanded connector" },
+      managedBy: { id: 1 },
+      bidirectional: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-02T00:00:00Z",
+    };
+    const requests: Request[] = [];
+    let current: Record<string, unknown> = existing;
+    const result = await reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request.clone());
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+        if (url.pathname === "/api/alert-actions") return Response.json([{ id: 72, name: desired.name }]);
+        if (url.pathname === "/api/alert-actions/72" && request.method === "GET") {
+          return Response.json(current);
+        }
+        if (url.pathname === "/api/alert-actions/72" && request.method === "PUT") {
+          current = await request.json() as Record<string, unknown>;
+          return Response.json(current);
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    });
+    expect(result).toEqual({ actionId: "72", operation: "update" });
+    const update = requests.find((request) => request.method === "PUT");
+    expect(update).toBeDefined();
+    const body = await update!.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      id: "72",
+      conditions: "",
+      teams: [{ id: 9 }],
+      escalationEndedDelaySec: 0,
+      notResolvedDelaySec: 0,
+      connectorId: "connector-9",
+      alertSources: [{ id: SOURCE_ID }],
+    });
+    expect(body.teams).toEqual([{ id: 9 }]);
+    expect(body.alertSources).toEqual([{ id: SOURCE_ID }]);
+    for (const key of ["connector", "managedBy", "bidirectional", "createdAt", "updatedAt", "integrationKey"]) {
+      expect(body).not.toHaveProperty(key);
+    }
+  });
+
+  test("accepts absent and null empty fields after a successful update with numeric detail ID", async () => {
+    const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+    const existing = {
+      ...desired,
+      id: 72,
+      conditions: "alert.priority == 'HIGH'",
+      teams: [],
+      connectorId: "",
+      notResolvedDelaySec: 0,
+    };
+    let updated = false;
+    await expect(reconcileIlertAlertAction({
+      ...reconcileOptions,
+      fetchFn: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+        if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+        if (url.pathname === "/api/alert-actions") return Response.json([{ id: "72", name: desired.name }]);
+        if (url.pathname === "/api/alert-actions/72" && request.method === "GET") {
+          return Response.json(updated
+            ? {
+                ...desired,
+                id: 72,
+                teams: null,
+                connectorId: null,
+                notResolvedDelaySec: null,
+                escalationEndedDelaySec: null,
+              }
+            : existing);
+        }
+        if (url.pathname === "/api/alert-actions/72" && request.method === "PUT") {
+          updated = true;
+          const body = await request.json() as Record<string, unknown>;
+          expect(body.id).toBe("72");
+          expect(body.teams).toEqual([]);
+          expect(body.connectorId).toBe("");
+          expect(body.notResolvedDelaySec).toBe(0);
+          return Response.json({ ...desired, id: 72 });
+        }
+        throw new Error(`unexpected request: ${request.method} ${request.url}`);
+      },
+    })).resolves.toEqual({ actionId: "72", operation: "update" });
+    expect(updated).toBe(true);
+  });
+
+  for (const [field, value, error] of [
+    ["notResolvedDelaySec", 86_400, "requires its trigger type"],
+    ["escalationEndedDelaySec", 1, "requires its trigger type"],
+    ["notResolvedDelaySec", 172_801, "invalid alert-action"],
+    ["escalationEndedDelaySec", 7_201, "invalid alert-action"],
+    ["notResolvedDelaySec", -1, "invalid alert-action"],
+    ["notResolvedDelaySec", "45", "invalid alert-action"],
+  ] as const) {
+    test(`rejects incompatible or out-of-schema ${field} ${value} before PUT`, async () => {
+      const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+      const existing = { ...desired, id: 72, conditions: "alert.priority == 'HIGH'", [field]: value };
+      const requests: Request[] = [];
+      let failure: unknown;
+      try {
+        await reconcileIlertAlertAction({
+          ...reconcileOptions,
+          fetchFn: async (input, init) => {
+            const request = new Request(input, init);
+            requests.push(request);
+            const url = new URL(request.url);
+            if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+            if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+            if (url.pathname === "/api/alert-actions") return Response.json([{ id: "72", name: desired.name }]);
+            if (url.pathname === "/api/alert-actions/72" && request.method === "GET") return Response.json(existing);
+            throw new Error(`unexpected request: ${request.method} ${request.url}`);
+          },
+        });
+      } catch (caught) {
+        failure = caught;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain(field);
+      expect((failure as Error).message).toContain(error);
+      expect((failure as Error).message).not.toContain(String(value));
+      expect(requests.some((request) => request.method === "PUT")).toBe(false);
+    });
+  }
+
+  for (const field of ["teams", "connectorId"] as const) {
+    test(`rejects loss of nonempty ${field} after PUT`, async () => {
+      const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
+      const existing = {
+        ...desired,
+        id: "72",
+        conditions: "alert.priority == 'HIGH'",
+        teams: [{ id: 9 }],
+        connectorId: "connector-9",
+      };
+      let current: Record<string, unknown> = existing;
+      let putCount = 0;
+      await expect(reconcileIlertAlertAction({
+        ...reconcileOptions,
+        fetchFn: async (input, init) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+          if (url.pathname.startsWith("/api/alert-sources/")) return Response.json(SOURCE);
+          if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
+          if (url.pathname === "/api/alert-actions") return Response.json([{ id: 72, name: desired.name }]);
+          if (url.pathname === "/api/alert-actions/72" && request.method === "GET") return Response.json(current);
+          if (url.pathname === "/api/alert-actions/72" && request.method === "PUT") {
+            putCount += 1;
+            const body = await request.json() as Record<string, unknown>;
+            expect(body.id).toBe("72");
+            expect(body.teams).toEqual([{ id: 9 }]);
+            expect(body.connectorId).toBe("connector-9");
+            current = { ...body, [field]: field === "teams" ? [] : null };
+            return Response.json(current);
+          }
+          throw new Error(`unexpected request: ${request.method} ${request.url}`);
+        },
+      })).rejects.toThrow("did not retain the existing alert-action fields");
+      expect(putCount).toBe(1);
+    });
+  }
+
   test("clears an active deprecated alertFilter and verifies its removal", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
     const legacy = {
@@ -366,7 +554,7 @@ describe("iLert webhook-action reconciliation", () => {
 
   test("fails closed for a renamed action at the receiver endpoint with an older credential", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
-    const syntheticBasicAuthRedactionMarker = "test-fixture-not-a-real-secret";
+    const syntheticBasicAuthRedactionMarker = fixtureCredential();
     const renamed = {
       ...desired,
       alertSources: [{ id: SOURCE_ID + 1 }],
@@ -432,7 +620,7 @@ describe("iLert webhook-action reconciliation", () => {
 
   test("fails closed when ambiguous action creation finds an equivalent and a conflicting reserved candidate", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
-    const oldCredential = "older-webhook-credential-that-must-not-leak";
+    const oldCredential = fixtureCredential();
     let created = false;
     await expect(reconcileIlertAlertAction({
       ...reconcileOptions,
@@ -641,7 +829,7 @@ describe("iLert webhook-action reconciliation", () => {
         const url = new URL(request.url);
         if (url.pathname.startsWith("/api/alert-sources/")) {
           return Response.json(boundary
-            ? { ...SOURCE, integrationKey: "concurrently-replaced-key" }
+            ? { ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY }
             : SOURCE);
         }
         if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) {
@@ -761,7 +949,7 @@ describe("iLert webhook-action reconciliation", () => {
         if (url.pathname.startsWith("/api/alert-sources/")) {
           sourceReads += 1;
           return Response.json(sourceReads >= 3
-            ? { ...SOURCE, integrationKey: "rotated-key" }
+            ? { ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY }
             : SOURCE);
         }
         if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
@@ -785,7 +973,7 @@ describe("iLert webhook-action reconciliation", () => {
         requests.push(request.clone());
         const url = new URL(request.url);
         if (url.pathname.startsWith("/api/alert-sources/")) {
-          return Response.json(rotated ? { ...SOURCE, integrationKey: "rotated-key" } : SOURCE);
+          return Response.json(rotated ? { ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY } : SOURCE);
         }
         if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
         if (url.pathname === "/api/alert-actions" && request.method === "GET") {
@@ -945,7 +1133,7 @@ describe("iLert webhook-action reconciliation", () => {
         requests.push(request.clone());
         const url = new URL(request.url);
         if (url.pathname.startsWith("/api/alert-sources/")) {
-          return Response.json(rotated ? { ...SOURCE, integrationKey: "rotated-key" } : SOURCE);
+          return Response.json(rotated ? { ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY } : SOURCE);
         }
         if (url.href === `${RECEIVER_ORIGIN}/api/webhooks/ilert`) return new Response(null, { status: 204 });
         if (url.pathname === "/api/alert-actions" && request.method === "GET") return Response.json([]);
@@ -1006,7 +1194,7 @@ describe("iLert webhook-action reconciliation", () => {
 
   test("fails closed after creation when the global inventory finds a concurrent reserved candidate", async () => {
     const desired = desiredAlertAction(SOURCE, WEBHOOK_SECRET, RECEIVER_ORIGIN);
-    const oldCredential = "older-webhook-credential-that-must-not-leak";
+    const oldCredential = fixtureCredential();
     for (const conflictingSummary of [
       { id: "74", name: desired.name },
       {
@@ -1366,7 +1554,7 @@ describe("iLert webhook canary", () => {
       const url = new URL(request.url);
       if (url.pathname === "/api/alerts") precleanListed = true;
       if (url.pathname.startsWith("/api/alert-sources/") && precleanListed) {
-        return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+        return Response.json({ ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY });
       }
       return service.fetchFn(input, init);
     };
@@ -1391,7 +1579,7 @@ describe("iLert webhook canary", () => {
       const request = new Request(input, init);
       if (new URL(request.url).pathname.startsWith("/api/alert-sources/")) {
         sourceReads += 1;
-        if (sourceReads >= 3) return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+        if (sourceReads >= 3) return Response.json({ ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY });
       }
       return service.fetchFn(input, init);
     };
@@ -1445,7 +1633,7 @@ describe("iLert webhook canary", () => {
         fetchFn: async (input, init) => {
           const request = new Request(input, init);
           if (new URL(request.url).pathname.startsWith("/api/alert-sources/") && rotated) {
-            return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+            return Response.json({ ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY });
           }
           const response = await service.fetchFn(input, init);
           if (
@@ -1618,7 +1806,7 @@ describe("iLert webhook canary", () => {
         fetchFn: async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).pathname.startsWith("/api/alert-sources/") && rotated) {
-          return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+          return Response.json({ ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY });
         }
         const response = await service.fetchFn(input, init);
         if (request.method === "POST" && request.url.endsWith("/events")) rotated = true;
@@ -1663,7 +1851,7 @@ describe("iLert webhook canary", () => {
       fetchFn: async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).pathname.startsWith("/api/alert-sources/") && rotated) {
-          return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+          return Response.json({ ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY });
         }
         const response = await service.fetchFn(input, init);
         if (request.method === "PUT" && /\/alerts\/99\/resolve$/u.test(new URL(request.url).pathname)) {
@@ -1686,7 +1874,7 @@ describe("iLert webhook canary", () => {
       fetchFn: async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).pathname.startsWith("/api/alert-sources/") && rotated) {
-          return Response.json({ ...SOURCE, integrationKey: "rotated-key" });
+          return Response.json({ ...SOURCE, integrationKey: REPLACEMENT_INTEGRATION_KEY });
         }
         const response = await service.fetchFn(input, init);
         if (request.method === "POST" && request.url.endsWith("/events")) {

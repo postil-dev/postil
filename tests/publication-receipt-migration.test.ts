@@ -17,8 +17,10 @@ import {
   getPullRequestPublicationThreadPlan,
   getReviewPublicationCounts,
   type PublicationReceipt,
+  type PublicationThreadObservation,
 } from "@/lib/publication-receipt";
 import {
+  completeReviewPublicationLifecycle,
   finalizeStagedReviewCompletionWithGateMode,
   persistReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
@@ -43,7 +45,10 @@ const realAppAuth = await import("@/lib/github/app-auth");
 const realChecks = await import("@/lib/github/checks");
 const realInstallationSync = await import("@/lib/github/installation-sync");
 const realPublicationThreads = await import("@/lib/github/publication-threads");
+const resolvePublicationThreads = realPublicationThreads.resolveGitHubReviewThreads;
 let recoveryThreadObservationCount = 0;
+let recoveryThreadObservations: PublicationThreadObservation[] = [];
+let recoveryThreadResolver: typeof resolvePublicationThreads = async () => [];
 
 mock.module("@/lib/github/app-auth", () => ({
   ...realAppAuth,
@@ -64,9 +69,10 @@ mock.module("@/lib/github/publication-threads", () => ({
   ...realPublicationThreads,
   observeGitHubReviewThreads: async () => {
     recoveryThreadObservationCount += 1;
-    return [];
+    return recoveryThreadObservations;
   },
-  resolveGitHubReviewThreads: async () => [],
+  resolveGitHubReviewThreads: (...args: Parameters<typeof resolvePublicationThreads>) =>
+    recoveryThreadResolver(...args),
 }));
 mock.module("@/worker/runner", () => ({
   triggerQueueDrain: () => undefined,
@@ -507,6 +513,135 @@ describeDb("publication receipt migration and lifecycle", () => {
     },
   );
 
+  test.each([
+    { state: "outdated", viewerCanResolve: false, completes: true, prNumber: 171 },
+    { state: "inline", viewerCanResolve: false, completes: false, prNumber: 172 },
+    { state: "outdated", viewerCanResolve: undefined, completes: false, prNumber: 173 },
+    { state: "inline", viewerCanResolve: undefined, completes: false, prNumber: 174 },
+  ] as const)(
+    "worker recovery with real resolver preserves $state thread with capability $viewerCanResolve",
+    async ({ state, viewerCanResolve, completes, prNumber }) => {
+      const findingId = `terminal-finding-${prNumber}`;
+      const commentId = String(9200 + prNumber);
+      const priorId = await createRunningReview("b".repeat(40), null, prNumber, false);
+      await complete(priorId, envelope({
+        head: "b".repeat(40),
+        findings: [finding(findingId)],
+      }), {
+        version: 1,
+        receiptId: `github-review-v1:historical-${prNumber}`,
+        findings: [{
+          findingId, stableIdentity: true, initialOutcome: "inline",
+          inlineRejected: false, commentId,
+        }],
+      });
+      const prior = await pool.query<{ public_id: string }>(
+        "SELECT public_id FROM reviews WHERE id = $1",
+        [priorId],
+      );
+      await completeReviewPublicationLifecycle(db, {
+        reviewId: priorId,
+        reviewPublicId: prior.rows[0]!.public_id,
+      });
+      const reviewEnvelope = envelope({
+        head: "c".repeat(40),
+        resolved: [finding(findingId)],
+      });
+      const review = await pool.query<{ id: string }>(
+        `INSERT INTO reviews
+          (repository_id, pr_number, head_sha, base_sha, status,
+           source_org_id, source_installation_id, source_github_installation_id,
+           source_github_repo_id, source_repo_full_name,
+           advisory_check_run_id, gate_check_run_id, started_at)
+         VALUES ($1, $2, $3, $4, 'running', $5, $6, 1002, 1003,
+                 'publication/repo', 9101, 9102, now()) RETURNING id`,
+        [repositoryId, prNumber, reviewEnvelope.headSha!, reviewEnvelope.baseSha!, orgId, installationId],
+      );
+      const reviewId = Number(review.rows[0]!.id);
+      const recoveryPayload = {
+        installationId: 1002, sourceInstallationId: installationId,
+        sourceOrgId: orgId, githubRepoId: 1003, repoFullName: "publication/repo",
+        prNumber, headSha: reviewEnvelope.headSha!, baseSha: reviewEnvelope.baseSha!,
+        recoveryReviewId: reviewId,
+      };
+      const [recoveryJob] = await db.insert(schema.jobs).values({
+        kind: "review", payload: recoveryPayload,
+      }).returning({ id: schema.jobs.id });
+      await stageReviewCompletionCandidate(db, {
+        reviewId, reviewJobId: recoveryJob!.id,
+        envelope: reviewEnvelope, configFiles: [], silent: true,
+        gateFailing: false,
+        publicationReceipt: {
+          version: 1,
+          receiptId: `github-review-v1:terminal-${prNumber}`,
+          findings: [{
+            findingId, stableIdentity: true, initialOutcome: "resolved",
+            inlineRejected: false,
+          }],
+        },
+      }, orgId);
+
+      const previousResolver = recoveryThreadResolver;
+      const previousObservations = recoveryThreadObservations;
+      const previousFetch = globalThis.fetch;
+      const forgeMutation = mock(async () => {
+        throw new Error("unexpected forge mutation during recovery");
+      });
+      recoveryThreadResolver = resolvePublicationThreads;
+      recoveryThreadObservations = [{
+        githubCommentId: commentId, githubThreadId: `thread-${prNumber}`,
+        state, viewerCanResolve,
+      }];
+      globalThis.fetch = forgeMutation as unknown as typeof fetch;
+      try {
+        const { resumeStagedReviewCompletion, ReviewPublicationReconciliationError } =
+          await import("@/worker/review");
+        const recovery = resumeStagedReviewCompletion({
+          db, pool,
+          payload: recoveryPayload,
+          installation: { id: installationId, orgId, orgSlug: "publication" },
+          repository: { id: repositoryId, githubRepoId: 1003, fullName: "publication/repo" },
+        });
+        if (completes) {
+          await expect(recovery).resolves.toBe(true);
+          await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [recoveryJob!.id]);
+        } else {
+          await expect(recovery).rejects.toBeInstanceOf(ReviewPublicationReconciliationError);
+          await expect(recovery).rejects.toThrow(viewerCanResolve === undefined
+            ? "resolution capability is unknown"
+            : "cannot resolve an active Postil review thread");
+        }
+        expect(forgeMutation).not.toHaveBeenCalled();
+        const terminal = await pool.query(
+          `SELECT review.status,
+                  review.publication_lifecycle_reconciled_at IS NOT NULL AS reconciled,
+                  (SELECT count(*)::int FROM jobs sync WHERE sync.kind='gate-state-sync'
+                    AND (sync.payload->>'reviewId')::bigint=review.id) AS sync_jobs
+             FROM reviews review WHERE review.id=$1`,
+          [reviewId],
+        );
+        expect(terminal.rows[0]).toEqual({
+          status: "completed", reconciled: completes, sync_jobs: completes ? 1 : 0,
+        });
+        const publications = await pool.query(
+          `SELECT review_id::text, current_state FROM finding_publications
+            WHERE review_id=ANY($1::bigint[]) ORDER BY finding_publications.review_id`,
+          [[priorId, reviewId]],
+        );
+        expect(publications.rows).toEqual([
+          { review_id: String(priorId), current_state: completes ? "outdated" : "resolved" },
+          { review_id: String(reviewId), current_state: "resolved" },
+        ]);
+        expect(await getPullRequestPublicationThreadPlan(db, repositoryId, prNumber))
+          .toEqual({ commentIds: [commentId], resolveCommentIds: [commentId] });
+      } finally {
+        recoveryThreadResolver = previousResolver;
+        recoveryThreadObservations = previousObservations;
+        globalThis.fetch = previousFetch;
+      }
+    },
+  );
+
   test("fleet activation preserves legacy reviews and releases only parked gates", async () => {
     const pendingEnvelope = envelope({ head: "6".repeat(40) });
     const pending = await pool.query<{ id: string }>(
@@ -712,6 +847,7 @@ describeDb("publication receipt migration and lifecycle", () => {
   test("trigger producers park without waiting behind queued deactivation", async () => {
     const transitionPool = new Pool({ connectionString: TEST_URL, max: 3 });
     const reviewId = await createRunningReview("6".repeat(40), null, 74, false);
+    let holderBackendId = 0;
     let releaseHolder!: () => void;
     const holderReleased = new Promise<void>((resolve) => {
       releaseHolder = resolve;
@@ -722,7 +858,10 @@ describeDb("publication receipt migration and lifecycle", () => {
     });
     const holder = withPublicationLifecycleReleaseActive(
       transitionPool,
-      async () => {
+      async (_lockedDb, lockedClient) => {
+        holderBackendId = (await lockedClient.query<{ id: number }>(
+          "SELECT pg_backend_pid() AS id",
+        )).rows[0]!.id;
         holderAcquired();
         await holderReleased;
       },
@@ -730,7 +869,22 @@ describeDb("publication receipt migration and lifecycle", () => {
     await acquired;
     const deactivation = deactivatePublicationLifecycleRelease(transitionPool);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      let deactivationQueued = false;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const waiting = await pool.query<{ queued: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND wait_event = 'advisory'
+                AND $1::int = ANY(pg_blocking_pids(pid))
+           ) AS queued`,
+          [holderBackendId],
+        );
+        deactivationQueued = waiting.rows[0]?.queued === true;
+        if (deactivationQueued) break;
+        await Bun.sleep(25);
+      }
+      expect(deactivationQueued).toBe(true);
       const client = await transitionPool.connect();
       try {
         await client.query("BEGIN");
@@ -1759,7 +1913,11 @@ describeDb("publication receipt migration and lifecycle", () => {
     const counts = await getReviewPublicationCounts(db, reviewIds);
     expect(counts.get(legacyId)?.unknown).toBe(1);
 
-    const dashboardRows = await getOrgReviewRows(db, orgId, 20);
+    const fixtureCount = await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM reviews WHERE repository_id = $1",
+      [repositoryId],
+    );
+    const dashboardRows = await getOrgReviewRows(db, orgId, fixtureCount.rows[0]!.count);
     expect(dashboardRows.find((row) => row.id === legacyId)).toMatchObject({
       findingsCount: null,
     });

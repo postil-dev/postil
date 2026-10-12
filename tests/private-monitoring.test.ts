@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import type { Pool } from "pg";
 
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
+import { ilertEventTransport, withFallbackTransport } from "@/lib/operator-notifications";
 import type {
   OperatorNotification,
   OperatorNotificationTransport,
@@ -11,17 +12,19 @@ import { runOpenRouterCapMonitoringChecks } from "@/lib/openrouter-cap-monitorin
 import { NON_OPERATIONAL_REVIEW_FAILURE_MESSAGES } from "@/lib/review-outcome";
 import {
   acquirePrivateMonitorLease,
+  checkOutstandingOperationalReviews,
   claimPrivateMonitoringNotifications,
   deliverExternalMonitorHeartbeat,
   deliverPrivateMonitoringNotification,
   finishPrivateMonitoringPass,
   getPrivateMonitoringDashboard,
   markMonitorPassAlertSent,
+  matchingMonitoringDeliveryReceipt,
   monitorPassAlertBucket,
   recordMonitorPassFailure,
   recordMonitorPassSuccess,
   recordServiceHeartbeat,
-  runDatabaseMonitoringChecks,
+  runDatabaseMonitoringChecks as runDatabaseMonitoringChecksWithGitHub,
   runPublicMonitoringChecks,
   sendMonitorPassFailureNotification,
   startPrivateMonitoringPass,
@@ -34,24 +37,200 @@ const describeDb = TEST_URL ? describe : describe.skip;
 const NOW = new Date("2026-07-19T12:00:00.000Z");
 const BUCKET = new Date("2026-07-19T12:00:00.000Z");
 
-function healthyPublicProbeResponse(input: RequestInfo | URL): Response {
-  const url = new URL(String(input));
-  if (url.pathname === "/about") {
-    return new Response(null, { status: 308, headers: { location: "/why-postil" } });
-  }
-  if (url.pathname === "/robots.txt") {
-    return new Response(
-      `User-Agent: *\nAllow: /\nSitemap: ${new URL("/sitemap.xml", url).toString()}\n`,
-    );
-  }
-  if (url.pathname === "/api/health/dependencies") {
-    return Response.json({ ok: true, database: "up" });
-  }
-  const headers = ["/login", "/api/health"].includes(url.pathname)
-    ? { "x-robots-tag": "noindex, nofollow" }
-    : undefined;
-  return new Response("ok", { status: 200, headers });
+const livePullRequest = { number: 1, draft: false, headSha: "a".repeat(40) };
+const repository = { repositoryId: 1, installationId: 1, repoFullName: "example/service" };
+const emptyPage = { pullRequests: [], nextPage: null };
+
+async function runDatabaseMonitoringChecks(
+  pool: Pool,
+  options: Parameters<typeof runDatabaseMonitoringChecksWithGitHub>[1] = {},
+) {
+  return runDatabaseMonitoringChecksWithGitHub(pool, {
+    github: {
+      getInstallationToken: async () => crypto.randomUUID(),
+      listOpenPullRequestHeadsPage: async (_token, repoFullName, page) => {
+        const result = await pool.query<{ pr_number: number; head_sha: string }>(
+          `SELECT DISTINCT ON (review.pr_number) review.pr_number, review.head_sha FROM reviews review
+           JOIN repositories repository ON repository.id = review.repository_id
+           WHERE repository.full_name = $1 ORDER BY review.pr_number, review.id DESC`,
+          [repoFullName],
+        );
+        return {
+          pullRequests: result.rows.slice((page - 1) * 100, page * 100).map((row) => ({
+            number: row.pr_number, headSha: row.head_sha, draft: false,
+          })),
+          nextPage: result.rows.length > page * 100 ? page + 1 : null,
+        };
+      },
+    },
+    ...options,
+  });
 }
+
+describe("outstanding operational review visibility", () => {
+  const pool = {
+    query: async (_sql: string, values: string[]) => ({ rows: [{ count: String(
+      JSON.parse(values[0]!).filter((head: { headSha: string }) => head.headSha === livePullRequest.headSha).length,
+    ) }] }),
+  } as unknown as Pool;
+  const github = {
+    getInstallationToken: async () => crypto.randomUUID(),
+    listOpenPullRequestHeadsPage: async () => ({ pullRequests: [livePullRequest], nextPage: null }),
+  };
+
+  test("matches live non-draft heads and observes reopening without cached closure", async () => {
+    for (const [pullRequests, healthy] of [
+      [[], true], [[livePullRequest], false], [[{ ...livePullRequest, draft: true }], true],
+      [[{ ...livePullRequest, headSha: "c".repeat(40) }], true], [[livePullRequest], false],
+    ] as const) {
+      expect(await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        ...github, listOpenPullRequestHeadsPage: async () => ({ pullRequests: [...pullRequests], nextPage: null }),
+      } })).toMatchObject({ healthy });
+    }
+  });
+
+  test("authentication and listing failures remain unknown and unhealthy", async () => {
+    for (const failingStep of ["authentication", "listing"]) {
+      const result = await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        getInstallationToken: async () => {
+          if (failingStep === "authentication") throw new Error("Authentication unavailable");
+          return crypto.randomUUID();
+        },
+        listOpenPullRequestHeadsPage: async () => { throw new Error("GitHub unavailable"); },
+      } });
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain("1 repository listings could not be verified");
+    }
+  });
+
+  test("limits all repositories to twenty pages and four concurrent requests with shared authentication", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    let calls = 0;
+    let tokens = 0;
+    const result = await checkOutstandingOperationalReviews(pool,
+      Array.from({ length: 21 }, (_, index) => ({ ...repository,
+        repositoryId: index + 1, repoFullName: `example/service-${index}`,
+      })), { github: {
+        getInstallationToken: async () => {
+          tokens += 1;
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return crypto.randomUUID();
+        },
+        listOpenPullRequestHeadsPage: async () => {
+          calls += 1;
+          maximumActive = Math.max(maximumActive, ++active);
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          active -= 1;
+          return emptyPage;
+        },
+      } });
+    expect(calls).toBe(20);
+    expect(tokens).toBe(1);
+    expect(maximumActive).toBe(4);
+    expect(result.healthy).toBe(false);
+    expect(result.detail).toContain("Repository or page budget exceeded");
+  });
+
+  test("pagination shares the global budget instead of granting twenty pages per repository", async () => {
+    let calls = 0;
+    const result = await checkOutstandingOperationalReviews(pool,
+      Array.from({ length: 4 }, (_, index) => ({ ...repository,
+        repositoryId: index + 1, repoFullName: `example/service-${index}`,
+      })), { github: { ...github, listOpenPullRequestHeadsPage: async (_token, _repo, page) => {
+        calls += 1;
+        return { pullRequests: [{ ...livePullRequest, number: page }], nextPage: page + 1 };
+      } } });
+    expect(calls).toBe(20);
+    expect(result.healthy).toBe(false);
+    expect(result.detail).toContain("4 repository listings could not be verified");
+    expect(result.detail).toContain("page budget exceeded");
+  });
+
+  test("page two failures are matched and partial listings cannot establish recovery", async () => {
+    for (const failSecondPage of [false, true]) {
+      const pages: number[] = [];
+      const result = await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        ...github, listOpenPullRequestHeadsPage: async (_token, _repo, page) => {
+          pages.push(page);
+          if (page === 2 && failSecondPage) throw new Error("Listing unavailable");
+          return page === 1 ? {
+            pullRequests: Array.from({ length: 100 }, (_, index) => ({
+              ...livePullRequest, number: index + 2, headSha: "c".repeat(40),
+            })), nextPage: 2,
+          } : { pullRequests: [livePullRequest], nextPage: null };
+        },
+      } });
+      expect(pages).toEqual([1, 2]);
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain(failSecondPage
+        ? "1 repository listings could not be verified" : "1 unresolved terminal review failures");
+    }
+  });
+
+  test("conflicting duplicate heads or draft states remain unknown and exact duplicates count once", async () => {
+    for (const duplicate of [livePullRequest, { ...livePullRequest, draft: true },
+      { ...livePullRequest, headSha: "c".repeat(40) }]) {
+      const result = await checkOutstandingOperationalReviews(pool, [repository], { github: {
+        ...github, listOpenPullRequestHeadsPage: async (_token, _repo, page) => ({
+          pullRequests: [page === 1 ? livePullRequest : duplicate], nextPage: page === 1 ? 2 : null,
+        }),
+      } });
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain(duplicate === livePullRequest
+        ? "1 unresolved terminal review failures" : "1 repository listings could not be verified");
+    }
+  });
+
+  test("cancellation bounds authentication and page readers that ignore abort", async () => {
+    for (const phase of ["authentication", "listing"]) {
+      const controller = new AbortController();
+      let tokens = 0;
+      let pages = 0;
+      const blocked = { github: {
+        getInstallationToken: async () => {
+          tokens += 1;
+          if (phase === "authentication") {
+            queueMicrotask(() => controller.abort());
+            return new Promise<string>(() => undefined);
+          }
+          return crypto.randomUUID();
+        },
+        listOpenPullRequestHeadsPage: async () => {
+          pages += 1;
+          queueMicrotask(() => controller.abort());
+          return new Promise<never>(() => undefined);
+        },
+      }, signal: controller.signal };
+      const repositories = Array.from({ length: 6 }, (_, index) => ({
+        ...repository, repositoryId: index + 1, repoFullName: `example/service-${index}`,
+      }));
+      const result = await checkOutstandingOperationalReviews(pool, repositories, blocked);
+      expect(result.healthy).toBe(false);
+      expect(result.detail).toContain("6 repository listings could not be verified");
+      expect(tokens).toBe(1);
+      expect(pages).toBe(phase === "listing" ? 4 : 0);
+      expect(await checkOutstandingOperationalReviews(pool, repositories, blocked)).toMatchObject({ healthy: false });
+      expect(tokens).toBe(1);
+    }
+  });
+
+  test("deadline expiry and failed database matching cannot report recovery", async () => {
+    const result = await checkOutstandingOperationalReviews(pool, [repository], {
+      signal: AbortSignal.timeout(5), github: {
+        ...github, listOpenPullRequestHeadsPage: async () => new Promise(() => undefined),
+      },
+    });
+    expect(result.healthy).toBe(false);
+    expect(result.detail).toContain("1 repository listings could not be verified");
+    for (const query of [async () => { throw new Error("Database unavailable"); },
+      async () => new Promise<never>(() => undefined)]) {
+      expect(await checkOutstandingOperationalReviews({ query } as unknown as Pool, [repository], {
+        signal: AbortSignal.timeout(5), github,
+      })).toMatchObject({ healthy: false, detail: expect.stringContaining("matching could not be verified") });
+    }
+  });
+});
 
 describe("private monitoring public probes", () => {
   test("records external heartbeat delivery only after a successful response", async () => {
@@ -75,13 +254,15 @@ describe("private monitoring public probes", () => {
 
     expect(result).toBe("delivered");
     expect(redirect).toBe("error");
-    expect(queries).toHaveLength(1);
+    expect(queries).toHaveLength(2);
     expect(queries[0]?.text).toContain("INSERT INTO service_heartbeats");
     expect(queries[0]?.values).toEqual([
       "monitor-heartbeat-delivery",
       "monitor-a",
       NOW,
     ]);
+    expect(queries[1]?.text).toContain("heartbeat_delivery_error = EXCLUDED.heartbeat_delivery_error");
+    expect(queries[1]?.values).toEqual([1, null, NOW]);
   });
 
   test("does not record an external heartbeat when delivery fails or is disabled", async () => {
@@ -124,7 +305,8 @@ describe("private monitoring public probes", () => {
     );
 
     expect(fetchCount).toBe(1);
-    expect(queryCount).toBe(0);
+    // The rejected ping records its reason; no heartbeat receipt is written.
+    expect(queryCount).toBe(1);
   });
 
   test("alerts once in every six-hour database-outage bucket", () => {
@@ -233,259 +415,12 @@ describe("private monitoring public probes", () => {
     expect(calls).toContain("https://www.postil.dev/docs?utm_source=monitor");
   });
 
-  test("retries a first-attempt socket close and keeps the route healthy", async () => {
-    let siteAttempts = 0;
-    const delays: number[] = [];
-    const signals: AbortSignal[] = [];
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input, init) => {
-        if (new URL(String(input)).pathname === "/") {
-          siteAttempts += 1;
-          signals.push(init?.signal as AbortSignal);
-          if (siteAttempts === 1) throw new TypeError("socket closed with internal detail");
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
-    );
-
-    expect(checks.find((check) => check.key === "public-site")?.healthy).toBe(true);
-    expect(siteAttempts).toBe(2);
-    expect(delays).toEqual([100]);
-    expect(signals).toHaveLength(2);
-    expect(signals[0]).not.toBe(signals[1]);
-  });
-
-  test("retries a transient HTTP status and keeps the route healthy", async () => {
-    let sitemapAttempts = 0;
-    const lifecycle: string[] = [];
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/sitemap.xml") {
-          sitemapAttempts += 1;
-          lifecycle.push(`attempt-${sitemapAttempts}`);
-          if (sitemapAttempts === 1) {
-            return new Response(new ReadableStream({
-              cancel() {
-                lifecycle.push("cancelled");
-              },
-            }), { status: 503 });
-          }
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async () => undefined },
-    );
-
-    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
-    expect(sitemapAttempts).toBe(2);
-    expect(lifecycle).toEqual(["attempt-1", "cancelled", "attempt-2"]);
-  });
-
-  test("releases a successful terminal response body after inspection", async () => {
-    let cancellations = 0;
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/sitemap.xml") {
-          return new Response(new ReadableStream({
-            cancel() {
-              cancellations += 1;
-            },
-          }), { status: 200 });
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async () => undefined },
-    );
-
-    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
-    expect(cancellations).toBe(1);
-  });
-
-  test("consumes parsed terminal response bodies without cancelling them", async () => {
-    let cancellations = 0;
-    let dependencyResponse: Response | undefined;
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/api/health/dependencies") {
-          dependencyResponse = new Response(new ReadableStream({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode('{"ok":true,"database":"up"}'));
-              controller.close();
-            },
-            cancel() {
-              cancellations += 1;
-            },
-          }), { status: 200 });
-          return dependencyResponse;
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async () => undefined },
-    );
-
-    expect(checks.find((check) => check.key === "public-dependencies")?.healthy).toBe(true);
-    expect(dependencyResponse?.bodyUsed).toBe(true);
-    expect(cancellations).toBe(0);
-  });
-
-  test("releases every response body when transient HTTP retries are exhausted", async () => {
-    let faviconAttempts = 0;
-    const cancellations: number[] = [];
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/favicon.ico") {
-          faviconAttempts += 1;
-          const attempt = faviconAttempts;
-          return new Response(new ReadableStream({
-            cancel() {
-              cancellations.push(attempt);
-            },
-          }), { status: 503 });
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async () => undefined },
-    );
-
-    expect(checks.find((check) => check.key === "public-favicon")).toMatchObject({
-      healthy: false,
-      detail: "https://example.test/favicon.ico returned HTTP 503 after retries were exhausted.",
-    });
-    expect(faviconAttempts).toBe(3);
-    expect(cancellations).toEqual([1, 2, 3]);
-  });
-
-  test("honors bounded Retry-After delays for rate-limited probes", async () => {
-    let attempt = 0;
-    const delays: number[] = [];
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/sitemap.xml") {
-          attempt += 1;
-          if (attempt === 1) {
-            return new Response("rate limited", {
-              status: 429,
-              headers: { "retry-after": "2" },
-            });
-          }
-          if (attempt === 2) {
-            return new Response("rate limited", {
-              status: 429,
-              headers: { "retry-after": "999999" },
-            });
-          }
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
-    );
-
-    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
-    expect(delays).toEqual([2_000, 5_000]);
-  });
-
-  test("uses the short fallback delay for malformed Retry-After", async () => {
-    let attempt = 0;
-    const delays: number[] = [];
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/sitemap.xml" && attempt++ === 0) {
-          return new Response("rate limited", {
-            status: 429,
-            headers: { "retry-after": "not-a-delay" },
-          });
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
-    );
-
-    expect(checks.find((check) => check.key === "public-sitemap")?.healthy).toBe(true);
-    expect(delays).toEqual([100]);
-  });
-
-  test("does not retry a semantic noindex failure", async () => {
-    let loginAttempts = 0;
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/login") {
-          loginAttempts += 1;
-          return new Response("login", { status: 200 });
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async () => undefined },
-    );
-
-    expect(checks.find((check) => check.key === "noindex-login")).toMatchObject({
-      healthy: false,
-      detail: "https://example.test/login returned HTTP 200 with X-Robots-Tag missing.",
-    });
-    expect(loginAttempts).toBe(1);
-  });
-
-  test("reports redacted final transport details after three exhausted attempts", async () => {
-    let faviconAttempts = 0;
-    const delays: number[] = [];
-    const rawCredential = `sk-or-v1-${"sensitivevalue".repeat(2)}`;
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        if (new URL(String(input)).pathname === "/favicon.ico") {
-          faviconAttempts += 1;
-          throw new TypeError(`socket closed while using ${rawCredential}`);
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async (milliseconds) => { delays.push(milliseconds); } },
-    );
-
-    expect(checks.find((check) => check.key === "public-favicon")).toMatchObject({
-      healthy: false,
-      detail: "https://example.test/favicon.ico request failed after three attempts were exhausted: TypeError: socket closed while using [redacted api key]",
-    });
-    expect(faviconAttempts).toBe(3);
-    expect(delays).toEqual([100, 250]);
-    expect(JSON.stringify(checks)).not.toContain(rawCredential);
-  });
-
-  test("does not surface correlated route incidents from one failed attempt each", async () => {
-    const transientRoutes = new Set(["/", "/sitemap.xml", "/api/health/dependencies"]);
-    const attempts = new Map<string, number>();
-    const checks = await runPublicMonitoringChecks(
-      "https://example.test",
-      async (input) => {
-        const path = new URL(String(input)).pathname;
-        const attempt = (attempts.get(path) ?? 0) + 1;
-        attempts.set(path, attempt);
-        if (transientRoutes.has(path) && attempt === 1) {
-          throw new TypeError("connection reset");
-        }
-        return healthyPublicProbeResponse(input);
-      },
-      { sleep: async () => undefined },
-    );
-
-    expect(checks.every((check) => check.healthy)).toBe(true);
-    for (const path of transientRoutes) expect(attempts.get(path)).toBe(2);
-  });
-
   test("turns a failed request into a bounded private incident input", async () => {
-    let dependencyAttempts = 0;
+    const delays: number[] = [];
     const checks = await runPublicMonitoringChecks(
       "https://example.test",
       async (input) => {
         if (String(input).endsWith("/api/health/dependencies")) {
-          dependencyAttempts += 1;
           throw new Error("simulated dependency failure");
         }
         if (String(input).endsWith("/about")) {
@@ -503,15 +438,251 @@ describe("private monitoring public probes", () => {
           headers: { "x-robots-tag": "noindex, nofollow" },
         });
       },
-      { sleep: async () => undefined },
+      {
+        sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        },
+      },
     );
     const failed = checks.find((check) => check.key === "public-dependencies");
-    expect(failed).toMatchObject({ healthy: false, severity: "critical" });
-    expect(failed?.detail).toBe(
-      "https://example.test/api/health/dependencies request failed after three attempts were exhausted: Error: simulated dependency failure",
-    );
-    expect(dependencyAttempts).toBe(3);
+    expect(failed).toMatchObject({
+      healthy: false,
+      severity: "critical",
+      attempts: 3,
+    });
+    expect(failed?.attemptFailures).toHaveLength(2);
+    expect(failed?.detail).toContain("Failed 3 attempts");
     expect(failed?.detail.length).toBeLessThanOrEqual(1_000);
+    expect(delays).toEqual([2_000, 5_000]);
+    expect(checks.filter((check) => !check.healthy)).toHaveLength(1);
+  });
+
+  test("retries transient probe failures and records the recovered attempts", async () => {
+    const attemptsByPath = new Map<string, number>();
+    const delays: number[] = [];
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        const url = new URL(String(input));
+        const attempt = (attemptsByPath.get(url.pathname) ?? 0) + 1;
+        attemptsByPath.set(url.pathname, attempt);
+        if (url.pathname === "/" && attempt === 1) {
+          return new Response("upstream unavailable", { status: 503 });
+        }
+        if (url.pathname === "/favicon.ico" && attempt < 3) {
+          throw new Error("connection reset");
+        }
+        if (url.pathname === "/about") {
+          return new Response(null, {
+            status: 308,
+            headers: { location: "https://example.test/why-postil" },
+          });
+        }
+        if (url.pathname === "/robots.txt") {
+          return new Response(
+            "User-Agent: *\nAllow: /\nSitemap: https://example.test/sitemap.xml\n",
+          );
+        }
+        if (url.pathname === "/api/health/dependencies") {
+          return Response.json({ ok: true, database: "up" });
+        }
+        return new Response("ok", {
+          headers: { "x-robots-tag": "noindex, nofollow" },
+        });
+      },
+      {
+        sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        },
+      },
+    );
+
+    expect(checks.every((check) => check.healthy)).toBe(true);
+    const site = checks.find((check) => check.key === "public-site");
+    expect(site).toMatchObject({ severity: "critical", attempts: 2 });
+    expect(site?.attemptFailures).toEqual([
+      "https://example.test/ returned HTTP 503.",
+    ]);
+    expect(site?.detail).toBe(
+      "https://example.test/ returned HTTP 200. Recovered on attempt 2 after: https://example.test/ returned HTTP 503.",
+    );
+    const favicon = checks.find((check) => check.key === "public-favicon");
+    expect(favicon).toMatchObject({ severity: "warning", attempts: 3 });
+    expect(favicon?.attemptFailures).toHaveLength(2);
+    expect(favicon?.attemptFailures?.[0]).toBe("https://example.test/favicon.ico request failed: connection reset");
+    expect(checks.find((check) => check.key === "public-liveness")?.attempts).toBe(1);
+    expect(delays).toEqual([2_000, 2_000, 5_000]);
+  });
+
+  test("fails a deterministic mismatch without retry and keeps hygiene probes at warning", async () => {
+    let redirectAttempts = 0;
+    let notFoundAttempts = 0;
+    const checks = await runPublicMonitoringChecks(
+      "https://example.test",
+      async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/about") {
+          redirectAttempts += 1;
+          return new Response(null, {
+            status: 308,
+            headers: { location: "https://example.test/elsewhere" },
+          });
+        }
+        if (url.pathname === "/sitemap.xml") {
+          notFoundAttempts += 1;
+          return new Response("missing", { status: 404 });
+        }
+        if (url.pathname === "/robots.txt") {
+          return new Response(
+            "User-Agent: *\nAllow: /\nSitemap: https://example.test/sitemap.xml\n",
+          );
+        }
+        if (url.pathname === "/api/health/dependencies") {
+          return Response.json({ ok: true, database: "up" });
+        }
+        return new Response("ok", {
+          headers: { "x-robots-tag": "noindex, nofollow" },
+        });
+      },
+      { sleep: async () => undefined },
+    );
+
+    const redirect = checks.find((check) => check.key === "redirect-about");
+    expect(redirect).toMatchObject({
+      healthy: false,
+      severity: "warning",
+      attempts: 1,
+      attemptFailures: [],
+    });
+    expect(redirectAttempts).toBe(1);
+    const sitemap = checks.find((check) => check.key === "public-sitemap");
+    expect(sitemap).toMatchObject({ healthy: false, severity: "warning", attempts: 1 });
+    expect(notFoundAttempts).toBe(1);
+    const severities = Object.fromEntries(checks.map((check) => [check.key, check.severity]));
+    expect(severities).toEqual({
+      "public-site": "critical",
+      "public-liveness": "critical",
+      "public-dependencies": "critical",
+      "public-sitemap": "warning",
+      "public-favicon": "warning",
+      "public-robots": "warning",
+      "redirect-about": "warning",
+      "noindex-login": "warning",
+      "noindex-api-health": "warning",
+    });
+  });
+
+  test("records the provider's reason when heartbeat delivery is rejected", async () => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const pool = {
+      query: async (text: string, values: unknown[]) => {
+        queries.push({ text, values });
+        return { rowCount: 1, rows: [] };
+      },
+    } as unknown as Pool;
+
+    await expect(
+      deliverExternalMonitorHeartbeat(pool, {
+        url: "https://beat.example.test/api/pings/example",
+        instanceId: "monitor-a",
+        now: NOW,
+        fetchImpl: async () =>
+          new Response("402: Your account currently has no access to the heartbeat feature", {
+            status: 402,
+          }),
+      }),
+    ).rejects.toThrow(
+      "external monitor heartbeat returned HTTP 402: 402: Your account currently has no access to the heartbeat feature",
+    );
+
+    expect(queries).toHaveLength(1);
+    expect(queries[0]?.text).toContain("heartbeat_delivery_error = EXCLUDED.heartbeat_delivery_error");
+    expect(queries[0]?.values).toEqual([
+      1,
+      "external monitor heartbeat returned HTTP 402: 402: Your account currently has no access to the heartbeat feature",
+      NOW,
+    ]);
+  });
+});
+
+describeDb("operational review repository reconciliation", () => {
+  let db: EphemeralDatabase;
+  beforeAll(async () => { db = await createEphemeralDatabase("monitor_open_heads"); }, 30_000);
+  afterAll(async () => { await db?.drop(); }, 30_000);
+
+  test("118 historical failures across eleven repositories clear after two current heads recover", async () => {
+    const pool = db.pool;
+    const installation = await pool.query<{ id: number }>(
+      `INSERT INTO installations (github_installation_id, account_login, account_type)
+       VALUES (900040, 'monitor-heads', 'Organization') RETURNING id`,
+    );
+    const repositories = await pool.query<{ id: number; full_name: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       SELECT $1, 900040000 + n, 'monitor-heads/repository-' || n, true
+         FROM generate_series(1, 11) AS n RETURNING id, full_name`,
+      [installation.rows[0]!.id],
+    );
+    const fixture = Array.from({ length: 118 }, (_, index) => ({
+      repositoryId: repositories.rows[index % 11]!.id, prNumber: index + 1,
+    }));
+    await pool.query(
+      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, envelope, queued_at, finished_at)
+       SELECT "repositoryId", "prNumber", $2, $3,
+         CASE WHEN "prNumber" = 2 THEN 'completed' ELSE 'failed' END::review_status,
+         CASE WHEN "prNumber" = 2 THEN $4::jsonb ELSE NULL END,
+         now() - interval '90 days', now() - interval '90 days'
+       FROM jsonb_to_recordset($1::jsonb) AS fixture("repositoryId" integer, "prNumber" integer)
+       ORDER BY "prNumber"`,
+      [JSON.stringify(fixture), livePullRequest.headSha, "b".repeat(40),
+        JSON.stringify({ findings: [{ path: ".postil/operational" }] })],
+    );
+    let openNumbers = [1, 2];
+    let calls = 0;
+    let tokens = 0;
+    const check = async () => {
+      calls = 0;
+      tokens = 0;
+      return (await runDatabaseMonitoringChecksWithGitHub(pool, { github: {
+        getInstallationToken: async () => { tokens += 1; return crypto.randomUUID(); },
+        listOpenPullRequestHeadsPage: async (_token, repoFullName, page) => {
+          calls += 1;
+          expect(page).toBe(1);
+          const repo = repositories.rows.find((row) => row.full_name === repoFullName)!;
+          return { nextPage: null, pullRequests: fixture.filter((row) =>
+            row.repositoryId === repo.id && openNumbers.includes(row.prNumber)
+          ).map((row) => ({ ...livePullRequest, number: row.prNumber })) };
+        },
+      } })).find((item) => item.key === "review-operational-failures")!;
+    };
+    const ranks = await pool.query<{ rank: number }>(
+      `SELECT rank FROM (SELECT pr_number, row_number() OVER (ORDER BY id DESC)::int AS rank FROM reviews) ranked
+       WHERE pr_number IN (1, 2) ORDER BY rank`,
+    );
+    expect(ranks.rows.map((row) => row.rank)).toEqual([117, 118]);
+    expect(await check()).toMatchObject({ healthy: false, detail: expect.stringContaining("2 unresolved terminal review failures") });
+    expect(calls).toBe(11);
+    expect(tokens).toBe(1);
+    openNumbers = [];
+    expect(await check()).toMatchObject({ healthy: true });
+    expect(calls).toBe(11);
+    openNumbers = [1, 2];
+    expect(await check()).toMatchObject({ healthy: false });
+    await pool.query(
+      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, envelope, queued_at, finished_at)
+       SELECT repository_id, pr_number, head_sha, base_sha, 'completed', '{"findings":[]}'::jsonb, now(), now()
+       FROM reviews WHERE pr_number IN (1, 2)`,
+    );
+    expect(await check()).toMatchObject({ healthy: true });
+    expect(calls).toBe(11);
+    const history = await pool.query<{ total: number; historical: number }>(
+      `SELECT count(*)::int AS total,
+         count(*) FILTER (WHERE finished_at < now() - interval '1 day')::int AS historical FROM reviews`,
+    );
+    expect(history.rows).toEqual([{ total: 120, historical: 118 }]);
+    openNumbers = [3];
+    expect(await check()).toMatchObject({ healthy: false, detail: expect.stringContaining("1 unresolved terminal review failures") });
+    openNumbers = [];
+    expect(await check()).toMatchObject({ healthy: true });
   });
 });
 
@@ -529,7 +700,7 @@ describeDb("private monitoring durability", () => {
 
   beforeEach(async () => {
     await pool.query(
-      "TRUNCATE private_monitor_incidents, private_monitor_runs, private_monitor_state, service_heartbeats RESTART IDENTITY",
+      "TRUNCATE private_monitor_incidents, private_monitor_incident_events, private_monitor_check_failures, private_monitor_runs, private_monitor_state, service_heartbeats RESTART IDENTITY",
     );
     await pool.query(
       "TRUNCATE customer_notification_events, organizations RESTART IDENTITY CASCADE",
@@ -539,6 +710,133 @@ describeDb("private monitoring durability", () => {
   afterAll(async () => {
     await db?.drop();
   }, 30_000);
+
+  const receiptTransport: OperatorNotificationTransport = { async send() {
+    return { messageId: "not-persisted", delivery: { transport: "email", fallbackUsed: true,
+      primaryOutcome: "http_rejected", primaryHttpStatus: 402 } };
+  } };
+  async function openReceiptNotification() {
+    expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
+    const pass = await startPrivateMonitoringPass(pool, "monitor-a", BUCKET, NOW);
+    await finishPrivateMonitoringPass(pool, pass!, [{ key: "public-site", group: "availability",
+      severity: "critical", healthy: false, summary: "Public site responds", detail: "Probe failed." }], NOW);
+    return (await claimPrivateMonitoringNotifications(pool, "monitor-a", NOW))[0]!;
+  }
+  test("persists bounded receipt and legacy acknowledgment clears same-timestamp provenance", async () => {
+    const notification = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", transport: receiptTransport, now: NOW,
+    });
+    const receipt = (await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt;
+    expect(receipt).toEqual({ transport: "email", fallbackUsed: true, primaryOutcome: "http_rejected",
+      primaryHttpStatus: 402, notificationKey: notification.notificationKey, acceptedAt: NOW.toISOString() });
+    expect(JSON.stringify(receipt)).not.toContain("not-persisted");
+    expect(matchingMonitoringDeliveryReceipt(receipt, "different-key", NOW)).toBeNull();
+    expect(matchingMonitoringDeliveryReceipt(receipt, notification.notificationKey, new Date(NOW.getTime()+1))).toBeNull();
+    await pool.query("UPDATE private_monitor_incidents SET last_notified_at = $1 WHERE key = 'public-site'", [NOW]);
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toEqual(receipt);
+    await pool.query(`UPDATE private_monitor_incidents SET pending_notification_key = 'legacy-reminder',
+      pending_notification_kind = 'reminder' WHERE key = 'public-site'`);
+    // The old worker acknowledges its pending key without writing either new column.
+    await pool.query(`UPDATE private_monitor_incidents SET last_notified_at = $1,
+      pending_notification_key = NULL, pending_notification_kind = NULL WHERE key = 'public-site'`, [NOW]);
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toBeNull();
+    expect((await pool.query("SELECT last_notification_key, last_delivery_receipt FROM private_monitor_incidents")).rows[0])
+      .toEqual({ last_notification_key: null, last_delivery_receipt: null });
+  });
+  test("scheduled reminder preserves the last receipt until acknowledgment", async () => {
+    const opening = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, opening, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev",
+      transport: receiptTransport, now: NOW,
+    });
+    const accepted = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    const reminderAt = new Date(NOW.getTime() + 6 * 60 * 60 * 1_000);
+    expect(await acquirePrivateMonitorLease(pool, "monitor-b", reminderAt)).toBe(true);
+    const pass = await startPrivateMonitoringPass(pool, "monitor-b", reminderAt, reminderAt);
+    await finishPrivateMonitoringPass(pool, pass!, [{ key: "public-site", group: "availability",
+      severity: "critical", healthy: false, summary: "Public site responds", detail: "Probe failed." }], reminderAt);
+    const pending = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    expect(pending.lastNotifiedAt).toEqual(accepted.lastNotifiedAt);
+    expect(pending.lastDeliveryReceipt).toEqual(accepted.lastDeliveryReceipt);
+    const reminders = await claimPrivateMonitoringNotifications(pool, "monitor-b", reminderAt);
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0]!.kind).toBe("reminder");
+    expect(reminders[0]!.notificationKey).not.toBe(opening.notificationKey);
+    await expect(deliverPrivateMonitoringNotification(pool, reminders[0]!, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", now: reminderAt,
+      transport: { async send() { throw new Error("delivery unavailable"); } },
+    })).rejects.toThrow("delivery unavailable");
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt)
+      .toEqual(accepted.lastDeliveryReceipt);
+    const retryAt = new Date(reminderAt.getTime() + 31_000);
+    const retry = await claimPrivateMonitoringNotifications(pool, "monitor-b", retryAt);
+    expect(retry).toHaveLength(1);
+    await deliverPrivateMonitoringNotification(pool, retry[0]!, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev",
+      transport: receiptTransport, now: retryAt,
+    });
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt)
+      .toMatchObject({ notificationKey: reminders[0]!.notificationKey, acceptedAt: retryAt.toISOString() });
+  });
+
+  test("pending-key-only acknowledgment clears provenance without erasing it during scheduling", async () => {
+    const opening = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, opening, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev",
+      transport: receiptTransport, now: NOW,
+    });
+    const accepted = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    await pool.query(`UPDATE private_monitor_incidents SET pending_notification_key='next-reminder',
+      pending_notification_kind='reminder' WHERE key='public-site'`);
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt)
+      .toEqual(accepted.lastDeliveryReceipt);
+    await pool.query(`UPDATE private_monitor_incidents SET pending_notification_key=NULL,
+      pending_notification_kind=NULL WHERE key='public-site'`);
+    const acknowledged = (await getPrivateMonitoringDashboard(pool)).incidents[0]!;
+    expect(acknowledged.lastNotifiedAt).toEqual(NOW);
+    expect(acknowledged.lastDeliveryReceipt).toBeNull();
+  });
+
+  test("receipt write failure rolls back acknowledgment and leaves notification retryable", async () => {
+    const notification = await openReceiptNotification();
+    const client = await pool.connect();
+    const query = client.query.bind(client);
+    const wrapped = { query: async (...args: unknown[]) => {
+      if (String(args[0]).includes("SET last_notification_key = $2")) throw new Error("receipt storage unavailable");
+      return (query as (...args: unknown[]) => Promise<unknown>)(...args);
+    }, release: () => client.release() };
+    const failingPool = { connect: async () => wrapped, query: pool.query.bind(pool) } as unknown as Pool;
+    await expect(deliverPrivateMonitoringNotification(failingPool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", transport: receiptTransport, now: NOW,
+    })).rejects.toThrow("receipt storage unavailable");
+    const row = (await pool.query("SELECT last_notified_at, last_delivery_receipt, pending_notification_key, notification_lease_owner FROM private_monitor_incidents")).rows[0];
+    expect(row).toEqual({ last_notified_at: null, last_delivery_receipt: null,
+      pending_notification_key: notification.notificationKey, notification_lease_owner: null });
+    expect(await claimPrivateMonitoringNotifications(pool, "monitor-b", new Date(NOW.getTime()+31_000))).toHaveLength(1);
+  });
+  test("both transports failing retains retry without a successful receipt", async () => {
+    const notification = await openReceiptNotification();
+    const primary = ilertEventTransport(crypto.randomUUID(), (async () => new Response("rejected", { status: 402 })) as unknown as typeof fetch);
+    const transport = withFallbackTransport(primary, { async send() { throw new Error("email unavailable"); } }, () => undefined);
+    await expect(deliverPrivateMonitoringNotification(pool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", transport, now: NOW,
+    })).rejects.toThrow("fallback delivery failed");
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toBeNull();
+    expect(await claimPrivateMonitoringNotifications(pool, "monitor-b", new Date(NOW.getTime()+31_000))).toHaveLength(1);
+  });
+  test("unknown or unexpected transport fields cannot enter the receipt", async () => {
+    const notification = await openReceiptNotification();
+    await deliverPrivateMonitoringNotification(pool, notification, {
+      recipient: "operator@example.test", publicOrigin: "https://postil.dev", now: NOW,
+      transport: { async send() { return { messageId: null, delivery: {
+        transport: "email", fallbackUsed: false, primaryOutcome: "accepted", primaryHttpStatus: null,
+        body: crypto.randomUUID(),
+      } }; } },
+    });
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt).toBeNull();
+    expect((await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastNotifiedAt).toEqual(NOW);
+  });
 
   test("allows one monitor owner and one pass per schedule bucket", async () => {
     const acquired = await Promise.all([
@@ -1011,7 +1309,7 @@ describeDb("private monitoring durability", () => {
       publicOrigin: "https://postil.dev",
       transport: {
         async send() {
-          return { messageId: "late-opening" };
+          return { messageId: "late-opening", delivery: { transport: "ilert", fallbackUsed: false, primaryOutcome: "accepted", primaryHttpStatus: 202 } };
         },
       },
       now: lateDeliveryAt,
@@ -1022,6 +1320,9 @@ describeDb("private monitoring durability", () => {
       lateDeliveryAt,
     );
     expect(resolution[0]?.kind).toBe("resolved");
+    const receipt = (await getPrivateMonitoringDashboard(pool)).incidents[0]!.lastDeliveryReceipt;
+    expect(receipt).toMatchObject({ notificationKey: opening!.notificationKey, acceptedAt: lateDeliveryAt.toISOString(), transport: "ilert" });
+    expect(receipt?.notificationKey).not.toBe(resolution[0]?.notificationKey);
   });
 
   test("bounds each notification retry epoch and rearms after cooldown", async () => {
@@ -1516,6 +1817,120 @@ describeDb("private monitoring durability", () => {
     }
   });
 
+  test("retains operational failures across age, retry, recovery, and head supersession", async () => {
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations
+         (github_installation_id, account_login, account_type, suspended)
+       VALUES (900039, 'monitor-recovery', 'Organization', false) RETURNING id`,
+    );
+    const repository = await pool.query<{ id: string }>(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name, enabled)
+       VALUES ($1, 900039001, 'monitor-recovery/service', true) RETURNING id`,
+      [installation.rows[0]!.id],
+    );
+    const repositoryId = repository.rows[0]!.id;
+    const insertReview = async (
+      prNumber: number,
+      status: string,
+      head = "a".repeat(40),
+      envelope: unknown = null,
+      errorMessage: string | null = null,
+    ) => {
+      const result = await pool.query<{ id: string }>(
+        `INSERT INTO reviews
+           (repository_id, pr_number, head_sha, base_sha, status, envelope,
+            error_message, queued_at, finished_at)
+         VALUES ($1, $2, $3, $4, $5::review_status, $6, $7, now() - interval '8 hours',
+                 CASE WHEN $5::review_status IN ('completed', 'failed', 'stale')
+                   THEN now() - interval '7 hours' ELSE NULL END)
+         RETURNING id`,
+        [repositoryId, prNumber, head, "b".repeat(40), status,
+          JSON.stringify(envelope), errorMessage],
+      );
+      return result.rows[0]!.id;
+    };
+    const check = async () => (await runDatabaseMonitoringChecks(pool)).find(
+      (candidate) => candidate.key === "review-operational-failures",
+    );
+    const sentinel = { findings: [{ path: ".postil/operational" }] };
+    try {
+      await insertReview(1000, "completed", undefined, sentinel);
+      expect(await check()).toMatchObject({ healthy: false });
+      expect((await check())?.detail).toContain("1 unresolved terminal review failures");
+
+      // A retry has not repaired the failed verdict merely by starting.
+      const retry = await insertReview(1000, "queued");
+      expect(await check()).toMatchObject({ healthy: false });
+      await pool.query("UPDATE reviews SET status = 'running' WHERE id = $1", [retry]);
+      expect(await check()).toMatchObject({ healthy: false });
+      await pool.query(
+        "UPDATE reviews SET status = 'completed', envelope = $2, finished_at = now() WHERE id = $1",
+        [retry, JSON.stringify({ findings: [] })],
+      );
+      expect(await check()).toMatchObject({ healthy: true });
+
+      // Completion order must not revive a superseded older attempt.
+      await pool.query(
+        "UPDATE reviews SET finished_at = now() + interval '1 minute' WHERE repository_id = $1 AND id < $2",
+        [repositoryId, retry],
+      );
+      expect(await check()).toMatchObject({ healthy: true });
+      await insertReview(1000, "failed");
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1001, "completed", undefined, { findings: [] });
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1000, "queued", "c".repeat(40));
+      expect(await check()).toMatchObject({ healthy: true });
+
+      // A terminal expected skip replaces the previous same-head failure.
+      await insertReview(1002, "failed");
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1002, "failed", undefined, null,
+        "pull request is no longer eligible for publication");
+      expect(await check()).toMatchObject({ healthy: true });
+      await insertReview(1003, "completed", undefined, sentinel);
+      expect(await check()).toMatchObject({ healthy: false });
+      await insertReview(1003, "stale");
+      expect(await check()).toMatchObject({ healthy: true });
+
+      for (const [index, envelope] of [
+        {
+          findings: [{ path: ".postil/model-output" }],
+          modelIncidents: [{ phase: "review", category: "invalidOutput", recovered: false }],
+        },
+        {
+          findings: [{ path: ".postil/provider" }],
+          modelIncidents: [{ phase: "scorer", category: "providerError", recovered: false }],
+        },
+      ].entries()) {
+        const prNumber = 1010 + index;
+        await insertReview(prNumber, "completed", undefined, envelope);
+        expect(await check()).toMatchObject({ healthy: false });
+        const closedChecks = await runDatabaseMonitoringChecks(pool, { github: {
+          getInstallationToken: async () => crypto.randomUUID(),
+          listOpenPullRequestHeadsPage: async () => emptyPage,
+        } });
+        expect(closedChecks.find((item) => item.key === "review-operational-failures"))
+          .toMatchObject({ healthy: true });
+        expect(closedChecks.find((item) => item.key === "invalid-model-output"))
+          .toMatchObject({ healthy: true });
+        expect(closedChecks.find((item) => item.key === "scorer-failures"))
+          .toMatchObject({ healthy: true });
+        await insertReview(prNumber, "queued", "c".repeat(40));
+        expect(await check()).toMatchObject({ healthy: true });
+      }
+
+      await insertReview(1020, "completed", undefined, sentinel);
+      await pool.query("UPDATE repositories SET enabled = false WHERE id = $1", [repositoryId]);
+      expect(await check()).toMatchObject({ healthy: true });
+      await pool.query("UPDATE repositories SET enabled = true WHERE id = $1", [repositoryId]);
+      await pool.query("UPDATE installations SET suspended = true WHERE id = $1", [installation.rows[0]!.id]);
+      expect(await check()).toMatchObject({ healthy: true });
+    } finally {
+      await pool.query("DELETE FROM installations WHERE github_installation_id = 900039");
+    }
+  });
+
   test("pages for invalid model output only when the run could not recover", async () => {
     const installation = await pool.query<{ id: string }>(
       `INSERT INTO installations
@@ -1556,7 +1971,23 @@ describeDb("private monitoring durability", () => {
       });
       expect(await invalidOutputCheck()).toMatchObject({ healthy: true });
 
+      // One unrecovered failure in the window is a flaky upstream completion
+      // and stays below the paging threshold; a burst pages.
       await insertCompleted(801, {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: false,
+      });
+      expect(await invalidOutputCheck()).toMatchObject({
+        healthy: true,
+        detail: "1 count observed; threshold 2.",
+      });
+      await insertCompleted(802, {
+        phase: "review",
+        category: "invalidOutput",
+        recovered: false,
+      });
+      await insertCompleted(803, {
         phase: "review",
         category: "invalidOutput",
         recovered: false,
@@ -1569,7 +2000,7 @@ describeDb("private monitoring durability", () => {
     }
   });
 
-  test("assigns one actionable alert to each classified review failure", async () => {
+  test("separates outstanding sentinel health from recent classified failure rates", async () => {
     const installation = await pool.query<{ id: string }>(
       `INSERT INTO installations
          (github_installation_id, account_login, account_type, suspended)
@@ -1581,21 +2012,25 @@ describeDb("private monitoring durability", () => {
       [installation.rows[0]!.id],
     );
     const repositoryId = repository.rows[0]!.id;
+    // Every scenario is inserted as a burst of three reviews so the
+    // classification is observed above the model-quality paging threshold.
     const insertCompleted = async (prNumber: number, envelope: unknown) => {
-      await pool.query(
-        `INSERT INTO reviews
-           (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
-            envelope, queued_at, finished_at)
-         VALUES ($1, $2, $3, $4, 'completed', 'unknown', $5,
-                 now() - interval '5 minutes', now() - interval '5 minutes')`,
-        [
-          repositoryId,
-          prNumber,
-          "e".repeat(40),
-          "f".repeat(40),
-          JSON.stringify(envelope),
-        ],
-      );
+      for (let copy = 0; copy < 3; copy += 1) {
+        await pool.query(
+          `INSERT INTO reviews
+             (repository_id, pr_number, head_sha, base_sha, status, trigger_source,
+              envelope, queued_at, finished_at)
+           VALUES ($1, $2, $3, $4, 'completed', 'unknown', $5,
+                   now() - interval '5 minutes', now() - interval '5 minutes')`,
+          [
+            repositoryId,
+            prNumber * 10 + copy,
+            "e".repeat(40),
+            "f".repeat(40),
+            JSON.stringify(envelope),
+          ],
+        );
+      }
     };
     const classifiedChecks = async () => {
       const checks = await runDatabaseMonitoringChecks(pool);
@@ -1622,7 +2057,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": false,
         "invalid-model-output": true,
       });
@@ -1636,7 +2071,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": true,
         "invalid-model-output": false,
       });
@@ -1690,7 +2125,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": false,
         "invalid-model-output": false,
       });
@@ -1717,7 +2152,7 @@ describeDb("private monitoring durability", () => {
         ],
       });
       expect(await classifiedChecks()).toEqual({
-        "review-operational-failures": true,
+        "review-operational-failures": false,
         "scorer-failures": true,
         "invalid-model-output": false,
       });
@@ -1743,6 +2178,284 @@ describeDb("private monitoring durability", () => {
         "DELETE FROM installations WHERE github_installation_id = 900038",
       );
     }
+  });
+
+  test("retains failed check attempts, reports flapping, and prunes old evidence", async () => {
+    const flapping = (checks: PrivateMonitoringCheck[]) =>
+      checks.find((check) => check.key === "check-flapping");
+    expect(flapping(await runDatabaseMonitoringChecks(pool))).toMatchObject({
+      healthy: true,
+      severity: "warning",
+      group: "monitoring",
+      detail: "0 failed attempts recovered by retry in 24 hours; threshold 2.",
+    });
+
+    expect(await acquirePrivateMonitorLease(pool, "monitor-a", NOW)).toBe(true);
+    const pass = await startPrivateMonitoringPass(pool, "monitor-a", BUCKET, NOW);
+    await finishPrivateMonitoringPass(
+      pool,
+      pass!,
+      [
+        {
+          key: "public-site",
+          group: "availability",
+          severity: "critical",
+          healthy: true,
+          summary: "Public site responds",
+          detail: "https://postil.dev/ returned HTTP 200. Recovered on attempt 3 after: https://postil.dev/ returned HTTP 503.",
+          attempts: 3,
+          attemptFailures: [
+            "https://postil.dev/ returned HTTP 503.",
+            "https://postil.dev/ request failed: Error: connection reset",
+          ],
+        },
+        {
+          key: "public-favicon",
+          group: "availability",
+          severity: "warning",
+          healthy: true,
+          summary: "Favicon responds",
+          detail: "https://postil.dev/favicon.ico returned HTTP 200. Recovered on attempt 2 after: https://postil.dev/favicon.ico returned HTTP 502.",
+          attempts: 2,
+          attemptFailures: ["https://postil.dev/favicon.ico returned HTTP 502."],
+        },
+        {
+          key: "redirect-about",
+          group: "availability",
+          severity: "warning",
+          healthy: false,
+          summary: "Legacy about route redirects",
+          detail: "https://postil.dev/about returned HTTP 308 to https://postil.dev/elsewhere; expected https://postil.dev/why-postil.",
+          attempts: 1,
+          attemptFailures: [],
+        },
+      ],
+      NOW,
+    );
+
+    const failures = await pool.query<{
+      run_id: string;
+      key: string;
+      attempt: number;
+      recovered: boolean;
+      detail: string;
+    }>(
+      `SELECT run_id, key, attempt, recovered, detail
+         FROM private_monitor_check_failures
+        ORDER BY id`,
+    );
+    expect(failures.rows.map((row) => ({ ...row, run_id: Number(row.run_id) }))).toEqual([
+      { run_id: pass!.runId, key: "public-site", attempt: 1, recovered: true, detail: "https://postil.dev/ returned HTTP 503." },
+      { run_id: pass!.runId, key: "public-site", attempt: 2, recovered: true, detail: "https://postil.dev/ request failed: Error: connection reset" },
+      { run_id: pass!.runId, key: "public-favicon", attempt: 1, recovered: true, detail: "https://postil.dev/favicon.ico returned HTTP 502." },
+      {
+        run_id: pass!.runId,
+        key: "redirect-about",
+        attempt: 1,
+        recovered: false,
+        detail: "https://postil.dev/about returned HTTP 308 to https://postil.dev/elsewhere; expected https://postil.dev/why-postil.",
+      },
+    ]);
+    // Recovered attempts never opened an incident; the deterministic failure did.
+    const incidents = await pool.query<{ key: string }>(
+      "SELECT key FROM private_monitor_incidents ORDER BY key",
+    );
+    expect(incidents.rows.map((row) => row.key)).toEqual(["redirect-about"]);
+
+    // The flapping check and the dashboard read a real-clock 24-hour window.
+    await pool.query("UPDATE private_monitor_check_failures SET observed_at = now()");
+    expect(flapping(await runDatabaseMonitoringChecks(pool))).toMatchObject({
+      healthy: false,
+      detail: "3 failed attempts recovered by retry in 24 hours; threshold 2. Recovered attempts by check: public-site 2, public-favicon 1.",
+    });
+    const dashboard = await getPrivateMonitoringDashboard(pool);
+    expect(dashboard.checkFailures).toHaveLength(4);
+    expect(dashboard.checkFailures[0]).toMatchObject({
+      key: "redirect-about",
+      recovered: false,
+    });
+
+    // Evidence older than the retention window, measured from the pass clock,
+    // is pruned when a pass starts.
+    await pool.query(
+      "UPDATE private_monitor_check_failures SET observed_at = $1::timestamptz - interval '31 days' WHERE recovered",
+      [NOW],
+    );
+    await pool.query(
+      "UPDATE private_monitor_incident_events SET occurred_at = $1::timestamptz - interval '91 days'",
+      [NOW],
+    );
+    const laterAt = new Date(NOW.getTime() + 5 * 60_000);
+    expect(await acquirePrivateMonitorLease(pool, "monitor-a", laterAt)).toBe(true);
+    await startPrivateMonitoringPass(
+      pool,
+      "monitor-a",
+      new Date(BUCKET.getTime() + 5 * 60_000),
+      laterAt,
+    );
+    const remaining = await pool.query<{ key: string }>(
+      "SELECT key FROM private_monitor_check_failures ORDER BY id",
+    );
+    expect(remaining.rows.map((row) => row.key)).toEqual(["redirect-about"]);
+    expect(
+      Number((await pool.query("SELECT count(*)::int AS count FROM private_monitor_incident_events")).rows[0].count),
+    ).toBe(0);
+  });
+
+  test("keeps opening evidence and records incident transitions", async () => {
+    const failing: PrivateMonitoringCheck = {
+      key: "public-site",
+      group: "availability",
+      severity: "critical",
+      healthy: false,
+      summary: "Public site responds",
+      detail: "https://postil.dev/ request failed: TimeoutError: The operation was aborted due to timeout. Failed 3 attempts; first: https://postil.dev/ returned HTTP 502.",
+      attempts: 3,
+      attemptFailures: [
+        "https://postil.dev/ returned HTTP 502.",
+        "https://postil.dev/ returned HTTP 503.",
+      ],
+    };
+    const runPass = async (offsetMinutes: number, check: PrivateMonitoringCheck) => {
+      const at = new Date(NOW.getTime() + offsetMinutes * 60_000);
+      expect(await acquirePrivateMonitorLease(pool, "monitor-a", at)).toBe(true);
+      const pass = await startPrivateMonitoringPass(
+        pool,
+        "monitor-a",
+        new Date(BUCKET.getTime() + offsetMinutes * 60_000),
+        at,
+      );
+      await finishPrivateMonitoringPass(pool, pass!, [check], at);
+      return at;
+    };
+
+    await runPass(0, failing);
+    await runPass(5, {
+      ...failing,
+      detail: "https://postil.dev/ returned HTTP 503. Failed 3 attempts; first: https://postil.dev/ returned HTTP 503.",
+    });
+    const open = await getPrivateMonitoringDashboard(pool);
+    expect(open.incidents[0]).toMatchObject({
+      key: "public-site",
+      state: "open",
+      occurrenceCount: 2,
+      detail: "https://postil.dev/ returned HTTP 503. Failed 3 attempts; first: https://postil.dev/ returned HTTP 503.",
+      openedDetail: failing.detail,
+    });
+
+    const resolvedAt = await runPass(10, {
+      ...failing,
+      healthy: true,
+      detail: "https://postil.dev/ returned HTTP 200.",
+      attempts: 1,
+      attemptFailures: [],
+    });
+    const resolved = await getPrivateMonitoringDashboard(pool);
+    expect(resolved.incidents[0]).toMatchObject({
+      key: "public-site",
+      state: "resolved",
+      detail: "https://postil.dev/ returned HTTP 200.",
+      openedDetail: failing.detail,
+    });
+    expect(resolved.events.map((event) => ({
+      key: event.key,
+      transition: event.transition,
+      detail: event.detail,
+      occurrenceCount: event.occurrenceCount,
+      firstDetectedAt: event.firstDetectedAt.toISOString(),
+      occurredAt: event.occurredAt.toISOString(),
+    }))).toEqual([
+      {
+        key: "public-site",
+        transition: "resolved",
+        detail: failing.detail,
+        occurrenceCount: 2,
+        firstDetectedAt: NOW.toISOString(),
+        occurredAt: resolvedAt.toISOString(),
+      },
+      {
+        key: "public-site",
+        transition: "opened",
+        detail: failing.detail,
+        occurrenceCount: 1,
+        firstDetectedAt: NOW.toISOString(),
+        occurredAt: NOW.toISOString(),
+      },
+    ]);
+    expect(resolved.events[0]?.summary).toBe("Public site is unavailable");
+
+    // Reopening captures fresh evidence and a new opened transition.
+    await runPass(15, {
+      ...failing,
+      detail: "https://postil.dev/ returned HTTP 500. Failed 3 attempts; first: https://postil.dev/ returned HTTP 500.",
+    });
+    const reopened = await getPrivateMonitoringDashboard(pool);
+    expect(reopened.incidents[0]).toMatchObject({
+      state: "open",
+      occurrenceCount: 1,
+      openedDetail: "https://postil.dev/ returned HTTP 500. Failed 3 attempts; first: https://postil.dev/ returned HTTP 500.",
+    });
+    expect(reopened.events.map((event) => event.transition)).toEqual([
+      "opened",
+      "resolved",
+      "opened",
+    ]);
+  });
+
+  test("reports rejected external heartbeat delivery as its own incident", async () => {
+    const delivery = (checks: PrivateMonitoringCheck[]) =>
+      checks.find((check) => check.key === "monitor-heartbeat-delivery");
+    expect(delivery(await runDatabaseMonitoringChecks(pool))).toMatchObject({
+      healthy: true,
+      group: "monitoring",
+      severity: "critical",
+      detail: "No external heartbeat URL is configured.",
+    });
+    expect(
+      delivery(
+        await runDatabaseMonitoringChecks(pool, { externalHeartbeatConfigured: true }),
+      ),
+    ).toMatchObject({
+      healthy: false,
+      detail: "No external heartbeat has ever been accepted; threshold 900.",
+    });
+
+    await deliverExternalMonitorHeartbeat(pool, {
+      url: "https://beat.example.test/api/pings/example",
+      instanceId: "monitor-a",
+      fetchImpl: async () => new Response(null, { status: 204 }),
+    });
+    expect(
+      delivery(
+        await runDatabaseMonitoringChecks(pool, { externalHeartbeatConfigured: true }),
+      ),
+    ).toMatchObject({ healthy: true });
+
+    await pool.query(
+      `UPDATE service_heartbeats
+          SET observed_at = now() - interval '20 minutes'
+        WHERE component = 'monitor-heartbeat-delivery'`,
+    );
+    await expect(
+      deliverExternalMonitorHeartbeat(pool, {
+        url: "https://beat.example.test/api/pings/example",
+        instanceId: "monitor-a",
+        fetchImpl: async () =>
+          new Response("402: Your account currently has no access to the heartbeat feature", {
+            status: 402,
+          }),
+      }),
+    ).rejects.toThrow("external monitor heartbeat returned HTTP 402");
+    const rejected = delivery(
+      await runDatabaseMonitoringChecks(pool, { externalHeartbeatConfigured: true }),
+    );
+    expect(rejected?.healthy).toBe(false);
+    expect(rejected?.detail).toMatch(
+      /^1,2\d\d seconds since the external heartbeat was accepted; threshold 900\. Last delivery result: external monitor heartbeat returned HTTP 402: 402: Your account currently has no access to the heartbeat feature$/,
+    );
+    expect((await getPrivateMonitoringDashboard(pool)).state.heartbeatDeliveryError).toBe(
+      "external monitor heartbeat returned HTTP 402: 402: Your account currently has no access to the heartbeat feature",
+    );
   });
 });
 

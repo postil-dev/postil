@@ -72,11 +72,28 @@ export const modelIncidentSchema = z.object({
   recovery: z.enum(["repair", "fallback"]).optional(),
 });
 
+const hunkCountSchema = z.number().int().nonnegative().max(0xffff_ffff);
+
+export const reviewCoverageReceiptSchema = z.object({
+  planSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  totalHunks: hunkCountSchema,
+  directHunks: hunkCountSchema,
+  semanticHunks: hunkCountSchema,
+  unreviewedHunks: hunkCountSchema,
+}).refine(
+  (receipt) => receipt.totalHunks ===
+    receipt.directHunks + receipt.semanticHunks + receipt.unreviewedHunks,
+  "coverage hunk counts must partition the total",
+);
+
+export type ReviewCoverageReceipt = z.infer<typeof reviewCoverageReceiptSchema>;
+
 export const reviewCoverageSchema = z.object({
   mode: z.enum(["exhaustive", "bounded"]),
   selectedBatches: z.number().int().nonnegative(),
   totalBatches: z.number().int().nonnegative(),
   plannerFallback: z.boolean().optional().default(false),
+  receipt: reviewCoverageReceiptSchema.optional(),
 });
 
 export const reviewAdmissionSchema = z.object({
@@ -237,12 +254,13 @@ export function hasLegacyCombinedModelUsage(envelope: Envelope): boolean {
 }
 
 export type OperationalModelIncidentCategory =
-  ModelIncident["category"] | "operational";
+  ModelIncident["category"] | "operational" | "coverageCapacity";
 export type OperationalModelIncidentSource =
   | "model_incident"
   | "provider_sentinel"
   | "model_output_sentinel"
-  | "operational_sentinel";
+  | "operational_sentinel"
+  | "coverage_receipt";
 
 export type OperationalModelIncidentClassification =
   | (ModelIncident & { source: "model_incident" })
@@ -265,6 +283,13 @@ export type OperationalModelIncidentClassification =
       category: "operational";
       recovered: false;
       source: "operational_sentinel";
+      recovery?: never;
+    }
+  | {
+      phase: "review";
+      category: "coverageCapacity";
+      recovered: false;
+      source: "coverage_receipt";
       recovery?: never;
     };
 
@@ -356,7 +381,9 @@ export function ingestEnvelope(raw: string): IngestedEnvelope {
  * vocabulary. Finding text and non-sentinel paths never leave this function.
  */
 export function classifyOperationalModelIncidents(
-  envelope: Pick<Envelope, "findings" | "modelIncidents">,
+  envelope: Pick<Envelope, "findings" | "modelIncidents"> &
+    Partial<Pick<Envelope, "reviewCoverage" | "scorerError" | "gate" | "usageAccountingComplete">>,
+  registeredReceipt: ReviewCoverageReceipt | null = null,
 ): OperationalModelIncidentClassification[] {
   const classifications: OperationalModelIncidentClassification[] =
     envelope.modelIncidents?.map((incident) => ({
@@ -364,9 +391,15 @@ export function classifyOperationalModelIncidents(
       source: "model_incident" as const,
     })) ?? [];
   const seen = new Set(classifications.map(modelIncidentClassificationKey));
+  const capacity = envelope.gate !== undefined && isReviewCoverageCapacityFailure(
+    { ...envelope, gate: envelope.gate }, registeredReceipt,
+  );
 
   for (const finding of envelope.findings) {
-    const classification = sentinelModelIncidentClassification(finding.path);
+    const classification: OperationalModelIncidentClassification | undefined =
+      capacity && finding.path === ".postil/model-output"
+        ? { phase: "review", category: "coverageCapacity", recovered: false, source: "coverage_receipt" }
+        : sentinelModelIncidentClassification(finding.path);
     if (!classification) continue;
     const key = modelIncidentClassificationKey(classification);
     if (seen.has(key)) continue;
@@ -441,6 +474,39 @@ export function isEnvelopeOperationallyUnavailable(
   envelope: Pick<Envelope, "findings">,
 ): boolean {
   return envelope.findings.some(isOperationalFinding);
+}
+
+/** Only CLI-owned coverage evidence corroborated by the bound plan is terminal capacity. */
+export function isReviewCoverageCapacityFailure(
+  envelope: Pick<Envelope, "findings" | "reviewCoverage" | "modelIncidents" | "scorerError" | "gate" | "usageAccountingComplete">,
+  registeredReceipt: ReviewCoverageReceipt | null,
+): boolean {
+  const coverage = reviewCoverageSchema.safeParse(envelope.reviewCoverage);
+  if (!coverage.success || coverage.data.selectedBatches > coverage.data.totalBatches) return false;
+  const parsed = reviewCoverageReceiptSchema.safeParse(coverage.data.receipt);
+  const registered = reviewCoverageReceiptSchema.safeParse(registeredReceipt);
+  if (!parsed.success || !registered.success) return false;
+  const receipt = parsed.data;
+  if (
+    envelope.usageAccountingComplete !== true ||
+    receipt.unreviewedHunks === 0 || !envelope.gate.failing ||
+    receipt.planSha256 !== registered.data.planSha256 ||
+    receipt.totalHunks !== registered.data.totalHunks ||
+    receipt.directHunks !== registered.data.directHunks ||
+    receipt.semanticHunks !== registered.data.semanticHunks ||
+    receipt.unreviewedHunks !== registered.data.unreviewedHunks ||
+    envelope.modelIncidents?.some((incident) => !incident.recovered) ||
+    envelope.scorerError?.trim()
+  ) return false;
+  const sentinels = envelope.findings.filter(isOperationalFinding);
+  if (sentinels.length !== 1) return false;
+  const finding = sentinels[0]!;
+  const noun = receipt.unreviewedHunks === 1 ? "hunk" : "hunks";
+  return finding.path === ".postil/model-output" && finding.line === 1 &&
+    finding.endLine === undefined && finding.severity === "error" &&
+    finding.kind === "uncertainty" && finding.confidence === 1 &&
+    finding.title === "Large review coverage is incomplete" &&
+    finding.body === `Deterministic large-review coverage left ${receipt.unreviewedHunks} normalized ${noun} unreviewed within the hard request limit. Findings from completed requests remain available, but this result cannot be trusted as a pass.`;
 }
 
 export function findingStableId(finding: Finding): string | null {

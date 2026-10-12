@@ -124,6 +124,31 @@ export default function PricingPage() {
         </div>
       </section>
 
+      <section id="compare" className="mt-14 scroll-mt-6" aria-labelledby="compare-pricing-heading">
+        <h2 id="compare-pricing-heading" className="serif-display text-3xl">Compare review costs</h2>
+        <p className="mt-3 max-w-3xl text-sm text-ink-soft">
+          Seat fees, credit packs, and usage charges measure different things. These USD
+          list prices show the billing unit and the charges to include in a team budget.
+          Plan features and review limits differ; each vendor link opens its pricing terms.
+        </p>
+        {/* Vendor pricing sources verified 2026-09-05. */}
+        <div className="mt-6 overflow-x-auto rounded-card border border-stone" tabIndex={0} role="region" aria-label="Review pricing comparison">
+          <table className="w-full min-w-[620px] text-left text-sm">
+            <thead className="bg-paper">
+              <tr><th scope="col" className="p-4">Plan</th><th scope="col" className="p-4">Base price</th><th scope="col" className="p-4">Usage to account for</th></tr>
+            </thead>
+            <tbody className="divide-y divide-stone">
+              <tr><th scope="row" className="p-4 font-medium">Postil BYOK</th><td className="p-4">${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} / active author / month</td><td className="p-4">Model provider usage billed separately.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium">Postil Hosted</th><td className="p-4">${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} / active author / month</td><td className="p-4">Hosted inference included, subject to <Link href="/terms#billing-and-fair-use" className="text-rust underline">fair use</Link>.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://www.coderabbit.ai/pricing" className="text-rust underline">CodeRabbit Essentials</a></th><td className="p-4">$30 / developer / month</td><td className="p-4">$24 monthly equivalent with annual billing. Optional usage beyond included limits costs $0.25 per reviewed file.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://www.greptile.com/pricing" className="text-rust underline">Greptile Pro</a></th><td className="p-4">$30 / seat / month</td><td className="p-4">50 credits per seat; $1 per additional credit. A standard review uses 1 credit, a TREX review 3.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://www.qodo.ai/pricing/" className="text-rust underline">Qodo Pro Team</a></th><td className="p-4">From $30 / month</td><td className="p-4">2,500-credit team pack, advertised as about 18 reviews. Actual consumption depends on the review.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://docs.macroscope.com/pricing" className="text-rust underline">Macroscope Balanced</a></th><td className="p-4">$0.05 / KB of reviewed diff</td><td className="p-4">10 KB minimum per review ($0.50). Detection mode changes the rate; other features have separate usage charges.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <div className="mt-8 flex flex-col gap-4 rounded-card border border-stone bg-paper p-5 text-sm text-ink-soft sm:flex-row sm:items-center sm:justify-between">
         <p>
           Enterprise identity, audit, deployment, or contracting requirements?

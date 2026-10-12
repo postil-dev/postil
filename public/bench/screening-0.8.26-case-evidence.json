@@ -1,0 +1,2589 @@
+{
+  "schemaVersion": 1,
+  "cliVersion": "postil 0.8.26",
+  "fixtureCorpusSha256": "8e4c2cb9ad5a7efdfe6a875566d20133e905155b6f693a873595adf6c069e065",
+  "evaluatorSha256": "ebc72a8d7d60c08bf79759a0dfc5dbf821a9e6f79f4503c08ea9660dddece4d7",
+  "binarySha256": "37d0c7ef4b49ab27d55697e074f96c600025f80869bff9cb9344028b815f6d0b",
+  "definitions": {
+    "gate": "Expected block means a defect with authored error severity. Actual block means exit code 1 on a scored result. Unscored cases remain unavailable, regardless of their process exit code.",
+    "unmatchedFindings": "The historical falsePositives counter counts all findings except at most one location match per defect case. It includes duplicate matches.",
+    "timing": {
+      "statistic": "nearest-rank p95 over scored-case durationMs",
+      "start": "review_diff_at starts its review timer before diff preparation",
+      "end": "final review envelope construction records elapsed milliseconds",
+      "included": [
+        "diff preparation and review work within the scored invocation",
+        "model calls and internal repair/retry work within that invocation"
+      ],
+      "excluded": [
+        "unscored cases",
+        "earlier outer case attempts",
+        "the outer retry backoff",
+        "process startup and pre-review configuration",
+        "forge/CI queue time and developer workflow"
+      ],
+      "unavailableModel": "z-ai/glm-5.2",
+      "unavailableCase": "near-duplicate-ttl-defect",
+      "unavailableCategory": "review/invalidOutput",
+      "unavailableRetryCause": "not established"
+    },
+    "scope": "Selected source excerpts and output findings, all primary-run case verdicts, and repeated-run output availability. Request prompts, headers and per-attempt accounting are not included."
+  },
+  "runs": [
+    {
+      "model": "openai/gpt-5.6-luna",
+      "sourceReportSha256": "b529a8ff897202578d425eb796f233df151fe5ae31ec3adb3b8b538800ff3de1",
+      "configuration": {
+        "reviewMode": "exhaustive",
+        "providerIdentity": "openrouter:managed-routing",
+        "providerContractEnforced": false,
+        "upstreamProviderIdentity": null,
+        "scorerMode": "disabled",
+        "timeoutOverrides": {
+          "requestSeconds": null,
+          "totalSeconds": null,
+          "caseProcessMilliseconds": 180000
+        }
+      },
+      "counts": {
+        "correctPass": 18,
+        "correctBlock": 45,
+        "falsePass": 2,
+        "falseBlock": 5,
+        "unavailable": 0
+      },
+      "results": [
+        {
+          "id": "billing-double-charge",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 12740,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "billing-refund-replay",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10195,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "security-admin-delete",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7128,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "security-public-export",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9995,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-double-enqueue",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 14445,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-non-atomic-counter",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 12555,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "cache-tenant-key-omission",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9898,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "cache-missing-invalidation",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9898,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "dependency-major-bump",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 2834,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "deletion-hard-delete",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7551,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "deletion-no-archive",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 17745,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "ui-button-missing-label",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9083,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "ui-input-missing-label",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8568,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "a11y-low-contrast-status",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 26090,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "a11y-icon-only-action",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9299,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "api-contract-field-removed",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 14044,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "api-contract-status-drift",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 15241,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "ci-secret-in-log",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8820,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "ci-unpinned-action",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8784,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "config-debug-enabled",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9846,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "config-review-disabled",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9318,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "clean-docs-only",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 4018,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-refactor-no-behavior-change",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 2845,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-comment-only",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 3089,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-readme-update",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 2194,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-rename-only",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 5044,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "node-event-listener-leak",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 21432,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "security-csrf-rotation",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 22147,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "payments-negative-quantity",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7330,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "auth-refresh-token-expiry",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 14811,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "upload-extension-trust",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9954,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "data-tenant-filter-removed",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9264,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "api-pagination-limit-removed",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 14462,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "release-feature-flag-default-on",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8328,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "observability-swallowed-sync-error",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 17622,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "clean-test-name-clarification",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 2801,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-type-alias-rename",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 4820,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "off-by-one-page-offset",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 15697,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "off-by-one-rate-limit-boundary",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8964,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "off-by-one-token-expiry",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9488,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "off-by-one-recipient-slice",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8280,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "prompt-injection-comment-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 2817,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "prompt-injection-auth-bypass",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 13341,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "prompt-injection-sql-bypass",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7358,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "misleading-comment-tenant-cache",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8287,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "misleading-comment-fallback-throws",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 24708,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "misleading-comment-encryption-disabled",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7356,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "huge-low-signal-permission-bypass",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7665,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "huge-low-signal-timeout-disabled",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 20531,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "huge-low-signal-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 2858,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "near-duplicate-auth-defect",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 11126,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "near-duplicate-auth-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 5193,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "near-duplicate-ttl-defect",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": false,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 14181,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "near-duplicate-ttl-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 2846,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "unicode-role-homoglyph",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7810,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "unicode-domain-homoglyph",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 11688,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "unicode-env-key-homoglyph",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10678,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-check-then-insert",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 6831,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-lock-release-before-write",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8118,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-shared-buffer-reuse",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 15841,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-non-atomic-file-write",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 13936,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "async-transaction-not-awaited",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10966,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "authorization-before-path-decoding",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10090,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "webhook-signature-reserialized-body",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10944,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "async-foreach-drops-invite-failures",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8758,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "lease-release-drops-generation-token",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 11067,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "lease-renewal-seconds-used-as-milliseconds",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9045,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "retry-backoff-removes-jitter",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": false,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9475,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "streaming-response-buffered-in-memory",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10689,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "independent-prefetch-concurrency-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 3798,
+          "verdict": "correctPass"
+        }
+      ],
+      "samples": [
+        {
+          "id": "misleading-comment-fallback-throws",
+          "diff": "diff --git a/src/config/load.ts b/src/config/load.ts\nindex 1111111..2222222 100644\n--- a/src/config/load.ts\n+++ b/src/config/load.ts\n@@ -26,1 +26,1 @@\n- return defaultConfig;\n+ throw err; // falls back to defaults when config is missing\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/config/load.ts",
+                "content": "export function loadConfig(err: Error) { throw err; /* falls back to defaults when config is missing */ }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Fallback comments should match the error behavior introduced by the diff."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/config/load.ts",
+                "line": 26,
+                "endLine": 26,
+                "severity": "error",
+                "targetContract": "The comment says missing config falls back to defaults, but the code now throws the error."
+              }
+            ]
+          },
+          "stdoutSha256": "b5cfb02ad09ba69380748d92ba9e19f0f619efd1e2f3b82a1d703978e8065c96",
+          "diffSha256": "9407895bfe037af7ab3dd6296a6f1311b1dae41cb0bfd3e145cf8f1b73796849",
+          "findings": [
+            {
+              "path": "src/config/load.ts",
+              "line": 26,
+              "severity": "error",
+              "kind": "risk",
+              "confidence": 0.96,
+              "title": "Restore the default-config fallback",
+              "body": "Throwing here prevents the loader from returning defaults when configuration is missing. Restore the default return for this recoverable case or handle the error before it reaches callers.",
+              "evidence": " throw err; // falls back to defaults when config is missing",
+              "id": "f7e79f56d70cc5e0d24c8e7209b0c61fa69776808ee99b2d6c24c641062c89e1"
+            }
+          ],
+          "gate": {
+            "failOn": "error",
+            "failing": true,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "huge-low-signal-timeout-disabled",
+          "diff": "diff --git a/src/providers/client.ts b/src/providers/client.ts\nindex 1111111..2222222 100644\n--- a/src/providers/client.ts\n+++ b/src/providers/client.ts\n@@ -9,1 +9,1 @@\n- const userAgent = 'postil/1';\n+ const userAgent = 'postil/1 ';\n@@ -21,1 +21,1 @@\n- headers.set('accept', 'application/json');\n+ headers.set('accept', 'application/vnd.api+json');\n@@ -43,1 +43,1 @@\n- const retry = retryPolicy.standard();\n+ const retryPolicyForProvider = retryPolicy.standard();\n@@ -64,1 +64,1 @@\n- metrics.increment('provider.request');\n+ metrics.increment('provider.requests');\n@@ -96,1 +96,1 @@\n- timeoutMs: 5_000,\n+ timeoutMs: 0,\n@@ -118,1 +118,1 @@\n- return parseProviderResponse(response);\n+ return parseResponse(response);\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/providers/client.ts",
+                "content": "export const providerClient = createClient({ timeoutMs: 0, retry: retryPolicy.standard() });"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Provider calls should keep bounded timeouts so workers cannot hang indefinitely."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/providers/client.ts",
+                "line": 96,
+                "endLine": 96,
+                "severity": "warn",
+                "targetContract": "Setting the timeout to zero can leave provider calls unbounded and tie up workers indefinitely."
+              }
+            ]
+          },
+          "stdoutSha256": "73f1633c57c2c1c1e9d8066e84fc18494f76dc77b9a160d2ec19c073ea9882d8",
+          "diffSha256": "70a9778ff9e97ccf028b14f3c153d1f886826dd6b461d4608e9bec1c279f1674",
+          "findings": [
+            {
+              "path": "src/providers/client.ts",
+              "line": 96,
+              "severity": "error",
+              "kind": "risk",
+              "confidence": 0.98,
+              "title": "Restore a bounded provider request timeout",
+              "body": "The provider request timeout is set to `0`, removing the 5-second bound and allowing stalled requests to retain worker resources indefinitely. Restore the 5-second timeout or another explicitly bounded value.",
+              "evidence": " timeoutMs: 0,",
+              "id": "11280e9bb3425e911d681ae3c2027629e2f0f48d44c54a560f65524e06811bf1"
+            }
+          ],
+          "gate": {
+            "failOn": "error",
+            "failing": true,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "near-duplicate-ttl-defect",
+          "diff": "diff --git a/src/cache/ttl.ts b/src/cache/ttl.ts\nindex 1111111..2222222 100644\n--- a/src/cache/ttl.ts\n+++ b/src/cache/ttl.ts\n@@ -11,1 +11,1 @@\n- return Math.floor(ttlMs / 1000);\n+ return ttlMs;\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/cache/ttl.ts",
+                "content": "export function ttlSeconds(ttlMs: number) { return ttlMs; }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Cache TTL helpers should preserve the unit expected by the storage backend."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/cache/ttl.ts",
+                "line": 11,
+                "endLine": 11,
+                "severity": "error",
+                "targetContract": "The helper now passes milliseconds to a backend field that expects seconds, extending cache lifetimes."
+              }
+            ]
+          },
+          "stdoutSha256": "c5493ea0deb61578f9e8697ed75312b3e8db4da3252c61b19538c5a6322842c0",
+          "diffSha256": "b6991784f548cc04da8659547ccf4e19717c0989943633a443cf8d672ada153a",
+          "findings": [],
+          "gate": {
+            "failOn": "error",
+            "failing": false,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "near-duplicate-ttl-clean",
+          "diff": "diff --git a/src/cache/ttl.ts b/src/cache/ttl.ts\nindex 1111111..2222222 100644\n--- a/src/cache/ttl.ts\n+++ b/src/cache/ttl.ts\n@@ -11,1 +11,1 @@\n- const ttl = Math.floor(ttlMs / 1000);\n+ const ttlSeconds = Math.floor(ttlMs / 1000);\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/cache/ttl.ts",
+                "content": "export function ttlSeconds(ttlMs: number) { const ttlSeconds = Math.floor(ttlMs / 1000); return ttlSeconds; }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Cache TTL helpers should preserve the unit expected by the storage backend."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": []
+          },
+          "stdoutSha256": "7e670faa16a34ff7938fe8b05b86717a3307d99177f7f33afd2de79562379338",
+          "diffSha256": "7112ac36734b40ec481e87762499b64aabd7b62ff6c3b04db87e35df4ba40a6b",
+          "findings": [],
+          "gate": {
+            "failOn": "error",
+            "failing": false,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "deletion-no-archive",
+          "diff": "diff --git a/src/files/remove.ts b/src/files/remove.ts\nindex 1111111..2222222 100644\n--- a/src/files/remove.ts\n+++ b/src/files/remove.ts\n@@ -24,1 +24,1 @@\n- await archiveFile(fileId);\n+ await storage.delete(fileId);\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/files/remove.ts",
+                "content": "export async function removeFile(fileId: string) { await storage.delete(fileId); }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Deletion flows should preserve the only recovery copy before the removal happens."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/files/remove.ts",
+                "line": 24,
+                "endLine": 24,
+                "severity": "error",
+                "targetContract": "The delete path skips the archive table and loses the only recovery copy."
+              }
+            ]
+          },
+          "stdoutSha256": "250fd0d137065fbc2ce906b498d132739e925b42c52cf1035beade0f83cb37f7",
+          "diffSha256": "bb9a5b950af6211a04937672389e31da37e207f812496d76066316f9161310a2",
+          "findings": [
+            {
+              "path": "src/files/remove.ts",
+              "line": 24,
+              "severity": "warn",
+              "kind": "risk",
+              "confidence": 0.86,
+              "title": "Preserve archival semantics before deleting files",
+              "body": "This replaces `archiveFile` with `storage.delete`, potentially making removals permanent and bypassing recovery or retention controls. Restore the archival call unless permanent deletion is explicitly intended, or verify that `storage.delete` provides equivalent retention and recovery guarantees.",
+              "evidence": " await storage.delete(fileId);",
+              "id": "63f7580ee93de1168668c6f5a9bae9f4e28d5d113948af66e5ecbd5a6d9cf8d8"
+            }
+          ],
+          "gate": {
+            "failOn": "error",
+            "failing": false,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "model": "z-ai/glm-5.2",
+      "sourceReportSha256": "874df0cb2d0e97a105eef07da3a6ec03898d6264eaedee039a2a1f5f8eb6ede2",
+      "configuration": {
+        "reviewMode": "exhaustive",
+        "providerIdentity": "openrouter:managed-routing",
+        "providerContractEnforced": false,
+        "upstreamProviderIdentity": null,
+        "scorerMode": "disabled",
+        "timeoutOverrides": {
+          "requestSeconds": null,
+          "totalSeconds": null,
+          "caseProcessMilliseconds": 180000
+        }
+      },
+      "counts": {
+        "correctPass": 19,
+        "correctBlock": 34,
+        "falsePass": 12,
+        "falseBlock": 4,
+        "unavailable": 1
+      },
+      "results": [
+        {
+          "id": "billing-double-charge",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 6965,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "billing-refund-replay",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 4147,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "security-admin-delete",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 4624,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "security-public-export",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 4207,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-double-enqueue",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 4964,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-non-atomic-counter",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 5364,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "cache-tenant-key-omission",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 33521,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "cache-missing-invalidation",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 22047,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "dependency-major-bump",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 7512,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "deletion-hard-delete",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 62096,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "deletion-no-archive",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10441,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "ui-button-missing-label",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 28981,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "ui-input-missing-label",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 81507,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "a11y-low-contrast-status",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 5732,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "a11y-icon-only-action",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 18123,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "api-contract-field-removed",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 23354,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "api-contract-status-drift",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8734,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "ci-secret-in-log",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 131757,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "ci-unpinned-action",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 23863,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "config-debug-enabled",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 39753,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "config-review-disabled",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 69291,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "clean-docs-only",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 1984,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-refactor-no-behavior-change",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 29462,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-comment-only",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 14128,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-readme-update",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 1716,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-rename-only",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 9590,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "node-event-listener-leak",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": false,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 9198,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "security-csrf-rotation",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 15041,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "payments-negative-quantity",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 34152,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "auth-refresh-token-expiry",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 17866,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "upload-extension-trust",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 18090,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "data-tenant-filter-removed",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 8652,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "api-pagination-limit-removed",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 6044,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "release-feature-flag-default-on",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 22271,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "observability-swallowed-sync-error",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 7564,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "clean-test-name-clarification",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 9571,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "clean-type-alias-rename",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 30567,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "off-by-one-page-offset",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 6279,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "off-by-one-rate-limit-boundary",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 18165,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "off-by-one-token-expiry",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": false,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 1715,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "off-by-one-recipient-slice",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 35266,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "prompt-injection-comment-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 3048,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "prompt-injection-auth-bypass",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 22849,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "prompt-injection-sql-bypass",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 28330,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "misleading-comment-tenant-cache",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 5489,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "misleading-comment-fallback-throws",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 1,
+          "durationMs": 42355,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "misleading-comment-encryption-disabled",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 6822,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "huge-low-signal-permission-bypass",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 5793,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "huge-low-signal-timeout-disabled",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 2,
+          "durationMs": 49843,
+          "verdict": "falseBlock"
+        },
+        {
+          "id": "huge-low-signal-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 1015,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "near-duplicate-auth-defect",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 5980,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "near-duplicate-auth-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 1440,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "near-duplicate-ttl-defect",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": null,
+          "scored": false,
+          "detected": null,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 14832,
+          "verdict": "unavailable",
+          "error": "operational envelope: review/invalidOutput"
+        },
+        {
+          "id": "near-duplicate-ttl-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 5240,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "unicode-role-homoglyph",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 25507,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "unicode-domain-homoglyph",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 5304,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "unicode-env-key-homoglyph",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 6610,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-check-then-insert",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 3068,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "race-lock-release-before-write",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 15741,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-shared-buffer-reuse",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10892,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "race-non-atomic-file-write",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 29412,
+          "verdict": "falsePass"
+        },
+        {
+          "id": "async-transaction-not-awaited",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 17569,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "authorization-before-path-decoding",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 5273,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "webhook-signature-reserialized-body",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 6355,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "async-foreach-drops-invite-failures",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 3902,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "lease-release-drops-generation-token",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 21253,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "lease-renewal-seconds-used-as-milliseconds",
+          "type": "defect",
+          "expectedSeverity": "error",
+          "expectedBlock": true,
+          "actualBlock": true,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 39853,
+          "verdict": "correctBlock"
+        },
+        {
+          "id": "retry-backoff-removes-jitter",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 42954,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "streaming-response-buffered-in-memory",
+          "type": "defect",
+          "expectedSeverity": "warn",
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": true,
+          "silent": null,
+          "unmatchedFindings": 0,
+          "durationMs": 10272,
+          "verdict": "correctPass"
+        },
+        {
+          "id": "independent-prefetch-concurrency-clean",
+          "type": "clean",
+          "expectedSeverity": null,
+          "expectedBlock": false,
+          "actualBlock": false,
+          "scored": true,
+          "detected": null,
+          "silent": true,
+          "unmatchedFindings": 0,
+          "durationMs": 1020,
+          "verdict": "correctPass"
+        }
+      ],
+      "samples": [
+        {
+          "id": "misleading-comment-fallback-throws",
+          "diff": "diff --git a/src/config/load.ts b/src/config/load.ts\nindex 1111111..2222222 100644\n--- a/src/config/load.ts\n+++ b/src/config/load.ts\n@@ -26,1 +26,1 @@\n- return defaultConfig;\n+ throw err; // falls back to defaults when config is missing\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/config/load.ts",
+                "content": "export function loadConfig(err: Error) { throw err; /* falls back to defaults when config is missing */ }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Fallback comments should match the error behavior introduced by the diff."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/config/load.ts",
+                "line": 26,
+                "endLine": 26,
+                "severity": "error",
+                "targetContract": "The comment says missing config falls back to defaults, but the code now throws the error."
+              }
+            ]
+          },
+          "stdoutSha256": "d8287751eeb2b832c811afee29c175810cb721ecd5955c1ba1227eefcfee359b",
+          "diffSha256": "9407895bfe037af7ab3dd6296a6f1311b1dae41cb0bfd3e145cf8f1b73796849",
+          "findings": [
+            {
+              "path": "src/config/load.ts",
+              "line": 26,
+              "severity": "error",
+              "kind": "contentPolicy",
+              "confidence": 0.9,
+              "title": "Comment claims fallback to defaults but code throws",
+              "body": "The added comment states \"falls back to defaults when config is missing\" but the code on the same line throws the error instead of returning defaultConfig. This is a fabricated claim about behavior. Correct the comment to state that missing config is now a fatal error, or restore the return-defaultConfig behavior if fallback is still intended.",
+              "evidence": " throw err; // falls back to defaults when config is missing",
+              "id": "1121aec62a17c6cafac515a09e1a350163a7193d9874b757990d207dc8a2dc7a"
+            },
+            {
+              "path": "src/config/load.ts",
+              "line": 26,
+              "severity": "warn",
+              "kind": "risk",
+              "confidence": 0.75,
+              "title": "Config loader now throws instead of returning defaults",
+              "body": "The function previously returned defaultConfig on error, guaranteeing callers always received a config object. It now throws, so any caller without a try/catch will crash on missing or invalid config. This is a breaking contract change. If fallback is still required, restore the return-defaultConfig path; otherwise confirm callers handle the exception and remove the misleading comment.",
+              "evidence": " throw err; // falls back to defaults when config is missing",
+              "id": "2388b12aa772ee48b5d8d038c851171f3ae2fba76431178b95398bd4b67d8269"
+            }
+          ],
+          "gate": {
+            "failOn": "error",
+            "failing": true,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "huge-low-signal-timeout-disabled",
+          "diff": "diff --git a/src/providers/client.ts b/src/providers/client.ts\nindex 1111111..2222222 100644\n--- a/src/providers/client.ts\n+++ b/src/providers/client.ts\n@@ -9,1 +9,1 @@\n- const userAgent = 'postil/1';\n+ const userAgent = 'postil/1 ';\n@@ -21,1 +21,1 @@\n- headers.set('accept', 'application/json');\n+ headers.set('accept', 'application/vnd.api+json');\n@@ -43,1 +43,1 @@\n- const retry = retryPolicy.standard();\n+ const retryPolicyForProvider = retryPolicy.standard();\n@@ -64,1 +64,1 @@\n- metrics.increment('provider.request');\n+ metrics.increment('provider.requests');\n@@ -96,1 +96,1 @@\n- timeoutMs: 5_000,\n+ timeoutMs: 0,\n@@ -118,1 +118,1 @@\n- return parseProviderResponse(response);\n+ return parseResponse(response);\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/providers/client.ts",
+                "content": "export const providerClient = createClient({ timeoutMs: 0, retry: retryPolicy.standard() });"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Provider calls should keep bounded timeouts so workers cannot hang indefinitely."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/providers/client.ts",
+                "line": 96,
+                "endLine": 96,
+                "severity": "warn",
+                "targetContract": "Setting the timeout to zero can leave provider calls unbounded and tie up workers indefinitely."
+              }
+            ]
+          },
+          "stdoutSha256": "e1ef8cb05f506f38e63fa3adeabf31d14540b324db9242c8f8e97ec7e7356496",
+          "diffSha256": "70a9778ff9e97ccf028b14f3c153d1f886826dd6b461d4608e9bec1c279f1674",
+          "findings": [
+            {
+              "path": "src/providers/client.ts",
+              "line": 96,
+              "severity": "error",
+              "kind": "risk",
+              "confidence": 0.9,
+              "title": "Request timeout disabled by setting timeoutMs to 0",
+              "body": "The provider client timeout was changed from 5_000 ms to 0, which disables the request timeout in most HTTP client implementations. Hung provider requests can block indefinitely and exhaust connection pools. Restore a finite timeout value, or if zero is intentional for a streaming endpoint, gate it behind an explicit no-timeout option.",
+              "evidence": " timeoutMs: 0,",
+              "id": "44c27b9dadf21dfa9d7fd504bd6856af584efbf0e96a71b9af37f33cd315b2a9"
+            },
+            {
+              "path": "src/providers/client.ts",
+              "line": 64,
+              "severity": "warn",
+              "kind": "risk",
+              "confidence": 0.75,
+              "title": "Metric renamed from provider.request to provider.requests",
+              "body": "The telemetry metric identifier was changed from 'provider.request' to 'provider.requests', a breaking contract change for any dashboard, alert, or SLO referencing the old name. Existing telemetry consumers will silently stop receiving data. Restore the metric name 'provider.request' or emit both names during a transition period.",
+              "evidence": " metrics.increment('provider.requests');",
+              "id": "bd6a5f917731e0a213a7edf408a7329e64eeeb9c5960c4f33130529fd2825313"
+            },
+            {
+              "path": "src/providers/client.ts",
+              "line": 21,
+              "severity": "warn",
+              "kind": "risk",
+              "confidence": 0.7,
+              "title": "Accept header content type changed to application/vnd.api+json",
+              "body": "The Accept header was switched from 'application/json' to 'application/vnd.api+json', requesting a JSON:API content type. Provider endpoints that do not support this content type may return 406 Not Acceptable or a different response format, breaking existing integrations. Restore 'application/json' or confirm every targeted provider supports application/vnd.api+json before merging.",
+              "evidence": " headers.set('accept', 'application/vnd.api+json');",
+              "id": "985ff849fa7e848038dd22ca0d3d24d9f21d165b440da2d5796c45585c0619ed"
+            }
+          ],
+          "gate": {
+            "failOn": "error",
+            "failing": true,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "near-duplicate-ttl-defect",
+          "diff": "diff --git a/src/cache/ttl.ts b/src/cache/ttl.ts\nindex 1111111..2222222 100644\n--- a/src/cache/ttl.ts\n+++ b/src/cache/ttl.ts\n@@ -11,1 +11,1 @@\n- return Math.floor(ttlMs / 1000);\n+ return ttlMs;\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/cache/ttl.ts",
+                "content": "export function ttlSeconds(ttlMs: number) { return ttlMs; }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Cache TTL helpers should preserve the unit expected by the storage backend."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/cache/ttl.ts",
+                "line": 11,
+                "endLine": 11,
+                "severity": "error",
+                "targetContract": "The helper now passes milliseconds to a backend field that expects seconds, extending cache lifetimes."
+              }
+            ]
+          },
+          "stdoutSha256": "63c1d2a146fd417680d82aa436138e572bb41d2bbc485886880a5c4b0b1dfbf4",
+          "diffSha256": "b6991784f548cc04da8659547ccf4e19717c0989943633a443cf8d672ada153a",
+          "findings": [
+            {
+              "path": ".postil/model-output",
+              "line": 1,
+              "severity": "error",
+              "kind": "uncertainty",
+              "confidence": 1,
+              "title": "Model output could not be validated",
+              "body": "Postil could not validate the configured model response against cited code evidence. No clean verdict was issued.\n\nDetail: model output remained unusable after semantic retry (validation categories: repositoryClaim=1)",
+              "id": "56b81a69cab4308febccfe69f2d3ab97c251a19c4431e0b42605e1425d1cbf10"
+            }
+          ],
+          "gate": {
+            "failOn": "error",
+            "failing": true,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "near-duplicate-ttl-clean",
+          "diff": "diff --git a/src/cache/ttl.ts b/src/cache/ttl.ts\nindex 1111111..2222222 100644\n--- a/src/cache/ttl.ts\n+++ b/src/cache/ttl.ts\n@@ -11,1 +11,1 @@\n- const ttl = Math.floor(ttlMs / 1000);\n+ const ttlSeconds = Math.floor(ttlMs / 1000);\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/cache/ttl.ts",
+                "content": "export function ttlSeconds(ttlMs: number) { const ttlSeconds = Math.floor(ttlMs / 1000); return ttlSeconds; }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Cache TTL helpers should preserve the unit expected by the storage backend."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": []
+          },
+          "stdoutSha256": "4da35970917b31234c39a8dcab58a343e33583a840d041fe8f4b2825e72611f3",
+          "diffSha256": "7112ac36734b40ec481e87762499b64aabd7b62ff6c3b04db87e35df4ba40a6b",
+          "findings": [],
+          "gate": {
+            "failOn": "error",
+            "failing": false,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        },
+        {
+          "id": "deletion-no-archive",
+          "diff": "diff --git a/src/files/remove.ts b/src/files/remove.ts\nindex 1111111..2222222 100644\n--- a/src/files/remove.ts\n+++ b/src/files/remove.ts\n@@ -24,1 +24,1 @@\n- await archiveFile(fileId);\n+ await storage.delete(fileId);\n",
+          "authoredContext": {
+            "files": [
+              {
+                "path": "src/files/remove.ts",
+                "content": "export async function removeFile(fileId: string) { await storage.delete(fileId); }"
+              }
+            ],
+            "docs": [
+              {
+                "path": "review-policy.md",
+                "content": "Deletion flows should preserve the only recovery copy before the removal happens."
+              }
+            ]
+          },
+          "groundTruth": {
+            "findings": [
+              {
+                "path": "src/files/remove.ts",
+                "line": 24,
+                "endLine": 24,
+                "severity": "error",
+                "targetContract": "The delete path skips the archive table and loses the only recovery copy."
+              }
+            ]
+          },
+          "stdoutSha256": "d641562808e33a2dc3083d901c5c6f0b5af3ff7f3a19fec315d8cf1d47b3e933",
+          "diffSha256": "bb9a5b950af6211a04937672389e31da37e207f812496d76066316f9161310a2",
+          "findings": [
+            {
+              "path": "src/files/remove.ts",
+              "line": 24,
+              "severity": "warn",
+              "kind": "risk",
+              "confidence": 0.6,
+              "title": "Archive replaced with permanent deletion",
+              "body": "The call changed from archiveFile(fileId) to storage.delete(fileId), replacing a soft-delete/archive with a hard delete. If any caller, restore flow, or audit consumer expects archived files to remain recoverable, this diff introduces irreversible data loss. Verify that storage.delete is the intended contract and that no restore or audit path depends on the archived copy, or keep archiving as the default and gate hard deletion behind an explicit flag.",
+              "evidence": " await storage.delete(fileId);",
+              "id": "b5cb47ffbabec982d6c21002fc09b6e43fa4d50d4933019331abb0c027a6ea3f"
+            }
+          ],
+          "gate": {
+            "failOn": "error",
+            "failing": false,
+            "blockOnKinds": [
+              "humanEscalation"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "repeatedRuns": [
+    {
+      "run": 1,
+      "model": "openai/gpt-5.6-luna",
+      "sourceReportSha256": "b529a8ff897202578d425eb796f233df151fe5ae31ec3adb3b8b538800ff3de1",
+      "detected": 55,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 0,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 2,
+      "model": "openai/gpt-5.6-luna",
+      "sourceReportSha256": "90fde0fea4b4b9fa344d68f6329b9ed5f1181b96ecb9673e2826e7aca8a7e226",
+      "detected": 52,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 0,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 3,
+      "model": "openai/gpt-5.6-luna",
+      "sourceReportSha256": "3ecd8711bd622c8ebf8afea0704bc3e86c9c9d45f64da6a99dc575ce8bdcf934",
+      "detected": 53,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 0,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 4,
+      "model": "openai/gpt-5.6-luna",
+      "sourceReportSha256": "a832934e28d4bf1473c807d73f76e4f23f64d4372afb4987371c82814fe30f4f",
+      "detected": 43,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 16,
+      "cleanSilent": 8,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 5
+    },
+    {
+      "run": 1,
+      "model": "z-ai/glm-5.2",
+      "sourceReportSha256": "874df0cb2d0e97a105eef07da3a6ec03898d6264eaedee039a2a1f5f8eb6ede2",
+      "detected": 54,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 1,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 2,
+      "model": "z-ai/glm-5.2",
+      "sourceReportSha256": "b6752a549abae0e158896b8f905e997a08a8ce27a6237ec98383a9e40b00524e",
+      "detected": 51,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 1,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 3,
+      "model": "z-ai/glm-5.2",
+      "sourceReportSha256": "639664ca0823a44b714235e53ad795c7bbc9970239e4eb303d5af209486f63b3",
+      "detected": 50,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 2,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 4,
+      "model": "z-ai/glm-5.2",
+      "sourceReportSha256": "db1460ee17f9a752aa388abbf3079d14fd84e26a12ce6cb6ee21fb4b72d91ef4",
+      "detected": 51,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 1,
+      "cleanSilent": 12,
+      "cleanWithFindings": 1,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 1,
+      "model": "moonshotai/kimi-k2.7-code",
+      "sourceReportSha256": "8cde20de8d3fc192bc9a470635e1fdb6cbc5ae4993b84ad50c81212771ae9318",
+      "detected": 54,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 1,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 2,
+      "model": "moonshotai/kimi-k2.7-code",
+      "sourceReportSha256": "9af835062438efeebe4009aee8e7c6754053adbc6afcff3bf3ae7bf90eacc7fa",
+      "detected": 51,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 1,
+      "cleanSilent": 13,
+      "cleanWithFindings": 0,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 3,
+      "model": "moonshotai/kimi-k2.7-code",
+      "sourceReportSha256": "8397f9b3567fe77359c22ab3e3fe70265a0e768e74bc6decae5d1d6d7d51606d",
+      "detected": 56,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 0,
+      "cleanSilent": 12,
+      "cleanWithFindings": 1,
+      "cleanUnavailable": 0
+    },
+    {
+      "run": 4,
+      "model": "moonshotai/kimi-k2.7-code",
+      "sourceReportSha256": "2e10ef05fb50749d994c72ba5f711d818f62b7d2374f251c26c5932e2ea9dc7c",
+      "detected": 54,
+      "defectCases": 57,
+      "totalCases": 70,
+      "unavailable": 1,
+      "cleanSilent": 12,
+      "cleanWithFindings": 1,
+      "cleanUnavailable": 0
+    }
+  ],
+  "adjudications": [
+    {
+      "fixtureId": "misleading-comment-fallback-throws",
+      "path": "src/config/load.ts",
+      "line": 26,
+      "title": "Config loader now throws instead of returning defaults",
+      "classification": "duplicate-seeded-defect",
+      "explanation": "The matched finding and extra warning cite the same return-defaultConfig to throw-err change. Both describe the seeded fallback contract; the warning is not an additional unique defect."
+    },
+    {
+      "fixtureId": "huge-low-signal-timeout-disabled",
+      "path": "src/providers/client.ts",
+      "line": 64,
+      "title": "Metric renamed from provider.request to provider.requests",
+      "classification": "compatibility-concern-not-established",
+      "explanation": "The rename is present, but the supplied evidence provides no dashboard, alert, SLO, consumer, or metric-name stability contract establishing the asserted breakage."
+    },
+    {
+      "fixtureId": "huge-low-signal-timeout-disabled",
+      "path": "src/providers/client.ts",
+      "line": 21,
+      "title": "Accept header content type changed to application/vnd.api+json",
+      "classification": "compatibility-concern-not-established",
+      "explanation": "The finding explicitly says endpoints may reject or change their response. No supplied endpoint contract establishes that failure."
+    }
+  ],
+  "representativeExplanations": [
+    {
+      "id": "deletion-no-archive",
+      "interpretation": "Both models return a warning and allow the gate for the seeded must-block removal of the archive step. This is a false accept under the authored contract, despite detecting the change."
+    },
+    {
+      "id": "off-by-one-token-expiry",
+      "interpretation": "The contract makes a token invalid exactly at expiry. GLM emits no finding and allows the gate; Luna reports the boundary error and blocks it."
+    },
+    {
+      "id": "huge-low-signal-timeout-disabled",
+      "interpretation": "The authored timeout risk is advisory. Both models promote it to an error and block, a false block under the benchmark rubric. This does not establish that blocking a disabled timeout is always wrong in production."
+    },
+    {
+      "id": "near-duplicate-ttl-defect",
+      "interpretation": "GLM returns review/invalidOutput and remains unavailable for quality scoring. Luna emits no finding and allows this seeded must-block unit-conversion defect."
+    }
+  ]
+}

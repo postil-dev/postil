@@ -1,5 +1,5 @@
 {
-  "id": "b3afea75-bf48-4e42-a078-d21f75d1b6e5",
+  "id": "f348b11c-5e7e-4701-9ad6-b1da4e4b3b13",
   "prevId": "64f407fd-a354-4c9b-a8a3-f267886fcbc1",
   "version": "7",
   "dialect": "postgresql",
@@ -3568,12 +3568,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "alert_key": {
-          "name": "alert_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "event_type": {
           "name": "event_type",
           "type": "text",
@@ -3678,34 +3672,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "ilert_alert_events_canary_observation_idx": {
-          "name": "ilert_alert_events_canary_observation_idx",
-          "columns": [
-            {
-              "expression": "alert_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "event_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "alert_source_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"ilert_alert_events\".\"alert_key\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {},
@@ -3716,10 +3682,6 @@
         "ilert_alert_events_alert_id_check": {
           "name": "ilert_alert_events_alert_id_check",
           "value": "\"ilert_alert_events\".\"alert_id\" ~ '^[1-9][0-9]{0,63}$'"
-        },
-        "ilert_alert_events_alert_key_check": {
-          "name": "ilert_alert_events_alert_key_check",
-          "value": "\"ilert_alert_events\".\"alert_key\" IS NULL OR length(\"ilert_alert_events\".\"alert_key\") BETWEEN 1 AND 512"
         },
         "ilert_alert_events_event_type_check": {
           "name": "ilert_alert_events_event_type_check",
@@ -5536,6 +5498,210 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.private_monitor_check_failures": {
+      "name": "private_monitor_check_failures",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "private_monitor_check_failures_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt": {
+          "name": "attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recovered": {
+          "name": "recovered",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "detail": {
+          "name": "detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "private_monitor_check_failures_observed_idx": {
+          "name": "private_monitor_check_failures_observed_idx",
+          "columns": [
+            {
+              "expression": "observed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "private_monitor_check_failures_attempt_check": {
+          "name": "private_monitor_check_failures_attempt_check",
+          "value": "\"private_monitor_check_failures\".\"attempt\" > 0"
+        },
+        "private_monitor_check_failures_key_nonempty": {
+          "name": "private_monitor_check_failures_key_nonempty",
+          "value": "length(btrim(\"private_monitor_check_failures\".\"key\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.private_monitor_incident_events": {
+      "name": "private_monitor_incident_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "private_monitor_incident_events_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "group": {
+          "name": "group",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "severity": {
+          "name": "severity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transition": {
+          "name": "transition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "detail": {
+          "name": "detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurrence_count": {
+          "name": "occurrence_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "first_detected_at": {
+          "name": "first_detected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "private_monitor_incident_events_occurred_idx": {
+          "name": "private_monitor_incident_events_occurred_idx",
+          "columns": [
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "private_monitor_incident_events_transition_check": {
+          "name": "private_monitor_incident_events_transition_check",
+          "value": "\"private_monitor_incident_events\".\"transition\" IN ('opened', 'resolved')"
+        },
+        "private_monitor_incident_events_severity_check": {
+          "name": "private_monitor_incident_events_severity_check",
+          "value": "\"private_monitor_incident_events\".\"severity\" IN ('warning', 'critical')"
+        },
+        "private_monitor_incident_events_text_nonempty": {
+          "name": "private_monitor_incident_events_text_nonempty",
+          "value": "length(btrim(\"private_monitor_incident_events\".\"key\")) > 0 AND length(btrim(\"private_monitor_incident_events\".\"group\")) > 0 AND length(btrim(\"private_monitor_incident_events\".\"summary\")) > 0 AND \"private_monitor_incident_events\".\"occurrence_count\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.private_monitor_incidents": {
       "name": "private_monitor_incidents",
       "schema": "",
@@ -5569,6 +5735,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "opened_detail": {
+          "name": "opened_detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "state": {
           "name": "state",
@@ -5896,6 +6068,12 @@
         },
         "last_error": {
           "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "heartbeat_delivery_error": {
+          "name": "heartbeat_delivery_error",
           "type": "text",
           "primaryKey": false,
           "notNull": false

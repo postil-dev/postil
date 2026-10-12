@@ -25,8 +25,13 @@ const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_ENV = {
   REVIEW_MODEL: process.env.REVIEW_MODEL,
   REVIEW_MODEL_CASCADE: process.env.REVIEW_MODEL_CASCADE,
+  REVIEW_REASONING_EFFORT: process.env.REVIEW_REASONING_EFFORT,
+  REVIEW_SCORER_REASONING_EFFORT: process.env.REVIEW_SCORER_REASONING_EFFORT,
   POSTIL_API_BASE: process.env.POSTIL_API_BASE,
   POSTIL_API_FORMAT: process.env.POSTIL_API_FORMAT,
+  POSTIL_ENDPOINT_AUTH_HEADER: process.env.POSTIL_ENDPOINT_AUTH_HEADER,
+  POSTIL_ENDPOINT_AUTH_VALUE: process.env.POSTIL_ENDPOINT_AUTH_VALUE,
+  POSTIL_MANAGED_RELEASE: process.env.POSTIL_MANAGED_RELEASE,
   MODEL_API_KEY: process.env.MODEL_API_KEY,
   POSTIL_CLI_GATEWAY_HOURLY_CAP: process.env.POSTIL_CLI_GATEWAY_HOURLY_CAP,
   POSTIL_HOSTED_INFERENCE_ENABLED: process.env.POSTIL_HOSTED_INFERENCE_ENABLED,
@@ -34,13 +39,88 @@ const ORIGINAL_ENV = {
   POSTIL_RELEASE_SHA: process.env.POSTIL_RELEASE_SHA,
 };
 
-test("uses the pinned CLI default when the managed provisional roster has no environment model", async () => {
-  const { hostedModelRoster } = await import("@/lib/cli-gateway");
-  expect(hostedModelRoster({}, "1")).toEqual([release.hostedCliDefaultModel]);
-  expect(hostedModelRoster({}, "0")).toEqual([]);
-  expect(hostedModelRoster({ model: "configured/model" }, "1")).toEqual([
-    "configured/model",
-  ]);
+test("resolves and applies the complete managed gateway policy", async () => {
+  const {
+    buildManagedHostedChatCompletionRequest,
+    resolveManagedHostedProviderProfile,
+  } = await import("@/lib/managed-hosted-provider-profile");
+  const profile = resolveManagedHostedProviderProfile({
+    POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+  });
+  expect(profile).toEqual({
+    apiBase: "https://openrouter.ai/api/v1",
+    apiFormat: "openai-compatible",
+    model: "openai/gpt-5.6-luna",
+    providerName: "Azure",
+    providerRoute: "azure/eu",
+    reasoningEffort: "low",
+    maxOutputTokens: 8000,
+    temperature: 0.1,
+    maxPromptPrice: 0.22,
+    maxCompletionPrice: 1.32,
+  });
+  expect(
+    buildManagedHostedChatCompletionRequest(
+      {
+        model: "client/model",
+        models: ["client/fallback"],
+        reasoning: { effort: "max" },
+        provider: { order: ["client-provider"] },
+        route: "client-provider",
+        response_format: { type: "json_object" },
+        messages: [{ role: "user", content: "review" }],
+        max_tokens: 200_000,
+        temperature: 0,
+      },
+      profile,
+    ),
+  ).toEqual({
+    messages: [{ role: "user", content: "review" }],
+    max_tokens: 8000,
+    temperature: 0.1,
+    model: "openai/gpt-5.6-luna",
+    reasoning: { effort: "low" },
+    provider: {
+      data_collection: "deny",
+      zdr: true,
+      order: ["azure/eu"],
+      allow_fallbacks: false,
+      max_price: {
+        prompt: 0.22,
+        completion: 1.32,
+      },
+    },
+  });
+});
+
+test("rejects drift from the managed gateway profile", async () => {
+  const { resolveManagedHostedProviderProfile } =
+    await import("@/lib/managed-hosted-provider-profile");
+  for (const environment of [
+    {},
+    {
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+      REVIEW_MODEL: "z-ai/glm-5.2",
+    },
+    {
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+      REVIEW_MODEL_CASCADE: "attacker/fallback",
+    },
+    {
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+      REVIEW_REASONING_EFFORT: "high",
+    },
+    {
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+      POSTIL_API_BASE: "https://provider.example/v1",
+    },
+    {
+      POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+      POSTIL_API_FORMAT: "anthropic",
+    },
+  ]) {
+    expect(() => resolveManagedHostedProviderProfile(environment)).toThrow();
+  }
 });
 
 describeDb("POST /api/inference/v1/chat/completions", () => {
@@ -77,9 +157,14 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     await migrationClient.end();
 
     process.env.DATABASE_URL = databaseUrl.toString();
-    process.env.REVIEW_MODEL = "z-ai/glm-5.2";
-    process.env.REVIEW_MODEL_CASCADE = "moonshotai/kimi-k2.7-code";
-    process.env.POSTIL_API_BASE = "https://mock-upstream.test/v1";
+    delete process.env.REVIEW_MODEL;
+    delete process.env.REVIEW_MODEL_CASCADE;
+    process.env.REVIEW_REASONING_EFFORT = "low";
+    delete process.env.REVIEW_SCORER_REASONING_EFFORT;
+    delete process.env.POSTIL_MANAGED_RELEASE;
+    delete process.env.POSTIL_ENDPOINT_AUTH_HEADER;
+    delete process.env.POSTIL_ENDPOINT_AUTH_VALUE;
+    process.env.POSTIL_API_BASE = "https://openrouter.ai/api/v1";
     process.env.POSTIL_API_FORMAT = "openai-compatible";
     process.env.MODEL_API_KEY = "test-fixture-upstream-key";
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
@@ -106,8 +191,15 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
 
   afterEach(() => {
     globalThis.fetch = ORIGINAL_FETCH;
-    process.env.REVIEW_MODEL = "z-ai/glm-5.2";
-    process.env.REVIEW_MODEL_CASCADE = "moonshotai/kimi-k2.7-code";
+    delete process.env.REVIEW_MODEL;
+    delete process.env.REVIEW_MODEL_CASCADE;
+    process.env.REVIEW_REASONING_EFFORT = "low";
+    delete process.env.REVIEW_SCORER_REASONING_EFFORT;
+    delete process.env.POSTIL_MANAGED_RELEASE;
+    delete process.env.POSTIL_ENDPOINT_AUTH_HEADER;
+    delete process.env.POSTIL_ENDPOINT_AUTH_VALUE;
+    process.env.POSTIL_API_BASE = "https://openrouter.ai/api/v1";
+    process.env.POSTIL_API_FORMAT = "openai-compatible";
     process.env.POSTIL_HOSTED_INFERENCE_ENABLED = "1";
     process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = "1";
     delete process.env.POSTIL_RELEASE_SHA;
@@ -192,6 +284,8 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         JSON.stringify({
           id: "chatcmpl-fixture",
           object: "chat.completion",
+          model: release.hostedCliDefaultModel,
+          provider: "Azure",
           choices: [
             {
               index: 0,
@@ -250,8 +344,57 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     expect(body.error.message).toBe("no_entitlement");
   });
 
-  test("rejects a model outside the hosted roster with 400", async () => {
+  test("managed gateways never forward additional endpoint credentials", async () => {
+    process.env.POSTIL_MANAGED_RELEASE = "1";
+    process.env.POSTIL_ENDPOINT_AUTH_HEADER = "x-provider-auth";
+    const endpointCredential = "fixture-managed-endpoint-auth-not-a-real-credential";
+    process.env.POSTIL_ENDPOINT_AUTH_VALUE = endpointCredential;
     mockUpstreamSuccess();
+    const respond = globalThis.fetch;
+    let forwardedHeaders: Headers | undefined;
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        forwardedHeaders = new Headers(init?.headers);
+        return respond(input, init);
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const orgId = await createOrgWithHostedEntitlement();
+    const token = await issueCliToken(orgId);
+    const response = await POST(chatRequest(token, { messages: [] }));
+
+    expect(response.status).toBe(200);
+    expect(forwardedHeaders?.get("x-provider-auth")).toBeNull();
+    expect(Array.from(forwardedHeaders!.values())).not.toContain(endpointCredential);
+    expect(forwardedHeaders?.get("authorization")).toBe("Bearer test-fixture-upstream-key");
+  });
+
+  test("replaces client model, reasoning, and provider routing with hosted policy", async () => {
+    let forwardedBody: Record<string, unknown> | undefined;
+    globalThis.fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        forwardedBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-hosted-policy",
+            object: "chat.completion",
+            model: release.hostedCliDefaultModel,
+            provider: "Azure",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 10, completion_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
     const { POST } =
       await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
@@ -259,19 +402,166 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
 
     const response = await POST(
       chatRequest(token, {
-        model: "openai/definitely-not-on-the-roster",
+        model: "attacker/expensive",
+        models: ["attacker/fallback"],
+        reasoning: { effort: "max" },
+        provider: { order: ["attacker"], allow_fallbacks: true },
+        route: "attacker",
+        max_tokens: 200_000,
+        temperature: 0,
         messages: [{ role: "user", content: "hi" }],
       }),
     );
-    expect(response.status).toBe(400);
-    const body = (await response.json()) as { error: { type: string } };
-    expect(body.error.type).toBe("invalid_model");
+    expect(response.status).toBe(200);
+    expect(forwardedBody).toEqual({
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 8000,
+      temperature: 0.1,
+      model: release.hostedCliDefaultModel,
+      reasoning: { effort: "low" },
+      provider: {
+        data_collection: "deny",
+        zdr: true,
+        order: ["azure/eu"],
+        allow_fallbacks: false,
+        max_price: { prompt: 0.22, completion: 1.32 },
+      },
+    });
+    const responseBody = (await response.json()) as { model: string };
+    expect(responseBody.model).toBe(release.hostedCliDefaultModel);
+    const usage = await pool!.query<{ model_used: string }>(
+      `SELECT model_used FROM usage_events WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(usage.rows).toEqual([{ model_used: release.hostedCliDefaultModel }]);
+  });
 
+  test("accounts the returned model and rejects an upstream identity mismatch", async () => {
+    globalThis.fetch = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "chatcmpl-model-mismatch",
+            object: "chat.completion",
+            model: "upstream/unexpected-model",
+            provider: "Unexpected Provider",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 10, completion_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
+    const orgId = await createOrgWithHostedEntitlement();
+    const token = await issueCliToken(orgId);
+
+    const response = await POST(
+      chatRequest(token, {
+        model: release.hostedCliDefaultModel,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: {
+        message: "the upstream response identity did not match the hosted provider policy",
+        type: "upstream_identity_mismatch",
+      },
+    });
+    const usage = await pool!.query<{
+      model_used: string;
+      prompt_tokens: number;
+      completion_tokens: number;
+      cost_micros: string | null;
+    }>(
+      `SELECT model_used, prompt_tokens, completion_tokens, cost_micros
+       FROM usage_events WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(usage.rows).toHaveLength(2);
+    expect(usage.rows).toContainEqual({
+      model_used: "upstream/unexpected-model",
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      cost_micros: "0",
+    });
+    expect(usage.rows).toContainEqual({
+      model_used: "unattributed provider usage",
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      cost_micros: "1000000",
+    });
     const reservations = await pool!.query<{ status: string }>(
       `SELECT status FROM hosted_usage_reservations WHERE org_id = $1 AND operation = 'cli_gateway'`,
       [orgId],
     );
-    expect(reservations.rows.map((row) => row.status)).toEqual(["released"]);
+    expect(reservations.rows.map((row) => row.status)).toEqual(["reconciled"]);
+  });
+
+  test("rejects an unexpected returned provider with complete usage accounting", async () => {
+    globalThis.fetch = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "chatcmpl-provider-mismatch",
+            object: "chat.completion",
+            model: release.hostedCliDefaultModel,
+            provider: "Unexpected Provider",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 10, completion_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+    const { POST } =
+      await import("@/app/api/inference/v1/chat/completions/route");
+    const orgId = await createOrgWithHostedEntitlement();
+    const token = await issueCliToken(orgId);
+
+    const response = await POST(
+      chatRequest(token, {
+        model: release.hostedCliDefaultModel,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: {
+        message: "the upstream response identity did not match the hosted provider policy",
+        type: "upstream_identity_mismatch",
+      },
+    });
+    const usage = await pool!.query<{
+      model_used: string;
+      prompt_tokens: number;
+      completion_tokens: number;
+      cost_micros: string;
+    }>(
+      `SELECT model_used, prompt_tokens, completion_tokens, cost_micros
+       FROM usage_events WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(usage.rows).toEqual([{
+      model_used: release.hostedCliDefaultModel,
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      cost_micros: "5",
+    }]);
   });
 
   test("forwards the pinned CLI default when the environment roster is empty", async () => {
@@ -284,6 +574,8 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         return new Response(JSON.stringify({
           id: "chatcmpl-pinned-default",
           object: "chat.completion",
+          model: release.hostedCliDefaultModel,
+          provider: "Azure",
           choices: [{
             index: 0,
             message: { role: "assistant", content: "ok" },
@@ -305,6 +597,129 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     expect(response.status).toBe(200);
     expect(forwardedModel).toBe(release.hostedCliDefaultModel);
     expect(await resolveHostedGatewayDefaultModel(pool!)).toBe(release.hostedCliDefaultModel);
+  });
+
+  test("nonmanaged gateways select the server default and preserve legacy upstream responses", async () => {
+    delete process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER;
+    process.env.POSTIL_MANAGED_RELEASE = "0";
+    process.env.REVIEW_MODEL = "server/default";
+    process.env.REVIEW_MODEL_CASCADE = "server/expensive-fallback";
+    process.env.REVIEW_REASONING_EFFORT = "medium";
+    process.env.POSTIL_API_BASE = "https://provider.example/v1/";
+    process.env.POSTIL_ENDPOINT_AUTH_HEADER = "x-provider-auth";
+    process.env.POSTIL_ENDPOINT_AUTH_VALUE = "server-fixture-auth";
+    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { resolveHostedGatewayDefaultModel } = await import("@/lib/cli-gateway");
+    expect(await resolveHostedGatewayDefaultModel(pool!)).toBe("server/default");
+
+    for (const returnedModel of [undefined, release.hostedCliDefaultModel]) {
+      const upstreamBody = {
+        ...(returnedModel ? { model: returnedModel } : {}),
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2 },
+      };
+      let forwardedBody: unknown;
+      let forwardedUrl: unknown;
+      let forwardedHeaders: Headers | undefined;
+      globalThis.fetch = Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          forwardedUrl = input;
+          forwardedBody = JSON.parse(String(init?.body));
+          forwardedHeaders = new Headers(init?.headers);
+          return Response.json(upstreamBody);
+        },
+        { preconnect: ORIGINAL_FETCH.preconnect },
+      ) as typeof fetch;
+      const orgId = await createOrgWithHostedEntitlement();
+      const token = await issueCliToken(orgId);
+      const messages = [{ role: "user", content: "review" }];
+      const response = await POST(chatRequest(token, {
+        model: "server/expensive-fallback",
+        models: ["client/model"],
+        reasoning: { effort: "max", max_tokens: 200_000 },
+        reasoning_effort: "max",
+        provider: { order: ["client/provider"] },
+        route: "client/route",
+        response_format: { type: "json_object" },
+        max_tokens: 200_000,
+        temperature: 2,
+        unknown_routing_field: true,
+        messages,
+      }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(upstreamBody);
+      expect(forwardedUrl).toBe("https://provider.example/v1/chat/completions");
+      expect(forwardedHeaders?.get("x-provider-auth")).toBe("server-fixture-auth");
+      expect(forwardedBody).toEqual({
+        messages,
+        model: "server/default",
+        reasoning: { effort: "medium" },
+        max_tokens: 8_000,
+        temperature: 0.1,
+      });
+      const usage = await pool!.query(
+        `SELECT model_used, prompt_tokens, completion_tokens, cost_micros
+         FROM usage_events WHERE org_id = $1 AND prompt_tokens > 0`,
+        [orgId],
+      );
+      expect(usage.rows).toEqual([{
+        model_used: returnedModel ?? "server/default",
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        cost_micros: returnedModel ? "5" : "0",
+      }]);
+    }
+  });
+
+  test("nonmanaged login uses the first configured cascade entry when no default is set", async () => {
+    delete process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER;
+    process.env.REVIEW_MODEL_CASCADE = " , server/first,server/second";
+    const { resolveHostedGatewayDefaultModel } = await import("@/lib/cli-gateway");
+    expect(await resolveHostedGatewayDefaultModel(pool!)).toBe("server/first");
+    delete process.env.REVIEW_MODEL_CASCADE;
+    expect(await resolveHostedGatewayDefaultModel(pool!)).toBeNull();
+  });
+
+  test("managed gateways fail closed without provisional admission before reserving spend", async () => {
+    process.env.POSTIL_MANAGED_RELEASE = "1";
+    process.env.REVIEW_MODEL = release.hostedCliDefaultModel;
+    let upstreamCalled = false;
+    globalThis.fetch = Object.assign(async () => {
+      upstreamCalled = true;
+      return Response.json({});
+    }, { preconnect: ORIGINAL_FETCH.preconnect }) as typeof fetch;
+    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    const { resolveHostedGatewayDefaultModel } = await import("@/lib/cli-gateway");
+    for (const provisional of [undefined, "0"]) {
+      if (provisional === undefined) delete process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER;
+      else process.env.POSTIL_PROVISIONAL_HOSTED_ROSTER = provisional;
+      const orgId = await createOrgWithHostedEntitlement();
+      const token = await issueCliToken(orgId);
+      const response = await POST(chatRequest(token, { messages: [] }));
+      expect(response.status).toBe(503);
+      expect(await resolveHostedGatewayDefaultModel(pool!)).toBeNull();
+      const reservations = await pool!.query(
+        `SELECT 1 FROM hosted_usage_reservations WHERE org_id = $1`, [orgId],
+      );
+      expect(reservations.rows).toHaveLength(0);
+    }
+    expect(upstreamCalled).toBe(false);
+  });
+
+  test("managed responses still require both model and provider identity", async () => {
+    const { POST } = await import("@/app/api/inference/v1/chat/completions/route");
+    for (const identity of [{ model: release.hostedCliDefaultModel }, { provider: "Azure" }]) {
+      globalThis.fetch = Object.assign(async () => Response.json({
+        ...identity,
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2 },
+      }), { preconnect: ORIGINAL_FETCH.preconnect }) as typeof fetch;
+      const orgId = await createOrgWithHostedEntitlement();
+      const token = await issueCliToken(orgId);
+      const response = await POST(chatRequest(token, { messages: [] }));
+      expect(response.status).toBe(502);
+      expect((await response.json()).error.type).toBe("upstream_identity_mismatch");
+    }
   });
 
   test("keeps the gateway and advertised model dark while hosted inference is unavailable", async () => {
@@ -401,8 +816,11 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       review_id: number | null;
       prompt_tokens: number;
       completion_tokens: number;
+      model_used: string;
+      cost_micros: string;
     }>(
-      `SELECT billing_scope, trigger_source, repository_id, review_id, prompt_tokens, completion_tokens
+      `SELECT billing_scope, trigger_source, repository_id, review_id, prompt_tokens,
+              completion_tokens, model_used, cost_micros
        FROM usage_events WHERE org_id = $1`,
       [orgId],
     );
@@ -414,6 +832,8 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         review_id: null,
         prompt_tokens: 120,
         completion_tokens: 30,
+        model_used: release.hostedCliDefaultModel,
+        cost_micros: "60",
       },
     ]);
 

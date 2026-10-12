@@ -38,11 +38,33 @@ or publishes the private dataset.
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
-Web, worker, and monitor processes use `DATABASE_URL`. The release migration subprocess
+Web, worker, and monitor processes use `DATABASE_URL`. Release preparation
 uses an optional `POSTIL_DIRECT_DATABASE_URL`, or derives the known Supabase
-session-pool endpoint from a port-6543 transaction-pool URL. Only the Drizzle
-child receives that value as `DATABASE_URL`; ordinary runtime connections keep
-the configured pooling mode.
+session-pool endpoint from a port-6543 transaction-pool URL. Managed preparation
+uses this direct connection in its database pool; unmanaged migration commands
+receive it as `DATABASE_URL`. Ordinary runtime connections keep the configured
+pooling mode.
+
+Managed release preparation applies only the exact hash-approved feedback
+reconciliation migration. The migration and journal entry share a transaction
+with a 5-second lock timeout and a 30-second statement timeout. Source release
+capabilities and the applied journal watermark remain prerequisites; older
+journal gaps below that watermark remain valid. Unknown or mismatched journal
+entries and unapproved pending migrations stop preparation. The existing strict
+journal verification runs before the new release receives capabilities.
+`bun run scripts/run-release-migrations.ts --inspect-additive` checks the same
+migration identity and source compatibility in a read-only transaction.
+After the provider preflight and before the new release receives capabilities,
+the managed release command runs `bun run operational:indexes --managed-release`.
+That mode concurrently builds only the `ilert_alert_events_canary_observation_idx`
+lookup index, waits at most 60 seconds for the index release lock, and bounds
+each statement at 120 seconds. It neither inspects other operational indexes
+nor writes the full reconciliation's release step. A failed or cancelled build
+stops the release with the running fleet unchanged, and the next run rebuilds
+an invalid index. The full reconciliation rebuilds a valid index with an
+unexpected definition only for that non-unique lookup index; any other
+unexpected definition, and any index that enforces uniqueness or a constraint,
+stays in place and fails the run.
 
 The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling when the private monitor is disabled. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 
@@ -77,11 +99,27 @@ callbacks before exit. Fly gives the process a bounded termination window. A
 forced exit during webhook dispatch leaves the inbox job recoverable by the
 queue watchdog; completed delivery IDs remain durable dedupe records.
 
+Review-thread feedback has two queue stages. `review-feedback-reconciliation`
+observes bounded conversations under known publication roots and verifies human
+authority. It uses generic watchdog recovery. `review-feedback` carries the
+exact repository, pull request, head, and conversation snapshot into a full CLI
+review with the normal review publication and shutdown recovery paths. Evidence
+digests deduplicate admission; replies and resolution flags do not grant approvals
+or dismiss findings. Polling supplies discovery when App thread events are absent.
+Admission reads the singleton `review_feedback_control` row for eligible webhook
+events, watchdog scheduling, and reconciliation. The row starts `disabled` so
+new admission cannot begin during a rolling release. Its `inherit` mode uses
+`POSTIL_REVIEW_FEEDBACK_ENABLED=1` when explicitly selected. `enabled`
+admits feedback regardless of the process environment; `disabled` stops new
+admission regardless of that environment. An unavailable or invalid control
+fails closed without failing unrelated webhook or watchdog work. Disabling
+admission leaves already queued full feedback reviews processable.
+
 Every queue consumer supplies its explicit supported job kinds to the claim query.
 The bounded web drain uses the latency-sensitive capability list. The long-running
 worker adds maintenance jobs such as repository-rule discovery, keeping those jobs
 away from request-serving processes.
-The claim query also caps how many `review` and `respond` jobs one organization
+The claim query also caps how many `review`, `review-feedback`, and `respond` jobs one organization
 runs at once, which reduces how much of the fleet a single organization opening
 many pull requests occupies. Cheap kinds carry no cap, and the limit is
 best-effort: concurrent claim loops read the running count independently, so an
@@ -89,10 +127,10 @@ organization can exceed it by up to the number of loops. A claim that finds only
 capped work reports it as deferred rather than as an empty queue, so the poll
 loop holds its interval instead of backing off toward the idle ceiling while a
 ready backlog waits.
-Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
-the deploy workflow confirms that every managed web and worker Machine is running
-one image. Activation and inserts share a transaction advisory lock, so no job can
-become claimable between the fleet check and capability activation.
+Release changes follow the same additive rollout rule as other runtime changes:
+old and new processes remain compatible while the fleet is replaced, and hosted
+reviews remain available. Schema retirement and incompatible transitions use
+separate reviewed maintenance operations.
 
 `humanEscalation` is a GitHub-native, kind-blocking maintainer decision. The PR review
 contains the grounded finding and directs the author to encode the intended behavior
@@ -129,6 +167,12 @@ scoped re-check with visible progress.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
+The operator dashboard aggregates recorded model costs, missing-price counts,
+per-model usage, and settlement statuses over a bounded 30-day UTC period.
+Recorded usage includes customer-provider costs and does not represent total
+operating expense. Runtime invoices remain in the infrastructure provider's
+billing dashboard.
+
 Organization administrators manage the billing contact on the billing page.
 New addresses remain pending until a single-use, 24-hour token is consumed;
 replacements leave the existing verified address active until the new address is
@@ -136,9 +180,8 @@ verified. Link GET requests only render confirmation; a same-origin POST consume
 the token. Verification tokens are bound to the organization, purpose, and
 normalized address, stored as a digest plus sealed delivery material, and sent
 through durable, provider-idempotent jobs. Resends rotate the token after a
-cooldown. The post-deploy release activation queues verification for every migrated
-unverified contact without exposing addresses or tokens in output. Operator entitlement
-updates preserve the dashboard-managed billing contact.
+cooldown. Operator entitlement updates preserve the dashboard-managed billing
+contact.
 
 Customer notifications are immutable, organization-scoped events with a stable
 producer key, bounded copy, optional organization-local action, role visibility,
@@ -172,14 +215,11 @@ The organization GitHub ID is the trial identity, and the entitlement survives
 uninstall, so reinstalling cannot restart the trial. Alert delivery uses a
 provider idempotency key and contains account and installation metadata without
 repository content.
-Managed release activation durably queues one provider-key lifecycle job per
-eligible organization after the release becomes active. The dedicated worker
-binds each OpenRouter key to the exact entitlement period and spending limit,
-stores the create intent before provider access, seals the runtime credential,
-and periodically reconciles renewal, BYOK changes, suspension, expiration, and
-revocation. Provider access holds the same database lock as release activation,
-so no provider request crosses a release-dark transition. Web processes never
-claim provider-key lifecycle jobs.
+The dedicated provider-key worker binds each OpenRouter key to the exact
+entitlement period and spending limit, stores the create intent before provider
+access, seals the runtime credential, and periodically reconciles renewal, BYOK
+changes, suspension, expiration, and revocation. Web processes never claim
+provider-key lifecycle jobs.
 `src/lib/private-repository-entitlement.ts` is the single decision point used by
 webhook intake and workers. The webhook stores delivery and repository metadata,
 then skips review/respond queue, check, and conversational comment side effects
@@ -211,8 +251,12 @@ validation to original and replayed response bytes. The active hosted-spend
 reservation is attached to the run and transferred to the replacement review
 only when the source review is terminal and every retry identity component
 matches. The registered plan must reproduce the stored run key before provider
-access. The proxy resolves and validates the upstream once, then pins that
-address while retaining TLS hostname verification for HTTPS. The loopback-only
+access. The proxy resolves and validates all upstream addresses once, then pins
+the connection candidates while retaining TLS hostname verification for HTTPS.
+`POSTIL_PROVIDER_ADDRESS_FAMILY` defaults to `auto`. Setting it to `ipv4`
+restricts connections to validated IPv4 addresses without skipping validation of
+IPv6 answers. An upstream with no IPv4 address fails before provider contact.
+The loopback-only
 private-base opt-in is scoped to the spawned CLI and never relaxes BYOK upstream
 validation.
 A legacy envelope without per-model usage is priced only when its aggregate names
@@ -250,8 +294,8 @@ billing page reports plan and provider state. BYOK billing copy directs
 administrators to provider-side budgets because Postil cannot enforce external
 charges. Before
 a private review row can run, the worker resolves the pull request's author ID,
-login, head, and base from GitHub. A rollout-activated database trigger rejects
-anonymous active reviews and makes the recorded author identity immutable.
+login, head, and base from GitHub. A database trigger rejects anonymous active
+reviews and makes the recorded author identity immutable.
 Historical rows remain unknown rather than receiving a guessed identity.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.
@@ -436,6 +480,24 @@ suppressing an alert. Monitoring state and target details are visible only on
 the operator dashboard. Active incidents and retained resolved alerts use separate
 operator-only views. Alert messages identify the affected capability, state, first
 and last observation, bounded evidence, and the recommended operator action.
+
+Public probes retry transport failures and transient statuses (408, 425, 429,
+and 5xx) twice within a pass before a check is unhealthy; a deterministic
+mismatch such as a wrong redirect target or a missing header fails without
+retry. Serving probes (site, liveness, dependencies) are critical; hygiene
+probes (sitemap, favicon, robots, redirects, noindex headers) are warnings.
+Every failed attempt, including one a retry recovered, is retained for 30 days
+with its evidence, is exposed as a labeled metric, and is listed on the
+dashboard. More than two retry-recovered attempts in 24 hours open a warning
+incident so a flapping probe is reported without paging. Incident rows keep
+the evidence captured at open separately from the latest observation, and an
+append-only transition history retained for 90 days backs the resolved-alert
+view, so a resolved incident still shows what failed. Each pass also logs
+unhealthy checks and retry recoveries to the process log. The external
+dead-man heartbeat is itself a critical check: a configured heartbeat URL that
+has not accepted a ping within 15 minutes opens an incident that carries the
+provider's last rejection, and monitoring alerts fall back to the operator
+email path when the alerting service rejects an event.
 The monitor uses a non-inference OpenRouter management credential to read
 account credits and paginated key metadata. Account-wide credit depletion and
 each review key's daily-cap depletion are separate incidents. The configured
@@ -454,15 +516,17 @@ aggregate operational metrics without receiving private monitor targets.
 Alert delivery for monitoring is owned by ilert, an external alerting service:
 the platform and the GitHub monitor report events to an alert source
 (`ILERT_INTEGRATION_KEY`), and ilert owns paging, escalation, deduplication by
-incident key, and auto-close on resolve events. The platform never pages the
-operator by its own email path for monitoring; operator email remains for
-business lifecycle and billing notifications only. After each completed pass
+incident key, and auto-close on resolve events. Operator email carries a
+monitoring alert only when ilert rejects the event, so a lapsed or
+misconfigured alerting account cannot silence paging. After each completed pass
 the monitor pings an ilert heartbeat (`POSTIL_MONITOR_HEARTBEAT_URL`), so a
 dead monitor process or persistently failing pass raises a missed-heartbeat
-alert outside the platform's failure domain. `ILERT_INTEGRATION_KEY` is required
-at monitor startup. If it is missing, startup fails before monitoring passes
-begin; no alert event or successful-pass heartbeat is delivered, and the
-external heartbeat monitor detects the stopped monitor when configured.
+alert outside the platform's failure domain. `ILERT_INTEGRATION_KEY` is optional
+at monitor startup, so a self-hosted monitor runs its checks without an
+alerting account. Without the key every monitoring alert delivery attempt
+fails with an explicit configuration error, the durable outbox retains the
+incident and retries it, and paging relies on the heartbeat, the external
+uptime checks, and the GitHub monitor.
 
 iLert alert actions can deliver bounded alert lifecycle events to
 `/api/webhooks/ilert` with HTTP Basic authentication. The receiver stores the
@@ -487,8 +551,8 @@ part of the application environment. Its
 whose action is reconciled. `POSTIL_ILERT_WEBHOOK_SECRET` supplies the receiver
 password embedded as URL-encoded HTTP Basic credentials in that action, and
 `POSTIL_ILERT_RECEIVER_ORIGIN` selects its strictly validated HTTPS origin. The
-deployment and reconciliation workflows load the receiver password from one
-secret record. Reconciliation verifies that the deployed receiver accepts the
+reconciliation workflow loads the receiver password from the secret record that
+also supplies the deployed receiver's runtime secret. Reconciliation verifies that the deployed receiver accepts the
 credential before it creates or updates the action. Before any action mutation
 or Event API mutation, reconciliation reads `GET /api/alert-sources/{id}` with
 the configured numeric source id and the management bearer credential. The
@@ -528,10 +592,18 @@ A cleaned handoff still performs this
 management sweep to resolve a delayed Event API duplicate. If the producer
 output is unavailable, the finalizer uses its running attempt to reconstruct
 the deterministic identity. It never reads receiver configuration or
-reconciles the action. Scheduled and routine manual production monitors also
+reconciles the action. A manual dispatch that requests both `test_alert` and
+`reconcile_alert_stream` fails in the trust job before any credentialed job
+starts, because the finalizer resolves the compatibility key that the operator
+test alert uses. A requested test alert is sent only when the smoke and release
+recovery jobs succeed. Its own finalizer resolves the dedicated key after the
+notification job settles, including when delivery reports failure after iLert
+accepts the alert. When the `POSTIL_ILERT_CANARY_SWEEP_ENABLED` repository
+variable is `true`, scheduled and routine manual production monitors also
 run a management-only orphan sweep across every exact deterministic canary key
 and the exact `postil-production-monitor-test` compatibility canary key for the
-configured source. It scans only PENDING and ACCEPTED alerts,
+configured source. Otherwise the trust job reports the sweep as disabled and
+the run makes no iLert management request. The sweep scans only PENDING and ACCEPTED alerts,
 count-brackets and repeats the complete offset inventory, retains each exact
 id, resolves and verifies each target, and fails closed on incomplete or
 changing inventory. It has no Event API credential and cannot emit a canary
@@ -554,9 +626,9 @@ The alert-action API has no conditional-write precondition, so a concurrent
 out-of-band action update can still occur after the final guard read. The
 reconciler detects conflicting pre- and post-mutation state and fails closed;
 it does not claim compare-and-swap behavior.
-Deployment validates the iLert receiver secret with the same
-printable-ASCII length and diversity contract used by the receiver before any
-Fly mutation.
+Deployment preserves runtime secret metadata and stages no receiver credential.
+The `--validate-webhook-secret` command checks a receiver secret against the
+printable-ASCII length and diversity contract used by the receiver.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the

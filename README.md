@@ -4,32 +4,22 @@
 
 # Postil
 
-Postil is a quiet AI code review gate for pull requests. It publishes findings that can change a merge decision, stays silent on clean changes, and reports gate status separately from advisory review comments.
+Postil is a code review gate for pull requests. It publishes findings that can change a merge decision, stays silent on clean changes, and reports gate status separately from advisory review comments.
 
-This repository contains the hosted service at [postil.dev](https://postil.dev): the Next.js dashboard, webhook receiver, review worker, billing controls, and deployment configuration. The review engine lives in the [`postil` CLI](https://github.com/postil-dev/postil-cli), so the same review path runs locally, in CI, and through the hosted GitHub App.
+This repository contains the hosted Postil service: the dashboard, webhook receiver, review worker, billing controls, and deployment configuration. The review engine is the [Postil CLI](https://github.com/postil-dev/postil-cli).
 
 ## Start here
 
 - [Install the GitHub App](https://postil.dev/install) for hosted reviews.
 - [Use the CLI](https://postil.dev/docs/cli) with GitHub, GitLab, Bitbucket, or Azure DevOps.
-- [Configure review policy](https://postil.dev/docs/config) in the repository.
-- [Read the security model](https://postil.dev/security) before self-hosting or granting repository access.
+- [View model benchmark results](https://postil.dev/bench) and the raw report.
+- [Configure review policy](https://postil.dev/docs/config) for a repository.
+- [Read the self-hosted guide](https://postil.dev/docs/self-hosted) before deploying the service.
+- [Read the security model](https://postil.dev/security) before granting repository access.
 
-## Repository map
+## Local development
 
-| Path | Purpose |
-| --- | --- |
-| `src/app` | Public site, authentication, dashboard, and API routes |
-| `src/worker` | Durable review and notification jobs |
-| `src/monitor` | Private production monitoring and incident delivery |
-| `src/lib` | GitHub, billing, policy, and persistence boundaries |
-| `drizzle` | PostgreSQL schema migrations |
-| `scripts` | Release, billing, verification, and operations commands |
-| `tests` | Unit, integration, database, and dashboard coverage |
-
-## Development
-
-Postil uses Bun, Next.js, and PostgreSQL. Copy `.env.example` to `.env`, point `DATABASE_URL` at a reachable PostgreSQL database, and provide the credentials required for the path you are exercising. Then run:
+Postil uses Bun, Next.js, and PostgreSQL. Copy `.env.example` to `.env`, configure a reachable PostgreSQL database and the credentials required for the path under test, then run:
 
 ```sh
 bun install
@@ -39,14 +29,12 @@ bun run jobs:activate-release
 bun run dev
 ```
 
-Run focused tests with `bun test <path>`. A production build is `bun run build`.
-
-Operational and self-hosting requirements are documented at [postil.dev/docs/self-hosted](https://postil.dev/docs/self-hosted).
+Run focused tests with `bun test <path>`. Build the production application with `bun run build`.
 
 ## Related repositories
 
-- [`postil-cli`](https://github.com/postil-dev/postil-cli): review engine and local CLI
-- [`postil-action`](https://github.com/postil-dev/postil-action): GitHub Action wrapper
-- [`postil-sandbox`](https://github.com/postil-dev/postil-sandbox): small review fixture
+- [Postil CLI](https://github.com/postil-dev/postil-cli): review engine and local CLI.
+- [Postil Action](https://github.com/postil-dev/postil-action): GitHub Actions wrapper.
+- [Postil Sandbox](https://github.com/postil-dev/postil-sandbox): review fixture.
 
-Security reports belong in [GitHub private vulnerability reporting](https://github.com/postil-dev/postil/security/advisories/new), not in a public issue.
+Report security issues through [GitHub private vulnerability reporting](https://github.com/postil-dev/postil/security/advisories/new), not a public issue.

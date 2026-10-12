@@ -24,8 +24,23 @@ export interface OperatorNotificationIncident {
   critical: boolean;
 }
 
+export interface NotificationDelivery {
+  transport: "ilert" | "email" | "unknown";
+  fallbackUsed: boolean;
+  primaryOutcome: "accepted" | "http_rejected" | "timeout" | "network_error" | "unknown";
+  primaryHttpStatus: number | null;
+}
+
+class NotificationTransportError extends Error {
+  constructor(message: string, readonly outcome: NotificationDelivery["primaryOutcome"],
+    readonly httpStatus: number | null = null) {
+    super(message);
+  }
+}
+
 export interface OperatorNotificationResult {
   messageId: string | null;
+  delivery?: NotificationDelivery;
 }
 
 export interface OperatorNotificationTransport {
@@ -61,10 +76,13 @@ const ILERT_EVENT_TIMEOUT_MS = 10_000;
 const ILERT_DETAIL_LIMIT = 4_000;
 
 /**
- * Monitoring alerts are delivered to the external alerting service, never by
- * the platform's own email path: the platform detects, the external system
- * pages. Missing delivery configuration fails closed so the durable outbox
- * retains the incident and retries after configuration is restored.
+ * Monitoring alerts are delivered to the external alerting service: the
+ * platform detects, the external system pages. When that service rejects an
+ * event, the operator email path carries the same notification so a broken
+ * or lapsed alerting account cannot silence production paging; the outbox
+ * records bounded transport provenance on successful delivery. Missing primary
+ * configuration fails closed so the durable outbox retains the incident and retries after
+ * configuration is restored.
  */
 export function configuredMonitoringAlertTransport(): OperatorNotificationTransport {
   const integrationKey = optionalEnv("ILERT_INTEGRATION_KEY")?.trim();
@@ -79,7 +97,56 @@ export function configuredMonitoringAlertTransport(): OperatorNotificationTransp
       },
     };
   }
-  return ilertEventTransport(integrationKey);
+  const primary = ilertEventTransport(integrationKey);
+  if (!optionalEnv("BREVO_API_KEY")?.trim()) return primary;
+  const email = configuredOperatorNotificationTransport();
+  return withFallbackTransport(primary, {
+    async send(notification) {
+      const result = await email.send(notification);
+      return { ...result, delivery: {
+        transport: "email", fallbackUsed: false,
+        primaryOutcome: "accepted", primaryHttpStatus: null,
+      } };
+    },
+  });
+}
+
+/**
+ * Sends through the primary transport and, when it throws, through the
+ * fallback. A fallback success counts as delivery so the outbox does not
+ * re-page; both failures surface together so neither is masked.
+ */
+export function withFallbackTransport(
+  primary: OperatorNotificationTransport,
+  fallback: OperatorNotificationTransport,
+  onFallback: (primaryError: unknown) => void = (primaryError) => {
+    console.error(
+      `[notifications] primary alert delivery failed; using fallback: ${redactSecrets(primaryError)}`,
+    );
+  },
+): OperatorNotificationTransport {
+  return {
+    async send(notification) {
+      try {
+        return await primary.send(notification);
+      } catch (primaryError) {
+        onFallback(primaryError);
+        try {
+          const result = await fallback.send(notification);
+          return { ...result, delivery: {
+            transport: result.delivery?.transport ?? "unknown",
+            fallbackUsed: true,
+            primaryOutcome: primaryError instanceof NotificationTransportError ? primaryError.outcome : "unknown",
+            primaryHttpStatus: primaryError instanceof NotificationTransportError ? primaryError.httpStatus : null,
+          } };
+        } catch (fallbackError) {
+          throw new Error(
+            `primary alert delivery failed (${redactSecrets(primaryError)}); fallback delivery failed (${redactSecrets(fallbackError)})`,
+          );
+        }
+      }
+    },
+  };
 }
 
 export function ilertEventTransport(
@@ -107,14 +174,22 @@ export function ilertEventTransport(
             ? {}
             : { priority: incident?.critical === false ? "LOW" : "HIGH" }),
         }),
+      }).catch((error: unknown) => {
+        const outcome = error instanceof Error && error.name === "TimeoutError" ? "timeout"
+          : error instanceof TypeError ? "network_error" : "unknown";
+        throw new NotificationTransportError(String(error), outcome);
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        throw new Error(
+        throw new NotificationTransportError(
           `ilert event delivery failed with HTTP ${response.status}: ${redactSecrets(body).slice(0, 500)}`,
+          "http_rejected", response.status,
         );
       }
-      return { messageId: null };
+      return { messageId: null, delivery: {
+        transport: "ilert", fallbackUsed: false,
+        primaryOutcome: "accepted", primaryHttpStatus: response.status,
+      } };
     },
   };
 }

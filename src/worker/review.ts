@@ -27,6 +27,7 @@ import {
   classifyOperationalModelIncidents,
   ingestEnvelope,
   isEnvelopeOperationallyUnavailable,
+  isReviewCoverageCapacityFailure,
   type Envelope,
 } from "@/lib/envelope";
 import { getInstallationToken } from "@/lib/github/app-auth";
@@ -94,6 +95,7 @@ import {
   type LargeReviewProviderProxy,
 } from "@/lib/large-review-resume";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
+import { writeReviewFeedbackFile } from "@/lib/review-feedback";
 import {
   completeReviewPublicationLifecycle,
   finalizeStagedReviewCompletionWithGateMode,
@@ -143,6 +145,14 @@ const CACHE_DIR = optionalEnv("POSTIL_CACHE_DIR", ".cache") as string;
 class OperationalError extends Error {}
 
 class TerminalReviewError extends OperationalError {}
+
+export class ReviewCoverageCapacityError extends TerminalReviewError {
+  override name = "ReviewCoverageCapacityError";
+
+  constructor(readonly unreviewedHunks: number) {
+    super(`Review incomplete: the request limit left ${unreviewedHunks} source ${unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed. Partial findings are retained; this review cannot pass.`);
+  }
+}
 
 export class WorkerShutdownError extends OperationalError {
   constructor() {
@@ -708,6 +718,62 @@ function reviewUsageFromEnvelope(
       ? ("analytics" as const)
       : ("private_hosted" as const),
   }));
+}
+
+/** Failed inference evidence becomes visible only with its terminal state. */
+export async function failHostedReviewAttempt(
+  db: Pick<Database, "update">,
+  input: { reviewId: number; errorMessage: string; envelope?: Envelope },
+) {
+  return db.update(schema.reviews)
+    .set({
+      status: "failed",
+      errorMessage: input.errorMessage,
+      finishedAt: new Date(),
+      ...(input.envelope ? {
+        envelope: input.envelope,
+        silent: input.envelope.silent,
+        engineGateFailing: input.envelope.gate.failing,
+      } : {}),
+    })
+    .where(and(eq(schema.reviews.id, input.reviewId), eq(schema.reviews.status, "running")))
+    .returning({ id: schema.reviews.id });
+}
+
+/** Failed completed inference settles before its cached output can be discarded. */
+export async function settleFailedHostedReviewAttempt(
+  db: Database,
+  input: Omit<Parameters<typeof reconcileHostedReviewSpendFromReceipt>[1], "reservationId" | "usage"> & {
+    reservationId: string | null;
+    usage: ReviewCompletionInput["usage"];
+  },
+  proxy: Pick<LargeReviewProviderProxy, "discardCompletedRun"> | undefined,
+): Promise<void> {
+  try {
+    if (input.reservationId) {
+      await reconcileHostedReviewSpendFromReceipt(db, {
+        ...input,
+        reservationId: input.reservationId,
+      });
+    } else {
+      await db.transaction(async (tx) => {
+        await tx.select({ id: schema.reviews.id }).from(schema.reviews)
+          .where(eq(schema.reviews.id, input.reviewId)).for("update");
+        const existing = await tx.select({ id: schema.usageEvents.id }).from(schema.usageEvents)
+          .where(eq(schema.usageEvents.reviewId, input.reviewId)).limit(1);
+        if (existing.length === 0 && input.usage.length > 0) {
+          await tx.insert(schema.usageEvents).values(input.usage.map((usage) => ({
+            ...usage, reviewId: input.reviewId, triggerSource: input.triggerSource,
+          })));
+        }
+      });
+    }
+    await proxy?.discardCompletedRun();
+  } catch (error) {
+    throw new PermanentJobError(
+      `failed review accounting or artifact retirement could not complete safely: ${redactSecrets(error)}`,
+    );
+  }
 }
 
 async function reconcileReviewPublicationLifecycle(input: {
@@ -1310,6 +1376,7 @@ export async function runReviewJob(
   let completionStaged = false;
   let receiptUsageForRace: ReviewCompletionInput["usage"] | undefined;
   let usageAccountingCompleteForRace = false;
+  let failedAttemptEnvelope: Envelope | undefined;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
   let gateEnabled = false;
@@ -1574,9 +1641,14 @@ export async function runReviewJob(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
 
+    const feedbackFile = "review-feedback.json";
+    const hasReviewFeedback = await writeReviewFeedbackFile(
+      join(workDir, feedbackFile),
+      payload,
+    );
     const configurationSha256 = await hashEffectiveReviewConfiguration(
       workDir,
-      configFiles,
+      hasReviewFeedback ? [...configFiles, feedbackFile] : configFiles,
     );
     const durableRunIdentity = {
       repositoryId: repository.id,
@@ -1683,11 +1755,16 @@ export async function runReviewJob(
       byok: llm.byok,
       configuredOptIn: optionalEnv("POSTIL_ALLOW_PRIVATE_API_BASE"),
     });
+    const providerAddressFamily = optionalEnv("POSTIL_PROVIDER_ADDRESS_FAMILY", "auto");
+    if (providerAddressFamily !== "auto" && providerAddressFamily !== "ipv4") {
+      throw new Error("POSTIL_PROVIDER_ADDRESS_FAMILY must be auto or ipv4");
+    }
     const activeLargeReviewProxy = await startLargeReviewProviderProxy({
       upstreamApiBase: llm.apiBase,
       apiFormat: llm.apiFormat,
       additionalAuthHeader: llm.apiAuthHeader,
       allowPrivateUpstream,
+      addressFamily: providerAddressFamily,
       identity: durableRunIdentity,
       runContext: {
         currentReviewId: reviewId,
@@ -1725,6 +1802,9 @@ export async function runReviewJob(
         // The path is optional. A CLI without receipt support ignores it, and
         // absence is persisted as legacy unknown.
         POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
+        ...(hasReviewFeedback
+          ? { POSTIL_REVIEW_FEEDBACK_PATH: join(workDir, feedbackFile) }
+          : {}),
       },
     );
 
@@ -1759,14 +1839,40 @@ export async function runReviewJob(
       interrupted: result.interrupted,
     }, sensitiveValues);
     const snapshotChanged = publicationSkippedForChangedSnapshot(result.stderr);
+    const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
+      orgId: installation.orgId,
+      repositoryId: repository.id,
+      byok: llm.byok,
+    });
+    const coverageReceipt = ingested.usageAccountingComplete &&
+      receiptUsage.length > 0 &&
+      receiptUsage.every((usage) => usage.costMicros !== null)
+      ? activeLargeReviewProxy.registeredCoverageReceipt()
+      : null;
     for (const incident of classifyOperationalModelIncidents(
       ingested.envelope,
+      coverageReceipt,
     )) {
       reportOperationalModelIncident(observabilityProcessGroup, incident);
     }
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
+    receiptUsageForRace = receiptUsage;
+    usageAccountingCompleteForRace = ingested.usageAccountingComplete;
+    failedAttemptEnvelope = ingested.envelope;
+    if (isReviewCoverageCapacityFailure(
+      ingested.envelope,
+      coverageReceipt,
+    )) {
+      throw new ReviewCoverageCapacityError(ingested.envelope.reviewCoverage!.receipt!.unreviewedHunks);
+    }
+    const advisoryConclusion = isEnvelopeOperationallyUnavailable(ingested.envelope)
+      ? "failure"
+      : "success";
+    if (advisoryConclusion === "failure") {
+      throw new OperationalError("review unavailable: provider or model output failed; see retained review diagnostics");
+    }
     let publicationReceipt: PublicationReceipt | undefined;
     try {
       publicationReceipt = await readPublicationReceipt(publicationReceiptPath);
@@ -1780,16 +1886,6 @@ export async function runReviewJob(
         throw error;
       }
     }
-    const operationallyUnavailable = isEnvelopeOperationallyUnavailable(
-      ingested.envelope,
-    );
-    const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
-      orgId: installation.orgId,
-      repositoryId: repository.id,
-      byok: llm.byok,
-    });
-    receiptUsageForRace = receiptUsage;
-    usageAccountingCompleteForRace = ingested.usageAccountingComplete;
     const staged = await stageReviewCompletionCandidate(
       db,
       {
@@ -1873,7 +1969,7 @@ export async function runReviewJob(
           name: ADVISORY_CHECK_NAME,
           externalId: advisoryCheckExternalId,
           headSha: payload.headSha,
-          conclusion: operationallyUnavailable ? "failure" : "success",
+          conclusion: advisoryConclusion,
           requireOutput: true,
           detailsUrl,
         },
@@ -2026,6 +2122,17 @@ export async function runReviewJob(
       throw new ReviewPublicationReconciliationError(message);
     }
     const reconcileInterruptedSpend = async (): Promise<void> => {
+      if (receiptUsageForRace) {
+        await settleFailedHostedReviewAttempt(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          usage: receiptUsageForRace,
+          usageAccountingComplete: usageAccountingCompleteForRace,
+        }, largeReviewProxy);
+        return;
+      }
       if (hostedUsageReservationId && cliStarted) {
         const reservationId = hostedUsageReservationId;
         const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
@@ -2100,23 +2207,17 @@ export async function runReviewJob(
       );
     }
     const publicationIncomplete = err instanceof CheckRunPublicationError;
+    const coverageCapacity = err instanceof ReviewCoverageCapacityError
+      ? { unreviewedHunks: err.unreviewedHunks }
+      : undefined;
     const message = redactSecrets(err, sensitiveValues);
     reviewLog.line(`review failed: ${message}`);
     const failedRows = await db.transaction(async (tx) => {
-      const rows = await tx
-        .update(schema.reviews)
-        .set({
-          status: "failed",
-          errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
-          finishedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schema.reviews.id, reviewId),
-            eq(schema.reviews.status, "running"),
-          ),
-        )
-        .returning({ id: schema.reviews.id });
+      const rows = await failHostedReviewAttempt(tx, {
+        reviewId,
+        errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
+        envelope: failedAttemptEnvelope,
+      });
       if (rows.length === 0) return rows;
       await tx.insert(schema.jobs).values({
         kind: "check-run-cleanup",
@@ -2134,12 +2235,29 @@ export async function runReviewJob(
           detailsUrl,
           intent: "fail",
           publicationIncomplete,
+          ...(coverageCapacity ? { coverageCapacity } : {}),
         },
         maxAttempts: 5,
       });
       return rows;
     });
     await reconcileInterruptedSpend();
+    if (failedRows.length === 0) {
+      const terminal = (await db.select({ status: schema.reviews.status })
+        .from(schema.reviews).where(eq(schema.reviews.id, reviewId)).limit(1))[0];
+      if (terminal?.status === "stale") {
+        await neutralizeSupersededCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? null,
+          gateCheckRunId ?? null,
+          "superseded by a newer review",
+          detailsUrl,
+        );
+        reviewLog.line("forge check-runs restored to neutral after supersession");
+        return;
+      }
+    }
     // Without a token there are no check-runs to complete (creation is the
     // first tokened call); with one, fail them closed - unless the watchdog
     // already claimed this review and completed them itself (0 rows above).
@@ -2155,6 +2273,7 @@ export async function runReviewJob(
         detailsUrl,
         expectedFailureCheckRuns(publicationIncomplete),
         gateEnabled,
+        coverageCapacity,
       );
       reviewLog.line("forge check-runs updated for review failure");
     }
@@ -2350,9 +2469,14 @@ export async function failCheckRuns(
   detailsUrl?: string,
   expectedChecks?: ExpectedFailureCheckRuns,
   gateEnabled = true,
+  coverageCapacity?: CheckRunCleanupJobPayload["coverageCapacity"],
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
   const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
+  if (coverageCapacity !== undefined &&
+      (!validCoverageCapacity(coverageCapacity) || publicationIncomplete)) {
+    throw new PermanentJobError("check-run cleanup job payload is malformed");
+  }
   if (
     publicationIncomplete &&
     ((gateCheckRunId != null && !expectedChecks?.gate) ||
@@ -2364,10 +2488,12 @@ export async function failCheckRuns(
   }
   const reviewTitle = publicationIncomplete
     ? "Review publication incomplete"
-    : "Review did not complete";
+    : coverageCapacity ? "Review coverage incomplete" : "Review did not complete";
   const summary = publicationIncomplete
     ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
-    : `Postil could not complete this review, so no review verdict exists.${details}`;
+    : coverageCapacity
+      ? `Postil left ${coverageCapacity.unreviewedHunks} source ${coverageCapacity.unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed within the review limit. Partial findings are retained, but this is not a complete review. Reduce the size of the change to fit the review limit.${details}`
+      : `Postil could not complete this review, so no review verdict exists.${details}`;
   const errors: unknown[] = [];
   const complete = async (
     checkRunId: number,
@@ -2407,7 +2533,9 @@ export async function failCheckRuns(
     const gateSummary = gateEnabled
       ? publicationIncomplete
         ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
-        : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
+        : coverageCapacity
+          ? `${summary}\n\nThe merge check remains blocked because review coverage is incomplete.`
+          : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
       : `${summary}\n\nMerge blocking is disabled for this organization.`;
     await complete(
       gateCheckRunId,
@@ -2517,6 +2645,7 @@ export async function runCheckRunCleanupJob(
         payload.detailsUrl,
         expectedChecks,
         gateEnabled,
+        payload.coverageCapacity,
       );
     };
 
@@ -2614,6 +2743,12 @@ function checkRunCleanupErrorDetails(
   return [...messages].filter(Boolean).join("; ") || "unknown GitHub failure";
 }
 
+function validCoverageCapacity(value: unknown): value is NonNullable<CheckRunCleanupJobPayload["coverageCapacity"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const count = (value as { unreviewedHunks?: unknown }).unreviewedHunks;
+  return typeof count === "number" && Number.isInteger(count) && count > 0 && count <= 0xffff_ffff;
+}
+
 export function validateCheckRunCleanupPayload(
   payload: CheckRunCleanupJobPayload,
 ): void {
@@ -2628,6 +2763,9 @@ export function validateCheckRunCleanupPayload(
     !validId(payload.advisoryCheckRunId) ||
     !validId(payload.gateCheckRunId) ||
     typeof payload.message !== "string" ||
+    (payload.coverageCapacity !== undefined &&
+      (!validCoverageCapacity(payload.coverageCapacity) ||
+        payload.intent === "neutralize" || payload.publicationIncomplete === true)) ||
     (payload.intent !== undefined &&
       payload.intent !== "fail" &&
       payload.intent !== "neutralize")

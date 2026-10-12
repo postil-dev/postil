@@ -609,7 +609,7 @@ describe("GitHub publication thread observations", () => {
         githubCommentId: "12",
         githubThreadId: "thread-12",
         state: "inline",
-        viewerCanResolve: true,
+        viewerCanResolve: false,
       },
       {
         githubCommentId: "13",
@@ -644,7 +644,7 @@ describe("GitHub publication thread observations", () => {
         githubCommentId: "12",
         githubThreadId: "thread-12",
         state: "inline",
-        viewerCanResolve: true,
+        viewerCanResolve: false,
       },
       {
         githubCommentId: "13",
@@ -654,10 +654,34 @@ describe("GitHub publication thread observations", () => {
       },
       { githubCommentId: "14", state: "deleted" },
     ]);
-    await expect(
-      resolveGitHubReviewThreads("token", [...observations], ["15"]),
-    ).rejects.toThrow("cannot resolve an outdated Postil review thread");
+    requestedThreadIds.length = 0;
+    const mixed = [observations[4], ...observations.slice(0, -1)];
+    const mixedResult = await resolveGitHubReviewThreads(
+      "token",
+      mixed,
+      ["15", "11", "13", "14"],
+    );
+    expect(requestedThreadIds).toEqual(["thread-11"]);
+    expect(mixedResult).toEqual([observations[4], ...reconciled]);
+
+    requestedThreadIds.length = 0;
+    expect(await resolveGitHubReviewThreads("token", [observations[4]], ["15"]))
+      .toEqual([observations[4]]);
+    expect(requestedThreadIds).toEqual([]);
   });
+
+  test.each(["inline", "outdated"] as const)(
+    "fails closed when a terminal %s thread has unknown resolution capability",
+    async (state) => {
+      await expect(
+        resolveGitHubReviewThreads(
+          "token",
+          [{ githubCommentId: "17", githubThreadId: "thread-17", state }],
+          ["17"],
+        ),
+      ).rejects.toThrow("GitHub review thread resolution capability is unknown");
+    },
+  );
 
   test("fails closed when GitHub cannot resolve a still-active terminal thread", async () => {
     await expect(

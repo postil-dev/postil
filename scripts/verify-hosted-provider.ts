@@ -1,4 +1,8 @@
 import { optionalEnv, requireEnv } from "@/lib/env";
+import {
+  buildManagedHostedChatCompletionRequest,
+  resolveManagedHostedProviderProfile,
+} from "@/lib/managed-hosted-provider-profile";
 
 const PROVIDER_PREFLIGHT_ATTEMPTS = 3;
 const PROVIDER_PREFLIGHT_RETRY_WINDOW_MS = 10_000;
@@ -42,6 +46,7 @@ export async function verifyHostedProvider(input: {
   providerName: string;
   maxPromptPrice: number;
   maxCompletionPrice: number;
+  requestBody?: Record<string, unknown>;
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   sleepImpl?: (milliseconds: number) => Promise<void>;
   nowMs?: () => number;
@@ -61,25 +66,27 @@ export async function verifyHostedProvider(input: {
           authorization: `Bearer ${input.apiKey}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          model: input.model,
-          // Reasoning-capable endpoints may spend a small completion budget
-          // before emitting visible text. Keep the probe bounded but large
-          // enough to prove a usable text response.
-          max_tokens: 128,
-          temperature: 0,
-          provider: {
-            data_collection: "deny",
-            zdr: true,
-            order: [input.providerName],
-            allow_fallbacks: false,
-            max_price: {
-              prompt: input.maxPromptPrice,
-              completion: input.maxCompletionPrice,
+        body: JSON.stringify(
+          input.requestBody ?? {
+            model: input.model,
+            // Reasoning-capable endpoints may spend a small completion budget
+            // before emitting visible text. Keep the probe bounded but large
+            // enough to prove a usable text response.
+            max_tokens: 128,
+            temperature: 0,
+            provider: {
+              data_collection: "deny",
+              zdr: true,
+              order: [input.providerName],
+              allow_fallbacks: false,
+              max_price: {
+                prompt: input.maxPromptPrice,
+                completion: input.maxCompletionPrice,
+              },
             },
+            messages: [{ role: "user", content: "Reply with exactly: ready" }],
           },
-          messages: [{ role: "user", content: "Reply with exactly: ready" }],
-        }),
+        ),
         signal: AbortSignal.timeout(30_000),
       },
     );
@@ -173,14 +180,24 @@ export async function verifyHostedProvider(input: {
 }
 
 if (import.meta.main) {
-  const model = optionalEnv("REVIEW_MODEL", "z-ai/glm-5.2") as string;
+  const profile = resolveManagedHostedProviderProfile();
   await verifyHostedProvider({
-    apiBase: optionalEnv("POSTIL_API_BASE", "https://openrouter.ai/api/v1") as string,
-    model,
+    apiBase: profile.apiBase,
+    model: profile.model,
     apiKey: hostedProviderApiKeyFromEnv(),
-    providerName: "Fireworks",
-    maxPromptPrice: 1.4,
-    maxCompletionPrice: 4.4,
+    providerName: profile.providerName,
+    maxPromptPrice: profile.maxPromptPrice,
+    maxCompletionPrice: profile.maxCompletionPrice,
+    requestBody: buildManagedHostedChatCompletionRequest(
+      {
+        messages: [{ role: "user", content: "Reply with exactly: ready" }],
+        max_tokens: 128,
+        temperature: 0,
+      },
+      profile,
+    ),
   });
-  console.log(`hosted provider preflight passed for ${model} on Fireworks`);
+  console.log(
+    `hosted provider preflight passed for ${profile.model} on ${profile.providerName}`,
+  );
 }

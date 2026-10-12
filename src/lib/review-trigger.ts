@@ -3,6 +3,7 @@ export const REVIEW_TRIGGER_SOURCES = [
   "automatic_pull_request",
   "requested_review",
   "github_check_rerun",
+  "finding_feedback",
 ] as const;
 
 export type ReviewTriggerSource = (typeof REVIEW_TRIGGER_SOURCES)[number];
@@ -17,6 +18,7 @@ export interface ReviewTriggerContext {
   requestedByGithubId?: number;
   requestedByLogin?: string;
   checkName?: string;
+  feedbackDigest?: string;
 }
 
 const TRIGGER_LABELS: Record<ReviewTriggerSource, string> = {
@@ -24,6 +26,7 @@ const TRIGGER_LABELS: Record<ReviewTriggerSource, string> = {
   automatic_pull_request: "Automatic",
   requested_review: "Requested",
   github_check_rerun: "Check rerun",
+  finding_feedback: "Finding feedback",
 };
 
 export function reviewTriggerLabel(source: ReviewTriggerSource): string {
@@ -31,6 +34,7 @@ export function reviewTriggerLabel(source: ReviewTriggerSource): string {
 }
 
 export function reviewTriggerSearchTerms(source: ReviewTriggerSource): string {
+  if (source === "finding_feedback") return "finding feedback review thread reply resolution";
   if (source === "automatic_pull_request") return "automatic pull request webhook";
   if (source === "requested_review") return "requested tagged mention command";
   if (source === "github_check_rerun") return "github check rerun rerequested";
@@ -38,6 +42,7 @@ export function reviewTriggerSearchTerms(source: ReviewTriggerSource): string {
 }
 
 export function reviewTriggerDescription(source: ReviewTriggerSource): string {
+  if (source === "finding_feedback") return "Started by verified review-thread feedback";
   if (source === "automatic_pull_request") return "Started by a pull request event";
   if (source === "requested_review") return "Requested in a GitHub comment";
   if (source === "github_check_rerun") return "Started by rerunning a GitHub check";
@@ -64,6 +69,11 @@ export function normalizeReviewTriggerContext(value: unknown): ReviewTriggerCont
     return { source: "unknown" };
   }
   if (candidate.source === "unknown") return { source: "unknown" };
+  if (candidate.source === "finding_feedback") {
+    return typeof candidate.feedbackDigest === "string" && /^[a-f0-9]{64}$/.test(candidate.feedbackDigest)
+      ? { source: "finding_feedback", feedbackDigest: candidate.feedbackDigest }
+      : { source: "unknown" };
+  }
   if (
     typeof candidate.webhookDeliveryId !== "string" ||
     candidate.webhookDeliveryId.trim().length === 0 ||

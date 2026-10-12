@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { randomBytes, randomInt } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type SQL } from "drizzle-orm";
@@ -20,8 +21,10 @@ import {
 } from "@/lib/ilert-alerts";
 
 const ORIGINAL_WEBHOOK_SECRET = process.env.POSTIL_ILERT_WEBHOOK_SECRET;
-const TEST_WEBHOOK_SECRET = "test-ilert-webhook-password-32-bytes";
-const TEST_CANARY_KEY = "postil-ilert-webhook-canary-123456789-2";
+const TEST_WEBHOOK_SECRET = randomBytes(32).toString("base64url");
+const CANARY_ATTEMPT = randomInt(1_000_000_000, 10_000_000_000);
+const CANARY_PREFIX = "postil-ilert-webhook-canary-";
+const TEST_CANARY_KEY = `${CANARY_PREFIX}${CANARY_ATTEMPT}-2`;
 let observationResult: () => Promise<Array<{ sequence: bigint }>> = async () => [];
 let databaseAccessCount = 0;
 
@@ -57,9 +60,8 @@ describe("iLert webhook input", () => {
     expect(configuredIlertWebhookSecret(undefined)).toBeNull();
     expect(configuredIlertWebhookSecret("x".repeat(31))).toBeNull();
     expect(configuredIlertWebhookSecret("x".repeat(32))).toBeNull();
-    expect(configuredIlertWebhookSecret("0123456789abcdef".repeat(2))).toBe(
-      "0123456789abcdef".repeat(2),
-    );
+    const validSecret = randomBytes(32).toString("base64url");
+    expect(configuredIlertWebhookSecret(validSecret)).toBe(validSecret);
     expect(configuredIlertWebhookSecret(`x${"y".repeat(31)}\0`)).toBeNull();
     expect(configuredIlertWebhookSecret("x".repeat(513))).toBeNull();
   });
@@ -99,10 +101,10 @@ describe("iLert webhook input", () => {
 
   test("accepts only exact attempt-specific canary keys", () => {
     expect(isIlertCanaryAlertKey(TEST_CANARY_KEY)).toBe(true);
-    expect(isIlertCanaryAlertKey("postil-ilert-webhook-canary-123456789-51")).toBe(true);
+    expect(isIlertCanaryAlertKey(`${CANARY_PREFIX}${CANARY_ATTEMPT}-51`)).toBe(true);
     expect(isIlertCanaryAlertKey("routine-alert-key")).toBe(false);
-    expect(isIlertCanaryAlertKey("postil-ilert-webhook-canary-123456789-52")).toBe(false);
-    expect(isIlertCanaryAlertKey("postil-ilert-webhook-canary-9999999999999999-1")).toBe(false);
+    expect(isIlertCanaryAlertKey(`${CANARY_PREFIX}${CANARY_ATTEMPT}-52`)).toBe(false);
+    expect(isIlertCanaryAlertKey(`${CANARY_PREFIX}${"9".repeat(16)}-1`)).toBe(false);
   });
 
   test("accepts bounded official alert extensions and rejects non-alert events", () => {
@@ -123,6 +125,15 @@ describe("iLert webhook input", () => {
     incident.eventType = "incident-created";
     expect(parseIlertWebhookBody(jsonBody(incident))).toBeNull();
 
+    // An empty alert key stays a deliverable event; storage records it as absent.
+    const withEmptyKey = eventFixture() as Record<string, unknown>;
+    withEmptyKey.alertKey = "";
+    expect(parseIlertWebhookBody(jsonBody(withEmptyKey))).toMatchObject({
+      id: "12797430",
+      alertKey: "",
+    });
+    withEmptyKey.alertKey = "x".repeat(513);
+    expect(parseIlertWebhookBody(jsonBody(withEmptyKey))).toBeNull();
   });
 
   test("accepts the configured creation, escalation, raised, and lifecycle events", () => {
@@ -283,7 +294,7 @@ describe("iLert operator stream protocol", () => {
   test("checks exact canary key, event type, and source persistence", async () => {
     const events = [
       { alertKey: TEST_CANARY_KEY, eventType: "alert-resolved", alertSourceId: 2269078n, sequence: 1n },
-      { alertKey: "postil-ilert-webhook-canary-123456790-2", eventType: "alert-resolved", alertSourceId: 2269078n, sequence: 2n },
+      { alertKey: `${CANARY_PREFIX}${CANARY_ATTEMPT + 1}-2`, eventType: "alert-resolved", alertSourceId: 2269078n, sequence: 2n },
       { alertKey: TEST_CANARY_KEY, eventType: "alert-created", alertSourceId: 2269079n, sequence: 3n },
       { alertKey: TEST_CANARY_KEY, eventType: "alert-resolved", alertSourceId: 2269079n, sequence: 4n },
     ];
@@ -325,40 +336,45 @@ describe("iLert operator stream protocol", () => {
     expect(await hasIlertCanaryAlertEvent(db, TEST_CANARY_KEY, "alert-created", 2269078n)).toBe(false);
   });
 
-  test("stages the receiver secret directly and preserves the operator allowlist", async () => {
+  test("preserves runtime secret metadata without credential staging", async () => {
     const deploy = await readFile(
       join(import.meta.dir, "..", ".github", "workflows", "deploy.yml"),
       "utf8",
     );
-    const directReceiverSecretStaging =
-      'staged+="POSTIL_ILERT_WEBHOOK_SECRET=${POSTIL_ILERT_WEBHOOK_SECRET}"$\'\\n\'';
-    const operatorSecrets = deploy.match(
-      /operator_secret_names=\(([\s\S]*?)\n\s*\)/u,
-    )?.[1];
-    expect(deploy.split(directReceiverSecretStaging)).toHaveLength(2);
-    expect(operatorSecrets).not.toContain("POSTIL_ILERT_WEBHOOK_SECRET");
-    expect(operatorSecrets).toContain("ILERT_INTEGRATION_KEY");
-    expect(operatorSecrets).toContain("POSTIL_OPERATOR_GITHUB_IDS");
-    expect(deploy).not.toContain(
-      "POSTIL_ILERT_WEBHOOK_SECRET: ${{ secrets.POSTIL_ILERT_WEBHOOK_SECRET }}",
+    expect(deploy).toContain("Verify runtime secret contract");
+    expect(deploy).toContain(
+      "map({name, digest, status}) | sort_by(.name)",
     );
     expect(deploy).toContain(
-      "POSTIL_OPERATOR_GITHUB_IDS: ${{ secrets.POSTIL_OPERATOR_GITHUB_IDS }}",
+      "(map({name, digest, status}) | sort_by(.name)) == $source[0]",
     );
+    expect(deploy).not.toContain("flyctl secrets set");
+    expect(deploy.match(/flyctl secrets import --stage --app postil-web/g)).toHaveLength(1);
+    expect(deploy).not.toMatch(/flyctl secrets import(?! --stage --app postil-web)/);
   });
 
   test("uses a session endpoint for Supabase LISTEN connections", () => {
-    expect(ilertAlertStreamDatabaseUrl(
-      "postgresql://user:password@aws-0-eu.pooler.supabase.com:6543/postgres?pgbouncer=true",
-    )).toBe(
-      "postgresql://user:password@aws-0-eu.pooler.supabase.com:5432/postgres",
+    const username = randomBytes(8).toString("hex");
+    const password = randomBytes(16).toString("hex");
+    const pooler = new URL("postgresql://aws-0-eu.pooler.supabase.com:6543/postgres?pgbouncer=true");
+    pooler.username = username;
+    pooler.password = password;
+    const session = new URL(pooler);
+    session.port = "5432";
+    session.searchParams.delete("pgbouncer");
+    expect(ilertAlertStreamDatabaseUrl(pooler.toString())).toBe(session.toString());
+
+    const direct = new URL("postgresql://database.internal:5432/postil");
+    direct.username = username;
+    direct.password = password;
+    expect(ilertAlertStreamDatabaseUrl(direct.toString())).toBe(direct.toString());
+
+    const unsupported = new URL("postgresql://unknown.example:6543/postil");
+    unsupported.username = username;
+    unsupported.password = password;
+    expect(() => ilertAlertStreamDatabaseUrl(unsupported.toString())).toThrow(
+      "requires a session-capable database endpoint",
     );
-    expect(ilertAlertStreamDatabaseUrl(
-      "postgresql://user:password@database.internal:5432/postil",
-    )).toBe("postgresql://user:password@database.internal:5432/postil");
-    expect(() => ilertAlertStreamDatabaseUrl(
-      "postgresql://user:password@unknown.example:6543/postil",
-    )).toThrow("requires a session-capable database endpoint");
   });
 
   test("parses only bounded PostgreSQL sequence cursors", () => {

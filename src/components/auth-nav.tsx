@@ -81,7 +81,7 @@ export function HeaderActions({ items }: { items: readonly NavItem[] }) {
 
   return (
     <>
-      <div className="hidden shrink-0 items-center justify-end gap-5 whitespace-nowrap lg:flex lg:w-40">
+      <div className="hidden shrink-0 items-center justify-end gap-5 whitespace-nowrap xl:flex xl:w-40">
         <DesktopSessionActions session={session} />
       </div>
       {installAction && (

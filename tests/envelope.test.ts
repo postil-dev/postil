@@ -6,6 +6,8 @@ import {
   gateCheckConclusionForEnvelope,
   hasLegacyCombinedModelUsage,
   ingestEnvelope,
+  isReviewCoverageCapacityFailure,
+  reviewCoverageReceiptSchema,
   reviewAdmissionSchema,
   suppressionReasonSchema,
   type Envelope,
@@ -70,6 +72,10 @@ describe("envelope ingestion", () => {
       selectedBatches: 4,
       totalBatches: 12,
       plannerFallback: false,
+      receipt: {
+        planSha256: "c".repeat(64), totalHunks: 12,
+        directHunks: 4, semanticHunks: 2, unreviewedHunks: 6,
+      },
     };
     const reviewAdmission = {
       providerAttempts: 8,
@@ -468,6 +474,108 @@ describe("envelope ingestion", () => {
     expect(() => ingestEnvelope(JSON.stringify(env))).toThrow(
       "duplicate finding id",
     );
+  });
+});
+
+describe("deterministic coverage capacity", () => {
+  const receipt = {
+    planSha256: "c".repeat(64), totalHunks: 12,
+    directHunks: 4, semanticHunks: 2, unreviewedHunks: 6,
+  };
+  function capacityEnvelope(unreviewedHunks = 6): Envelope {
+    return validEnvelope({
+      usageAccountingComplete: true,
+      findings: [...validEnvelope().findings, {
+        path: ".postil/model-output", line: 1, severity: "error", kind: "uncertainty",
+        confidence: 1, title: "Large review coverage is incomplete",
+        body: `Deterministic large-review coverage left ${unreviewedHunks} normalized ${unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed within the hard request limit. Findings from completed requests remain available, but this result cannot be trusted as a pass.`,
+      }],
+      counts: { info: 0, warn: 0, error: 2, suppressed: 0, ungrounded: 0 },
+      reviewCoverage: { mode: "bounded", selectedBatches: 2, totalBatches: 8,
+        plannerFallback: false, receipt: { ...receipt, totalHunks: 6 + unreviewedHunks, unreviewedHunks } },
+    });
+  }
+
+  test.each([1, 6])("preserves partial findings and a failing gate with %s unreviewed hunks", (count) => {
+    const ingested = ingestEnvelope(JSON.stringify(capacityEnvelope(count)));
+    const registered = ingested.envelope.reviewCoverage!.receipt!;
+    expect(isReviewCoverageCapacityFailure(ingested.envelope, registered)).toBe(true);
+    expect(ingested.envelope.findings[0]).toEqual(validEnvelope().findings[0]);
+    expect(ingested.gateFailing).toBe(true);
+    expect(gateCheckConclusionForEnvelope(ingested.envelope, new Set(), true)).toBe("failure");
+    expect(classifyOperationalModelIncidents(ingested.envelope, registered)).toEqual([
+      { phase: "review", category: "coverageCapacity", recovered: false, source: "coverage_receipt" },
+    ]);
+  });
+
+  test.each([
+    { totalHunks: 11 }, { directHunks: -1 }, { semanticHunks: 0.5 },
+    { unreviewedHunks: 0x1_0000_0000 }, { planSha256: "invalid" },
+  ])("rejects invalid coverage receipt %j", (invalid) => {
+    const value = capacityEnvelope();
+    value.reviewCoverage!.receipt = { ...receipt, ...invalid };
+    expect(() => ingestEnvelope(JSON.stringify(value))).toThrow();
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+  });
+
+  test("does not infer capacity from absent or contradictory evidence", () => {
+    const value = capacityEnvelope();
+    expect(isReviewCoverageCapacityFailure(value, null)).toBe(false);
+    expect(isReviewCoverageCapacityFailure(value, { ...receipt, planSha256: "d".repeat(64) })).toBe(false);
+    expect(isReviewCoverageCapacityFailure(value, { ...receipt, directHunks: 5, semanticHunks: 1 })).toBe(false);
+    delete value.reviewCoverage!.receipt;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    expect(classifyOperationalModelIncidents(value, receipt)[0]?.category).toBe("invalidOutput");
+    const zero = capacityEnvelope(0);
+    expect(isReviewCoverageCapacityFailure(zero, zero.reviewCoverage!.receipt!)).toBe(false);
+    value.findings = validEnvelope().findings;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+  });
+
+  test("requires the exact CLI sentinel rather than model prose", () => {
+    for (const alteration of [
+      { path: "src/review.ts" }, { title: "Review coverage is incomplete" },
+      { body: capacityEnvelope(1).findings[1]!.body }, { line: 2 }, { endLine: 2 },
+      { confidence: 0.9 }, { kind: "risk" as const }, { severity: "warn" as const },
+    ]) {
+      const value = capacityEnvelope();
+      Object.assign(value.findings[1]!, alteration);
+      expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    }
+  });
+
+  test("capacity evidence does not hide another failure or a passing verdict", () => {
+    for (const incident of ["providerError", "invalidOutput", "timeout", "deadline"] as const) {
+      const value = capacityEnvelope();
+      value.modelIncidents = [{ phase: "review", category: incident, recovered: false }];
+      expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    }
+    const value = capacityEnvelope();
+    value.scorerError = "Scoring failed";
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    delete value.scorerError;
+    value.findings.push({ ...value.findings[1]!, path: ".postil/provider" });
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    value.findings.pop();
+    value.gate.failing = false;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    expect(reviewCoverageReceiptSchema.safeParse(receipt).success).toBe(true);
+  });
+
+  test("unaccounted usage and invalid batch counts cannot be classified as capacity", () => {
+    for (const complete of [undefined, false]) {
+      const value = capacityEnvelope();
+      value.usageAccountingComplete = complete;
+      expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+      expect(classifyOperationalModelIncidents(value, receipt)[0]?.category).toBe("invalidOutput");
+    }
+    const value = capacityEnvelope();
+    value.reviewCoverage!.selectedBatches = value.reviewCoverage!.totalBatches + 1;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    expect(() => ingestEnvelope(JSON.stringify(value))).toThrow();
+    value.reviewCoverage!.selectedBatches = 2;
+    Object.assign(value.reviewCoverage!, { mode: "unknown" });
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
   });
 });
 

@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   configuredMonitoringAlertTransport,
   ilertEventTransport,
+  withFallbackTransport,
   type OperatorNotification,
+  type OperatorNotificationTransport,
 } from "@/lib/operator-notifications";
 
 function notification(
@@ -128,6 +130,69 @@ describe("ilert event transport", () => {
   });
 });
 
+describe("fallback transport", () => {
+  const recording = (
+    log: string[],
+    label: string,
+    failure?: string,
+  ): OperatorNotificationTransport => ({
+    async send(message) {
+      log.push(`${label}:${message.idempotencyKey}`);
+      if (failure) throw new Error(failure);
+      return { messageId: `${label}-message` };
+    },
+  });
+
+  test("uses only the primary transport when it succeeds", async () => {
+    const log: string[] = [];
+    const transport = withFallbackTransport(
+      recording(log, "primary"),
+      recording(log, "fallback"),
+      () => log.push("fallback-invoked"),
+    );
+
+    expect(await transport.send(notification())).toEqual({
+      messageId: "primary-message",
+    });
+    expect(log).toEqual(["primary:notification-key-1"]);
+  });
+
+  test("delivers through the fallback when the primary rejects the event", async () => {
+    const log: string[] = [];
+    const reasons: string[] = [];
+    const transport = withFallbackTransport(
+      recording(log, "primary", "ilert event delivery failed with HTTP 402: no access"),
+      recording(log, "fallback"),
+      (error) => reasons.push(String(error)),
+    );
+
+    expect(await transport.send(notification())).toEqual({
+      messageId: "fallback-message",
+      delivery: { transport: "unknown", fallbackUsed: true, primaryOutcome: "unknown", primaryHttpStatus: null },
+    });
+    expect(log).toEqual([
+      "primary:notification-key-1",
+      "fallback:notification-key-1",
+    ]);
+    expect(reasons).toEqual([
+      "Error: ilert event delivery failed with HTTP 402: no access",
+    ]);
+  });
+
+  test("surfaces both failures when the fallback also fails", async () => {
+    const log: string[] = [];
+    const transport = withFallbackTransport(
+      recording(log, "primary", "primary down"),
+      recording(log, "fallback", "email down"),
+      () => undefined,
+    );
+
+    await expect(transport.send(notification())).rejects.toThrow(
+      "primary alert delivery failed (primary down); fallback delivery failed (email down)",
+    );
+  });
+});
+
 describe("configured monitoring alert transport", () => {
   test("fails closed when no integration key is configured", async () => {
     const previous = process.env.ILERT_INTEGRATION_KEY;
@@ -141,5 +206,31 @@ describe("configured monitoring alert transport", () => {
     } finally {
       if (previous !== undefined) process.env.ILERT_INTEGRATION_KEY = previous;
     }
+  });
+});
+
+
+describe("monitoring delivery provenance", () => {
+  const email: OperatorNotificationTransport = { async send() {
+    return { messageId: "unused", delivery: { transport: "email", fallbackUsed: false,
+      primaryOutcome: "accepted", primaryHttpStatus: null } };
+  } };
+  test("records primary HTTP acceptance without response content", async () => {
+    const transport = ilertEventTransport(crypto.randomUUID(), (async () => new Response("ignored", { status: 202 })) as unknown as typeof fetch);
+    expect((await transport.send(notification())).delivery).toEqual({
+      transport: "ilert", fallbackUsed: false, primaryOutcome: "accepted", primaryHttpStatus: 202,
+    });
+  });
+  test("records numeric 402 and email fallback without provider text", async () => {
+    const privateText = crypto.randomUUID();
+    const primary = ilertEventTransport(crypto.randomUUID(), (async () => new Response(privateText, { status: 402 })) as unknown as typeof fetch);
+    const result = await withFallbackTransport(primary, email, () => undefined).send(notification());
+    expect(result.delivery).toEqual({ transport: "email", fallbackUsed: true, primaryOutcome: "http_rejected", primaryHttpStatus: 402 });
+    expect(JSON.stringify(result.delivery)).not.toContain(privateText);
+  });
+  test("distinguishes timeout fallback from HTTP rejection", async () => {
+    const primary = ilertEventTransport(crypto.randomUUID(), (async () => { throw new DOMException("deadline", "TimeoutError"); }) as unknown as typeof fetch);
+    expect((await withFallbackTransport(primary, email, () => undefined).send(notification())).delivery)
+      .toEqual({ transport: "email", fallbackUsed: true, primaryOutcome: "timeout", primaryHttpStatus: null });
   });
 });

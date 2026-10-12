@@ -5,7 +5,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, type Notification, type Pool } from "pg";
@@ -24,14 +24,14 @@ import {
 } from "./ephemeral-database";
 
 const describeDb = process.env.POSTIL_TEST_DATABASE_URL ? describe : describe.skip;
-const TEST_WEBHOOK_SECRET = "test-ilert-webhook-password-32-bytes";
-const TEST_CANARY_KEY = "postil-ilert-webhook-canary-123456789-2";
+const TEST_WEBHOOK_SECRET = randomBytes(32).toString("base64url");
+const TEST_CANARY_KEY = `postil-ilert-webhook-canary-${randomInt(1_000_000_000, 10_000_000_000)}-2`;
 const OPERATOR_GITHUB_ID = 991_001;
 const CUSTOMER_ADMIN_GITHUB_ID = 991_002;
-const OPERATOR_TOKEN = `pcli_${"a".repeat(43)}`;
-const CUSTOMER_ADMIN_TOKEN = `pcli_${"b".repeat(43)}`;
-const LEGACY_OPERATOR_TOKEN = `pcli_${"c".repeat(43)}`;
-const ROTATING_OPERATOR_TOKEN = `pcli_${"d".repeat(43)}`;
+const OPERATOR_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
+const CUSTOMER_ADMIN_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
+const LEGACY_OPERATOR_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
+const ROTATING_OPERATOR_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
 
 describeDb("iLert durable operator alert stream", () => {
   let ephemeral: EphemeralDatabase;
@@ -196,6 +196,17 @@ describeDb("iLert durable operator alert stream", () => {
       alertId: "12797430",
       alertKey: null,
     });
+  });
+
+  test("accepts an empty alert key and stores it as absent", async () => {
+    const eventId = "0f0e9c5e-6d0b-4c57-9a55-3f8f2f3f6a10";
+    const response = await postWebhook(eventFixture({ alertKey: "", eventId }));
+    expect(response.status).toBe(202);
+    const stored = await pool.query<{ alert_key: string | null }>(
+      "SELECT alert_key FROM ilert_alert_events WHERE event_id = $1",
+      [eventId],
+    );
+    expect(stored.rows).toEqual([{ alert_key: null }]);
   });
 
   test("observes only exact persisted canary lifecycle events", async () => {

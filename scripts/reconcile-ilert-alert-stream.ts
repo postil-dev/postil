@@ -211,6 +211,49 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+// The detail response includes read-only and expanded relations. Only these
+// independently writable action fields belong in an existing-action PUT.
+// A nonzero delay also requires its corresponding trigger in the PUT body.
+function carriedAlertActionFields(action: Json, triggerTypes?: readonly string[]): Json {
+  const carried: Json = {};
+  if (Array.isArray(action.teams)) {
+    const ids = relationIds(action.teams);
+    if (ids === null) throw new Error("iLert returned invalid alert-action teams");
+    carried.teams = ids.sort((left, right) => left - right).map((id) => ({ id }));
+  } else if (action.teams !== undefined && action.teams !== null) {
+    throw new Error("iLert returned invalid alert-action teams");
+  }
+  for (const [key, maximum, triggerType] of [
+    ["escalationEndedDelaySec", 7_200, "alert-escalation-ended"],
+    ["notResolvedDelaySec", 172_800, "v-alert-not-resolved"],
+  ] as const) {
+    const value = action[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= maximum) {
+      if (value > 0 && triggerTypes && !triggerTypes.includes(triggerType)) {
+        throw new Error(`iLert alert-action ${key} requires its trigger type`);
+      }
+      carried[key] = value;
+    } else if (value !== undefined && value !== null) {
+      throw new Error(`iLert returned an invalid alert-action ${key}`);
+    }
+  }
+  if (typeof action.connectorId === "string") {
+    carried.connectorId = action.connectorId;
+  } else if (action.connectorId !== undefined && action.connectorId !== null) {
+    throw new Error("iLert returned an invalid alert-action connectorId");
+  }
+  return carried;
+}
+
+function normalizedCarriedAlertActionFields(fields: Json): Json {
+  return {
+    teams: fields.teams ?? [],
+    connectorId: fields.connectorId ?? "",
+    escalationEndedDelaySec: fields.escalationEndedDelaySec ?? 0,
+    notResolvedDelaySec: fields.notResolvedDelaySec ?? 0,
+  };
+}
+
 export async function reconcileIlertAlertAction(
   options: ReconcileOptions,
 ): Promise<ReconcileResult> {
@@ -313,6 +356,9 @@ export async function reconcileIlertAlertAction(
     return { actionId: actionId(existing), operation };
   }
   const id = boundaryExisting ? actionId(boundaryExisting) : null;
+  const carried = boundaryExisting
+    ? carriedAlertActionFields(boundaryExisting, strings(boundaryDesired.triggerTypes))
+    : {};
   // The guard runs immediately before every action mutation attempt, including
   // a retry after a transient response. Receiver acceptance comes first; the
   // source binding and complete continuity-safe action inventory then form the
@@ -373,7 +419,10 @@ export async function reconcileIlertAlertAction(
         fetchFn,
         options.apiKey,
         `/alert-actions/${encodeURIComponent(id)}?include=conditions`,
-        { method: "PUT", body: JSON.stringify({ ...boundaryDesired, id }) },
+        {
+          method: "PUT",
+          body: JSON.stringify({ ...carried, ...boundaryDesired, id }),
+        },
         deadline,
         sleep,
         false,
@@ -400,6 +449,7 @@ export async function reconcileIlertAlertAction(
     deadline,
     desired: boundaryDesired,
     expectedId: resultId,
+    carried: id ? carried : undefined,
     fetchFn,
     sleep,
     sourceId: options.sourceId,
@@ -1898,7 +1948,7 @@ async function loadReservedAlertAction(
 }
 
 async function confirmUniqueMutatedAlertAction(
-  options: CreateAlertActionOptions & { expectedId: string },
+  options: CreateAlertActionOptions & { expectedId: string; carried?: Json },
 ): Promise<void> {
   const candidates = await loadCandidateActions(
     options.fetchFn,
@@ -1915,6 +1965,12 @@ async function confirmUniqueMutatedAlertAction(
   }
   if (!equivalentAlertAction(candidate, options.desired)) {
     throw new Error("iLert did not retain the reconciled alert action");
+  }
+  if (options.carried && !sameJson(
+    normalizedCarriedAlertActionFields(carriedAlertActionFields(candidate)),
+    normalizedCarriedAlertActionFields(options.carried),
+  )) {
+    throw new Error("iLert did not retain the existing alert-action fields");
   }
 }
 

@@ -14,234 +14,20 @@ import { parse } from "yaml";
 const root = join(import.meta.dir, "..");
 
 describe("deployment workflow trust boundaries", () => {
-  test("authorizes only successful push CI on main or manual deploys from main", () => {
+  test("admits only manual deployments and exposes one deploy job", () => {
     const workflow = parse(
       readFileSync(join(root, ".github/workflows/deploy.yml"), "utf8"),
     ) as {
-      permissions: Record<string, never>;
-      jobs: {
-        authorize: {
-          if: string;
-          permissions: Record<string, never>;
-        };
-        deploy: {
-          if: string;
-          name: string;
-          needs: string;
-          permissions: Record<string, string>;
-          steps: Array<{
-            env?: Record<string, string>;
-            name?: string;
-            run?: string;
-            uses?: string;
-            with?: Record<string, string>;
-          }>;
-        };
-      };
+      on: Record<string, unknown>;
+      jobs: Record<string, { if?: string; name?: string }>;
     };
 
-    expect(workflow.permissions).toEqual({});
-    expect(workflow.jobs.authorize.permissions).toEqual({});
-    expect(workflow.jobs.authorize.if).toBe(
-      "${{ (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}",
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
+    expect(Object.keys(workflow.jobs)).toEqual(["deploy"]);
+    expect(workflow.jobs.deploy!.name).toBeUndefined();
+    expect(workflow.jobs.deploy!.if).toBe(
+      "vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'",
     );
-    expect(workflow.jobs.deploy).toMatchObject({
-      name: "Deploy production",
-      needs: "authorize",
-      if: "${{ needs.authorize.result == 'success' && vars.FLY_DEPLOY_ENABLED == 'true' }}",
-      permissions: { contents: "read", "id-token": "write" },
-    });
-    const checkout = workflow.jobs.deploy.steps.find((step) =>
-      step.uses?.startsWith("actions/checkout@")
-    );
-    const releaseSha = workflow.jobs.deploy.steps.find(
-      (step) => step.name === "Record checked-out release SHA",
-    );
-    const deployment = workflow.jobs.deploy.steps.find(
-      (step) => step.name === "Deploy managed fleet",
-    );
-    expect(checkout?.with?.ref).toBe(
-      "${{ github.event.workflow_run.head_sha || github.sha }}",
-    );
-    expect(releaseSha?.env?.EXPECTED_RELEASE_SHA).toBe(checkout?.with?.ref);
-    expect(releaseSha?.run).toContain('checked_out_sha="$(git rev-parse HEAD)"');
-    expect(releaseSha?.run).toContain(
-      '"${checked_out_sha}" != "${EXPECTED_RELEASE_SHA}"',
-    );
-    expect(releaseSha?.run).toContain(
-      'echo "POSTIL_RELEASE_SHA=${checked_out_sha}" >> "${GITHUB_ENV}"',
-    );
-    expect(deployment?.run).toContain(
-      '--build-arg POSTIL_RELEASE_SHA="${POSTIL_RELEASE_SHA}"',
-    );
-    expect(deployment?.run).not.toContain("GITHUB_SHA");
-    expect(workflow.jobs.deploy.steps.indexOf(releaseSha!)).toBeLessThan(
-      workflow.jobs.deploy.steps.indexOf(deployment!),
-    );
-    const postCheckoutReleaseSteps = workflow.jobs.deploy.steps.slice(
-      workflow.jobs.deploy.steps.indexOf(releaseSha!) + 1,
-    );
-    expect(JSON.stringify(postCheckoutReleaseSteps)).not.toContain("GITHUB_SHA");
-    expect(JSON.stringify(postCheckoutReleaseSteps)).not.toContain("github.sha");
-
-    const authorized = ({
-      eventName,
-      ref = "",
-      upstreamBranch = "",
-      upstreamConclusion = "",
-      upstreamEvent = "",
-    }: {
-      eventName: string;
-      ref?: string;
-      upstreamBranch?: string;
-      upstreamConclusion?: string;
-      upstreamEvent?: string;
-    }) =>
-      (eventName === "workflow_run" &&
-        upstreamEvent === "push" &&
-        upstreamBranch === "main" &&
-        upstreamConclusion === "success") ||
-      (eventName === "workflow_dispatch" && ref === "refs/heads/main");
-
-    expect(authorized({
-      eventName: "workflow_run",
-      upstreamBranch: "main",
-      upstreamConclusion: "success",
-      upstreamEvent: "push",
-    })).toBe(true);
-    expect(authorized({
-      eventName: "workflow_run",
-      upstreamBranch: "main",
-      upstreamConclusion: "success",
-      upstreamEvent: "pull_request",
-    })).toBe(false);
-    expect(authorized({
-      eventName: "workflow_run",
-      upstreamBranch: "feature",
-      upstreamConclusion: "success",
-      upstreamEvent: "push",
-    })).toBe(false);
-    expect(authorized({
-      eventName: "workflow_run",
-      upstreamBranch: "main",
-      upstreamConclusion: "failure",
-      upstreamEvent: "push",
-    })).toBe(false);
-    expect(authorized({
-      eventName: "workflow_dispatch",
-      ref: "refs/heads/main",
-    })).toBe(true);
-    expect(authorized({
-      eventName: "workflow_dispatch",
-      ref: "refs/heads/feature",
-    })).toBe(false);
-  });
-
-  test("binds failed-deploy compensation to the checked-out release", () => {
-    const workflow = parse(
-      readFileSync(join(root, ".github/workflows/deploy.yml"), "utf8"),
-    ) as {
-      jobs: {
-        deploy: {
-          steps: Array<{
-            env?: Record<string, string>;
-            name?: string;
-            run?: string;
-          }>;
-        };
-      };
-    };
-    const recovery = workflow.jobs.deploy.steps.find(
-      (step) =>
-        step.name ===
-          "Restore capabilities when release preparation failed before replacement",
-    );
-    expect(recovery?.run).toContain(
-      'if [[ "${release}" == "${POSTIL_RELEASE_SHA}" ]]; then',
-    );
-    expect(recovery?.env?.POSTIL_RELEASE_SHA).toBeUndefined();
-
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "postil-deploy-recovery-"),
-    );
-    const compensationPath = join(temporaryDirectory, "compensation");
-    const flyctlPath = join(temporaryDirectory, "flyctl");
-    const jqPath = join(temporaryDirectory, "jq");
-    const bunPath = join(temporaryDirectory, "bun");
-    writeFileSync(
-      flyctlPath,
-      `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1 $2" == "machine list" ]]; then
-  printf '%s\n' '[]'
-elif [[ "$1 $2" == "machine exec" ]]; then
-  printf '%s' "\${MOCK_MACHINE_RELEASE_SHA}"
-else
-  exit 2
-fi
-`,
-    );
-    writeFileSync(
-      jqPath,
-      `#!/usr/bin/env bash
-set -euo pipefail
-input="$(< /dev/stdin)"
-if [[ "$*" == *"verify-managed-fleet.jq"* ]]; then
-  printf '%s\n' '{"managed_count":4}'
-elif [[ "$*" == *".managed_count"* ]]; then
-  printf '%s\n' '4'
-elif [[ "$*" == *"| length"* ]]; then
-  printf '%s\n' '4'
-elif [[ "$*" == *"| .id"* ]]; then
-  printf '%s\n' web-1 web-2 worker-1 monitor-1
-else
-  exit 2
-fi
-`,
-    );
-    writeFileSync(
-      bunPath,
-      `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "\${POSTIL_RELEASE_SHA}" > "\${MOCK_COMPENSATION_PATH}"
-`,
-    );
-    chmodSync(flyctlPath, 0o755);
-    chmodSync(jqPath, 0o755);
-    chmodSync(bunPath, 0o755);
-
-    const trustedRelease = "1111111111111111111111111111111111111111";
-    const advancedMainRelease = "2222222222222222222222222222222222222222";
-    const executeRecovery = (machineRelease: string) =>
-      spawnSync("bash", ["-c", recovery!.run!], {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          GITHUB_SHA: advancedMainRelease,
-          MOCK_COMPENSATION_PATH: compensationPath,
-          MOCK_MACHINE_RELEASE_SHA: machineRelease,
-          PATH: `${temporaryDirectory}:${process.env.PATH}`,
-          POSTIL_RELEASE_SHA: trustedRelease,
-        },
-      });
-
-    try {
-      const advancedMainFleet = executeRecovery(advancedMainRelease);
-      expect(advancedMainFleet.status).toBe(0);
-      expect(readFileSync(compensationPath, "utf8").trim()).toBe(
-        trustedRelease,
-      );
-
-      rmSync(compensationPath, { force: true });
-      const checkedOutTargetFleet = executeRecovery(trustedRelease);
-      expect(checkedOutTargetFleet.status).not.toBe(0);
-      expect(checkedOutTargetFleet.stdout).toContain(
-        "The target release reached the managed fleet",
-      );
-      expect(() => readFileSync(compensationPath, "utf8")).toThrow();
-    } finally {
-      rmSync(temporaryDirectory, { recursive: true, force: true });
-    }
   });
 
   test("derives downstream trust from the triggering deploy attempt's jobs", () => {
@@ -264,21 +50,24 @@ printf '%s\n' "\${POSTIL_RELEASE_SHA}" > "\${MOCK_COMPENSATION_PATH}"
     };
     const deployWorkflow = parse(
       readFileSync(join(root, ".github/workflows/deploy.yml"), "utf8"),
-    ) as { jobs: { authorize: { name: string }; deploy: { name: string } } };
+    ) as { jobs: Record<string, { name?: string }> };
     const trustJob = workflow.jobs["deployment-trust"];
     const evidenceStep = trustJob.steps.find((step) => step.id === "evidence");
     const run = evidenceStep?.run;
     expect(workflow.permissions).toEqual({});
     expect(trustJob.permissions).toEqual({ actions: "read" });
-    expect(trustJob["timeout-minutes"]).toBe(4);
+    expect(trustJob["timeout-minutes"]).toBe(5);
     expect(evidenceStep?.["timeout-minutes"]).toBe(3);
     expect(JSON.stringify(trustJob)).not.toContain("secrets.");
     expect(JSON.stringify(trustJob)).not.toContain("id-token");
     expect(run).toBeDefined();
-    expect(deployWorkflow.jobs.authorize.name).toBe("Authorize deployment source");
-    expect(deployWorkflow.jobs.deploy.name).toBe("Deploy production");
-    expect(run).toContain(`.name == "${deployWorkflow.jobs.authorize.name}"`);
-    expect(run).toContain(`.name == "${deployWorkflow.jobs.deploy.name}"`);
+    // GitHub reports a job without a display name under its job identifier.
+    expect(Object.keys(deployWorkflow.jobs)).toEqual(["deploy"]);
+    expect(deployWorkflow.jobs.deploy!.name).toBeUndefined();
+    expect(run).toContain('.name == "deploy"');
+    expect(evidenceStep?.env?.DEPLOY_HEAD_BRANCH).toBe(
+      "${{ github.event.workflow_run.head_branch }}",
+    );
     expect(run).toContain("timeout --signal=TERM --kill-after=5s 30s gh api");
     expect(run).toContain("for api_attempt in 1 2 3");
     expect(run).toContain("sleep 2");
@@ -320,18 +109,24 @@ printf '%s\n' "$*" >> "${delaysPath}"
 
     const evaluate = ({
       attempts,
-      deployEvent = "workflow_run",
+      deployEvent = "workflow_dispatch",
+      deployHeadBranch = "main",
       eventName = "workflow_run",
       eventRef = "refs/heads/main",
       ghFailures = 0,
+      reconcileAlertStream = "",
       runAttempt = 1,
+      testAlert = "",
     }: {
       attempts?: Record<string, { total_count: number; jobs: Array<{ name: string; conclusion: string }> }>;
       deployEvent?: string;
+      deployHeadBranch?: string;
       eventName?: string;
       eventRef?: string;
       ghFailures?: number;
+      reconcileAlertStream?: string;
       runAttempt?: number;
+      testAlert?: string;
     }) => {
       writeFileSync(outputPath, "");
       writeFileSync(callsPath, "");
@@ -339,17 +134,15 @@ printf '%s\n' "$*" >> "${delaysPath}"
       writeFileSync(delaysPath, "");
       const attemptEvidence = attempts ?? {
         "1": {
-          total_count: 2,
-          jobs: [
-            { name: "Authorize deployment source", conclusion: "success" },
-            { name: "Deploy production", conclusion: "success" },
-          ],
+          total_count: 1,
+          jobs: [{ name: "deploy", conclusion: "success" }],
         },
       };
       const result = spawnSync("bash", ["-c", run!], {
         encoding: "utf8",
         env: {
           DEPLOY_EVENT: deployEvent,
+          DEPLOY_HEAD_BRANCH: deployHeadBranch,
           DEPLOY_RUN_ATTEMPT: String(runAttempt),
           DEPLOY_RUN_ID: "123",
           EVENT_NAME: eventName,
@@ -361,6 +154,8 @@ printf '%s\n' "$*" >> "${delaysPath}"
           MOCK_GH_FAILURES: String(ghFailures),
           NODE_ENV: "test",
           PATH: `${temporaryDirectory}:${process.env.PATH}`,
+          RECONCILE_ALERT_STREAM: reconcileAlertStream,
+          TEST_ALERT: testAlert,
         } as NodeJS.ProcessEnv,
       });
       const outputs = Object.fromEntries(
@@ -374,61 +169,85 @@ printf '%s\n' "$*" >> "${delaysPath}"
       const delays = readFileSync(delaysPath, "utf8").trim().split("\n").filter(Boolean);
       return { calls, delays, outputs, status: result.status, stderr: result.stderr };
     };
-    const evidence = (
-      authorizationConclusion: string,
-      deployConclusion: string,
-    ) => ({
+    const evidence = (deployConclusion: string) => ({
       "1": {
-        total_count: 2,
-        jobs: [
-          { name: "Authorize deployment source", conclusion: authorizationConclusion },
-          { name: "Deploy production", conclusion: deployConclusion },
-        ],
+        total_count: 1,
+        jobs: [{ name: "deploy", conclusion: deployConclusion }],
       },
     });
 
     try {
+      // The finalizer resolves the key the operator test alert uses, so one
+      // dispatch may request either manual alert path but never both.
+      expect(evidenceStep?.env).toMatchObject({
+        RECONCILE_ALERT_STREAM: "${{ inputs.reconcile_alert_stream }}",
+        TEST_ALERT: "${{ inputs.test_alert }}",
+      });
+      const conflictingInputs = evaluate({
+        eventName: "workflow_dispatch",
+        reconcileAlertStream: "true",
+        testAlert: "true",
+      });
+      expect(conflictingInputs).toMatchObject({
+        status: 1,
+        outputs: { conclusion: "", trusted: "false" },
+        calls: [],
+      });
+      expect(conflictingInputs.stderr).toContain(
+        "test_alert and reconcile_alert_stream cannot be combined",
+      );
+      for (const [testAlert, reconcileAlertStream] of [
+        ["true", "false"],
+        ["false", "true"],
+        ["false", "false"],
+      ] as const) {
+        expect(evaluate({
+          eventName: "workflow_dispatch",
+          reconcileAlertStream,
+          testAlert,
+        })).toMatchObject({ status: 0, outputs: { trusted: "true" } });
+      }
+      expect(evaluate({
+        eventName: "workflow_dispatch",
+        eventRef: "refs/heads/feature",
+        reconcileAlertStream: "true",
+        testAlert: "true",
+      }).outputs.trusted).toBe("false");
+      // Scheduled and deployment-triggered runs carry no inputs.
+      expect(evaluate({ eventName: "schedule" })).toMatchObject({
+        status: 0,
+        outputs: { trusted: "true" },
+      });
+
       for (const conclusion of ["success", "failure", "cancelled", "timed_out"]) {
-        expect(evaluate({ attempts: evidence("success", conclusion) })).toMatchObject({
+        expect(evaluate({ attempts: evidence(conclusion) })).toMatchObject({
           status: 0,
           outputs: { conclusion, trusted: "true" },
         });
       }
-      expect(evaluate({ attempts: evidence("skipped", "skipped") })).toMatchObject({
+      expect(evaluate({ attempts: evidence("skipped") })).toMatchObject({
         status: 0,
         outputs: { conclusion: "skipped", trusted: "false" },
-      });
-      expect(evaluate({ attempts: evidence("success", "skipped") })).toMatchObject({
-        status: 0,
-        outputs: { conclusion: "skipped", trusted: "false" },
-      });
-      expect(evaluate({ attempts: evidence("skipped", "failure") })).toMatchObject({
-        status: 0,
-        outputs: { conclusion: "failure", trusted: "false" },
       });
 
-      const partialRerun = evaluate({
+      const rerun = evaluate({
         runAttempt: 2,
         attempts: {
           "1": {
-            total_count: 2,
-            jobs: [
-              { name: "Authorize deployment source", conclusion: "success" },
-              { name: "Deploy production", conclusion: "failure" },
-            ],
+            total_count: 1,
+            jobs: [{ name: "deploy", conclusion: "failure" }],
           },
           "2": {
             total_count: 1,
-            jobs: [{ name: "Deploy production", conclusion: "cancelled" }],
+            jobs: [{ name: "deploy", conclusion: "cancelled" }],
           },
         },
       });
-      expect(partialRerun).toMatchObject({
+      expect(rerun).toMatchObject({
         status: 0,
         outputs: { conclusion: "cancelled", trusted: "true" },
       });
-      expect(partialRerun.calls).toEqual([
-        "api --method GET repos/postil-dev/postil/actions/runs/123/attempts/1/jobs?per_page=100",
+      expect(rerun.calls).toEqual([
         "api --method GET repos/postil-dev/postil/actions/runs/123/attempts/2/jobs?per_page=100",
       ]);
 
@@ -452,11 +271,10 @@ printf '%s\n' "$*" >> "${delaysPath}"
       const duplicate = evaluate({
         attempts: {
           "1": {
-            total_count: 3,
+            total_count: 2,
             jobs: [
-              { name: "Authorize deployment source", conclusion: "success" },
-              { name: "Deploy production", conclusion: "success" },
-              { name: "Deploy production", conclusion: "failure" },
+              { name: "deploy", conclusion: "success" },
+              { name: "deploy", conclusion: "failure" },
             ],
           },
         },
@@ -464,7 +282,7 @@ printf '%s\n' "$*" >> "${delaysPath}"
       expect(duplicate.status).not.toBe(0);
       expect(duplicate.outputs.trusted).toBe("false");
 
-      const missingAuthorization = evaluate({
+      const missingDeployment = evaluate({
         attempts: {
           "1": {
             total_count: 1,
@@ -472,35 +290,28 @@ printf '%s\n' "$*" >> "${delaysPath}"
           },
         },
       });
-      expect(missingAuthorization.status).not.toBe(0);
-      expect(missingAuthorization.outputs.trusted).toBe("false");
-
-      const missingCurrentDeployment = evaluate({
-        attempts: {
-          "1": {
-            total_count: 1,
-            jobs: [{ name: "Authorize deployment source", conclusion: "success" }],
-          },
-        },
-      });
-      expect(missingCurrentDeployment.status).not.toBe(0);
-      expect(missingCurrentDeployment.outputs.trusted).toBe("false");
+      expect(missingDeployment.status).not.toBe(0);
+      expect(missingDeployment.outputs.trusted).toBe("false");
 
       const truncated = evaluate({
         attempts: {
           "1": {
-            total_count: 3,
-            jobs: [
-              { name: "Authorize deployment source", conclusion: "success" },
-              { name: "Deploy production", conclusion: "success" },
-            ],
+            total_count: 2,
+            jobs: [{ name: "deploy", conclusion: "success" }],
           },
         },
       });
       expect(truncated.status).not.toBe(0);
       expect(truncated.outputs.trusted).toBe("false");
 
-      expect(evaluate({ deployEvent: "pull_request" })).toMatchObject({
+      for (const deployEvent of ["pull_request", "push", "workflow_run"]) {
+        expect(evaluate({ deployEvent })).toMatchObject({
+          calls: [],
+          status: 0,
+          outputs: { conclusion: "", trusted: "false" },
+        });
+      }
+      expect(evaluate({ deployHeadBranch: "feature" })).toMatchObject({
         calls: [],
         status: 0,
         outputs: { conclusion: "", trusted: "false" },
@@ -551,6 +362,7 @@ printf '%s\n' "$*" >> "${delaysPath}"
       "release-recovery",
       "resolve",
       "resolve-release-recovery",
+      "resolve-test-alert",
       "smoke",
     ]);
     for (const [, job] of protectedJobs) {
@@ -559,5 +371,52 @@ printf '%s\n' "$*" >> "${delaysPath}"
       expect(job.if).toContain("needs.deployment-trust.outputs.trusted == 'true'");
     }
     expect(source).not.toContain("github.event.workflow_run.conclusion");
+  });
+
+  test("runs the orphan canary sweep only after an explicit repository opt-in", () => {
+    const workflow = parse(
+      readFileSync(join(root, ".github/workflows/production-monitor.yml"), "utf8"),
+    ) as {
+      jobs: Record<string, {
+        if?: string;
+        steps: Array<{ name?: string; if?: string; run?: string; uses?: string }>;
+      }>;
+    };
+    const optIn = "vars.POSTIL_ILERT_CANARY_SWEEP_ENABLED";
+    expect(workflow.jobs["canary-orphan-sweep"]!.if).toContain(
+      `needs.deployment-trust.outputs.trusted == 'true' && ${optIn} == 'true' && `,
+    );
+    // Jobs that exist on the released monitor stay independent of the opt-in.
+    for (const name of ["smoke", "release-recovery", "notify", "resolve", "resolve-release-recovery"]) {
+      expect(workflow.jobs[name]!.if).not.toContain(optIn);
+    }
+
+    const report = workflow.jobs["deployment-trust"]!.steps.find(
+      (step) => step.name === "Report the orphaned iLert canary sweep state",
+    );
+    expect(report?.uses).toBeUndefined();
+    expect(report?.if).toBe(
+      `\${{ steps.evidence.outputs.trusted == 'true' && github.event_name != 'workflow_run' && ${optIn} != 'true' }}`,
+    );
+    const summaryDirectory = mkdtempSync(join(tmpdir(), "postil-sweep-state-"));
+    try {
+      const summaryPath = join(summaryDirectory, "summary");
+      writeFileSync(summaryPath, "");
+      const result = spawnSync("bash", ["-c", report!.run!], {
+        encoding: "utf8",
+        env: {
+          GITHUB_STEP_SUMMARY: summaryPath,
+          NODE_ENV: "test",
+          PATH: process.env.PATH,
+        } as NodeJS.ProcessEnv,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("::notice title=Orphaned iLert canary sweep is disabled::");
+      expect(readFileSync(summaryPath, "utf8")).toContain(
+        "makes no iLert management request and resolves no orphaned canary alert",
+      );
+    } finally {
+      rmSync(summaryDirectory, { recursive: true, force: true });
+    }
   });
 });

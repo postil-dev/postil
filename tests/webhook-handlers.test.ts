@@ -2337,14 +2337,17 @@ describeDb("webhook handler behaviour", () => {
     ]);
   });
 
-  test("exact PR review mentions enqueue the structured reviewer", async () => {
+  test.each([
+    ["plain", "@postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict."],
+    ["marked", "🤖 @postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict."],
+  ])("exact %s PR review mentions enqueue the structured reviewer", async (_label, body) => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     await seedRepo(inst, 7000, "octo/approvals");
 
     const res = await approvalComment(
       "mention-review-current-head",
-      "@postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      body,
     );
 
     expect(res.status).toBe(200);
@@ -2392,7 +2395,7 @@ describeDb("webhook handler behaviour", () => {
 
     const duplicate = await approvalComment(
       "mention-review-current-head",
-      "@postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      body,
     );
     expect(duplicate.status).toBe(200);
     const reactionCount = await pool.query<{ count: number }>(
