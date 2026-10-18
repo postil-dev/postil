@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { Pool } from "pg";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ReviewJobPayload } from "@/lib/queue";
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 
 const describeDb = process.env.POSTIL_TEST_DATABASE_URL ? describe : describe.skip;
@@ -34,7 +38,7 @@ mock.module("@/lib/private-repository-entitlement", () => ({ ...realEntitlement,
   canProcessRepositoryInference: async () => ({ allowed: true }),
 }));
 
-const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, reviewFeedbackEnabled, scheduleReviewFeedbackReconciliationJobs } = await import("@/lib/review-feedback");
+const { admitReviewFeedbackEvent, reconcileReviewFeedback, reviewFeedbackDigest, reviewFeedbackEnabled, scheduleReviewFeedbackReconciliationJobs, serializeReviewFeedback, writeReviewFeedbackFile } = await import("@/lib/review-feedback");
 const { claimJob, completeJob, enqueueJob, enqueueReviewJobOnce, failJob, requeueJobsOwnedBy } = await import("@/lib/queue");
 const { deferHostedReviewForRelease, activateHostedInferenceRelease } = await import("@/lib/release-job-rollout");
 const { closeDb } = await import("@/lib/db");
@@ -845,4 +849,164 @@ describeDb("durable review feedback admission", () => {
       await limitedPool.end();
     }
   }, 15_000);
+
+  test("complete historical observations preserve exact admission, failure atomicity and actor limits", async () => {
+    const pool = database.pool;
+    const prNumber = 301;
+    const payload = { githubRepoId: 72, installationId: 82, prNumber };
+    const historyOrg = (await pool.query(`INSERT INTO organizations (slug, name, github_org_id)
+      VALUES ('history-fixture', 'History fixture', 92) RETURNING id`)).rows[0].id;
+    const historyInstallation = (await pool.query(`INSERT INTO installations
+      (github_installation_id, org_id, account_login, account_type)
+      VALUES (82, $1, 'octo', 'Organization') RETURNING id`, [historyOrg])).rows[0].id;
+    const historyRepository = (await pool.query(`INSERT INTO repositories
+      (installation_id, github_repo_id, full_name, enabled, private)
+      VALUES ($1, 72, 'octo/history', true, false) RETURNING id`, [historyInstallation])).rows[0].id;
+    const review = await pool.query(`INSERT INTO reviews
+      (repository_id, source_org_id, source_installation_id, source_github_installation_id, source_github_repo_id,
+       source_repo_full_name, pr_number, head_sha, base_sha, status, author_github_id, author_login, finished_at)
+      VALUES ($1, $2, $3, 82, 72, 'octo/history', $4, $5, $6, 'completed', 51, 'maintainer', now()) RETURNING id`,
+    [historyRepository, historyOrg, historyInstallation, prNumber, headSha, baseSha]);
+    await pool.query(`INSERT INTO finding_publications
+      (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      SELECT $1, 'history-' || i, true, 'inline', 'resolved', ($2::bigint + i * 100)::text
+      FROM generate_series(0, 99) i`, [review.rows[0].id, rootId]);
+    await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+    const actor = { __typename: "User", databaseId: 51, login: "maintainer" };
+    const root = (i: number) => ({ isResolved: false, resolvedBy: null as typeof actor | null,
+      comments: { nodes: [{ databaseId: String(rootId + i * 100), author: { __typename: "Bot", login: "postil-dev[bot]" } }] as Array<Record<string, unknown>>,
+        pageInfo: { hasNextPage: false } } });
+    const comment = (i: number, id = 51, body = "The recovery procedure covers this path.") => ({
+      databaseId: String(rootId + i * 100 + 1), author: { ...actor, databaseId: id, login: id === 51 ? "maintainer" : `visitor-${id}` }, body, updatedAt,
+    });
+    let nodes = Array.from({ length: 100 }, (_, i) => root(i));
+    let failPage = false;
+    const savedFetch = globalThis.fetch;
+    const counts = async () => ({
+      receipts: (await pool.query("SELECT count(*)::int AS n FROM review_feedback_requests WHERE pr_number = $1", [prNumber])).rows[0].n,
+      jobs: (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)])).rows[0].n,
+    });
+    const poll = async () => (await pool.query("SELECT last_error, next_poll_at FROM review_feedback_polls WHERE github_repo_id = 72 AND pr_number = $1", [prNumber])).rows[0];
+    const noAdmission = async (message: string) => {
+      const before = await counts();
+      await expect(reconcileReviewFeedback(payload, pool)).rejects.toThrow(message);
+      expect(await counts()).toEqual(before);
+      expect((await poll()).last_error).toContain(message);
+    };
+    try {
+      globalThis.fetch = (async (_url, options) => {
+        const cursor = JSON.parse(String(options!.body)).variables.cursor;
+        const offset = cursor === null ? 0 : Number(cursor);
+        if (failPage && offset > 0) return new Response(null, { status: 503 });
+        return Response.json({ data: { repository: { databaseId: 72, nameWithOwner: "octo/history", pullRequest: {
+          headRefOid: headSha, state: "OPEN", isDraft: false, reviewThreads: { nodes: nodes.slice(offset, offset + 50),
+            pageInfo: { hasNextPage: offset + 50 < nodes.length, endCursor: String(offset + 50) } },
+        } } } });
+      }) as typeof fetch;
+      await pool.query(`INSERT INTO review_feedback_polls (github_repo_id, pr_number, next_poll_at, last_error)
+        VALUES (72, $1, now(), 'review feedback exceeds 20 published threads')`, [prNumber]);
+      await reconcileReviewFeedback(payload, pool);
+      expect(await counts()).toEqual({ receipts: 0, jobs: 0 });
+      expect((await poll()).last_error).toBeNull();
+      expect((await poll()).next_poll_at.getTime()).toBeGreaterThan(Date.now());
+
+      nodes[99]!.comments.nodes.push(comment(99), { ...comment(99), databaseId: String(rootId + 9902) });
+      nodes[98]!.isResolved = true;
+      nodes[98]!.resolvedBy = actor;
+      for (const [index, body] of ["Thanks!", "@postil review", "@postil approve history-2", "@postil dismiss history-3"].entries()) {
+        nodes[index]!.comments.nodes.push(comment(index, 100 + index, body));
+      }
+      nodes[4]!.comments.nodes.push(comment(4, 104));
+      const expected = { version: 1 as const, repository: "octo/history", prNumber, headSha, threads: [
+        { findingId: "history-98", rootCommentId: rootId + 9800, resolved: true, comments: [] },
+        { findingId: "history-99", rootCommentId: rootId + 9900, resolved: false, comments: [
+          { commentId: rootId + 9901, author: { id: 51, login: "maintainer" }, body: comment(99).body, updatedAt },
+          { commentId: rootId + 9902, author: { id: 51, login: "maintainer" }, body: comment(99).body, updatedAt },
+        ] },
+      ] };
+      let seed = 71;
+      for (let trial = 0; trial < 8; trial++) {
+        for (let i = nodes.length - 1; i > 0; i--) {
+          seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+          const j = seed % (i + 1);
+          [nodes[i], nodes[j]] = [nodes[j]!, nodes[i]!];
+        }
+        for (const node of nodes) node.comments.nodes.splice(1, node.comments.nodes.length - 1, ...node.comments.nodes.slice(1).reverse());
+        await Promise.all(Array.from({ length: 3 }, () => reconcileReviewFeedback(payload, pool)));
+        expect(await counts()).toEqual({ receipts: 1, jobs: 1 });
+        const job = (await pool.query("SELECT payload FROM jobs WHERE kind = 'review-feedback' AND payload->>'prNumber' = $1", [String(prNumber)])).rows[0].payload;
+        expect(serializeReviewFeedback(job.reviewFeedback)).toBe(serializeReviewFeedback(expected));
+        expect(job.trigger.feedbackDigest).toBe(reviewFeedbackDigest(expected));
+      }
+      await pool.query("UPDATE jobs SET status = 'done' WHERE status = 'queued' AND payload->>'prNumber' <> $1", [String(prNumber)]);
+      const claimed = await claimJob(pool, "history-consumer", ["review-feedback"]);
+      expect(claimed?.payload.prNumber).toBe(prNumber);
+      const directory = await mkdtemp(join(tmpdir(), "postil-feedback-"));
+      try {
+        const path = join(directory, "feedback.json");
+        expect(await writeReviewFeedbackFile(path, claimed!.payload as ReviewJobPayload)).toBe(true);
+        expect(await readFile(path, "utf8")).toBe(serializeReviewFeedback(expected));
+      } finally { await rm(directory, { recursive: true }); }
+      expect(await completeJob(pool, { id: claimed!.id, lockedBy: "history-consumer" })).toBe("done");
+
+      nodes = Array.from({ length: 100 }, (_, i) => root(i));
+      nodes[0]!.comments.nodes.push(comment(0));
+      failPage = true;
+      await noAdmission("HTTP 503");
+      failPage = false;
+      nodes[99]!.comments.pageInfo.hasNextPage = true;
+      await noAdmission("published thread is incomplete");
+      nodes[99]!.comments.pageInfo.hasNextPage = false;
+      nodes[99] = nodes[0]!;
+      await noAdmission("thread identity is invalid");
+      nodes = Array.from({ length: 100 }, (_, i) => root(i));
+      for (let i = 0; i < 21; i++) nodes[i]!.comments.nodes.push(comment(i, 100 + i));
+      nodes[99]!.comments.nodes.push(comment(99));
+      await noAdmission("exceeds 20 human actors");
+      nodes = Array.from({ length: 21 }, (_, i) => ({ ...root(i), isResolved: true, resolvedBy: actor }));
+      await noAdmission("context identity or bounds");
+      for (const [threads, replies, body, error] of [
+        [1, 1, "λ".repeat(2049), "context identity or bounds"],
+        [8, 17, "Evidence.", "exceeds 128 comments"],
+        [8, 1, "x".repeat(4096), "exceeds 32 KiB"],
+      ] as const) {
+        nodes = Array.from({ length: threads }, (_, i) => root(i));
+        for (const [i, node] of nodes.entries()) for (let j = 0; j < replies; j++) {
+          node.comments.nodes.push({ ...comment(i, 51, body), databaseId: String(rootId + i * 100 + j + 1) });
+        }
+        await noAdmission(error);
+      }
+      nodes = Array.from({ length: 100 }, (_, i) => root(i));
+      nodes[99]!.comments.nodes.push(comment(99));
+      authority = "unavailable";
+      await noAdmission("actor authority is unavailable");
+      authority = "authorized";
+
+      // Interrupt each admission stage and observe real PostgreSQL rollback before retrying.
+      const before = await counts();
+      for (const point of ["INSERT INTO review_feedback_requests", "FROM jobs", "INSERT INTO jobs"]) {
+        const failingPool = new Proxy(pool, { get(target, property) {
+          if (property !== "connect") {
+            const value = Reflect.get(target, property);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async () => {
+            const client = await target.connect();
+            return new Proxy(client, { get(connection, key) {
+              const value = Reflect.get(connection, key);
+              if (key === "query") return (sql: string, ...args: unknown[]) => {
+                if (sql.includes(point)) throw new Error("fixture transaction failure");
+                return Reflect.apply(connection.query, connection, [sql, ...args]);
+              };
+              return typeof value === "function" ? value.bind(connection) : value;
+            } });
+          };
+        } });
+        await expect(reconcileReviewFeedback(payload, failingPool)).rejects.toThrow("fixture transaction failure");
+        expect(await counts()).toEqual(before);
+      }
+      await reconcileReviewFeedback(payload, pool);
+      expect(await counts()).toEqual({ receipts: before.receipts + 1, jobs: before.jobs + 1 });
+    } finally { authority = "authorized"; globalThis.fetch = savedFetch; }
+  }, 30_000);
 });
