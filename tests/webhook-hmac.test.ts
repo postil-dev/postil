@@ -85,4 +85,68 @@ describe("webhook signature verification", () => {
     expect(result.body.equals(body)).toBe(true);
     expect(verifyWebhookSignature(result.body, signWebhookBody(body, SECRET), SECRET)).toBe(true);
   });
+
+  test("rejects excess bytes before pending cancellation completes", async () => {
+    const cleanup = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const deadline = Promise.withResolvers<null>();
+    let cancels = 0;
+    const request = new Request("https://example.test/webhook", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(crypto.getRandomValues(new Uint8Array(9))); },
+        cancel() { cancels++; entered.resolve(); return cleanup.promise; },
+      }),
+    });
+    const result = readBoundedWebhookBody(request, 8);
+    const timer = setTimeout(() => deadline.resolve(null), 250);
+    try {
+      await Promise.race([entered.promise, deadline.promise]);
+      expect(cancels).toBe(1);
+      expect(await Promise.race([result, deadline.promise])).toEqual({ ok: false, status: 413 });
+      expect(request.body!.locked).toBe(false);
+    } finally {
+      clearTimeout(timer);
+      cleanup.resolve();
+      await result;
+    }
+  });
+
+  test("preserves excess-byte rejection when cancellation rejects immediately or later", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      for (const late of [false, true]) {
+        const cleanup = Promise.withResolvers<void>();
+        const deadline = Promise.withResolvers<null>();
+        const failure = new Error(crypto.randomUUID());
+        let cancels = 0;
+        const request = new Request("https://example.test/webhook", {
+          method: "POST",
+          body: new ReadableStream<Uint8Array>({
+            start(controller) { controller.enqueue(crypto.getRandomValues(new Uint8Array(9))); },
+            cancel() { cancels++; return late ? cleanup.promise : Promise.reject(failure); },
+          }),
+        });
+        const result = readBoundedWebhookBody(request, 8);
+        const timer = setTimeout(() => deadline.resolve(null), 250);
+        try {
+          expect(await Promise.race([result, deadline.promise])).toEqual({ ok: false, status: 413 });
+          expect(cancels).toBe(1);
+          expect(request.body!.locked).toBe(false);
+          if (late) cleanup.reject(failure);
+        } finally {
+          clearTimeout(timer);
+          cleanup.resolve();
+          await result;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(unhandled).toEqual([]);
+      }
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 });

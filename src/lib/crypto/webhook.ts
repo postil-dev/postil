@@ -37,7 +37,7 @@ export async function readBoundedWebhookBody(
       if (chunk.done) break;
       bytesRead += chunk.value.byteLength;
       if (bytesRead > maxBytes) {
-        await reader.cancel();
+        void reader.cancel().catch(() => undefined);
         return { ok: false, status: 413 };
       }
       chunks.push(chunk.value);
