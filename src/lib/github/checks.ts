@@ -6,9 +6,8 @@ import { isPostilBotLogin } from "./conversation";
  *
  * The worker (not the CLI) creates both check-runs so it owns their ids
  * even if the CLI crashes; the CLI completes them on the happy path. On
- * crash/timeout the worker completes them itself: gate -> `failure`
- * (fail closed; a grey square that reads as "didn't fail" is the mistake
- * to avoid), advisory -> `neutral` with the operational error summary.
+ * crash/timeout the worker completes them itself: the review check fails with
+ * the operational error summary, while the gate follows organization policy.
  */
 
 export const ADVISORY_CHECK_NAME = "postil/review";
@@ -59,7 +58,7 @@ export class CheckRunPublicationError extends Error {
   }
 }
 
-class GitHubHttpError extends Error {
+export class GitHubHttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -71,6 +70,14 @@ class GitHubHttpError extends Error {
 
 export type GithubCommentKind = "issue_comment" | "pull_request_review_comment";
 export type CommentReaction = "+1" | "eyes";
+export type PullRequestReviewReactionContent = "+1" | "-1";
+
+export interface PullRequestReviewCommentReaction {
+  id: number;
+  content: PullRequestReviewReactionContent;
+  createdAt: Date;
+  user: { id: number; login: string; type?: string };
+}
 
 export interface PullRequestReviewComment {
   id: number;
@@ -141,6 +148,64 @@ export async function getPullRequestReviewComment(
       ? { inReplyToId: value.in_reply_to_id }
       : {}),
   };
+}
+
+/** Read every bounded page of reactions for one immutable pull-request review comment. */
+export async function listPullRequestReviewCommentReactions(
+  token: string,
+  repoFullName: string,
+  commentId: number,
+  signal?: AbortSignal,
+): Promise<PullRequestReviewCommentReaction[]> {
+  if (!Number.isSafeInteger(commentId) || commentId <= 0) {
+    throw new Error("GitHub review comment reaction identity is malformed");
+  }
+  const contents: readonly PullRequestReviewReactionContent[] = ["+1", "-1"];
+  const reactions: PullRequestReviewCommentReaction[] = [];
+  const maxPages = 5;
+  const perPage = 100;
+  for (const content of contents) {
+    for (let page = 1; page <= maxPages; page += 1) {
+      const query = new URLSearchParams({ content, per_page: String(perPage), page: String(page) });
+      const response = await githubFetch(
+        token,
+        "GET",
+        `/repos/${repoFullName}/pulls/comments/${commentId}/reactions?${query}`,
+        undefined,
+        signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+          : AbortSignal.timeout(10_000),
+      );
+      const values = await response.json() as Array<{
+        id?: number;
+        content?: string;
+        created_at?: string;
+        user?: { id?: number; login?: string; type?: string };
+      }>;
+      if (!Array.isArray(values)) throw new Error("GitHub review comment reactions response is malformed");
+      for (const value of values) {
+        const createdAt = typeof value.created_at === "string" ? new Date(value.created_at) : null;
+        if (
+          !Number.isSafeInteger(value.id) || value.id === undefined || value.id <= 0 ||
+          value.content !== content ||
+          !Number.isSafeInteger(value.user?.id) || value.user?.id === undefined || value.user.id <= 0 ||
+          typeof value.user.login !== "string" ||
+          !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\[bot\])?$/u.test(value.user.login) ||
+          !createdAt || Number.isNaN(createdAt.getTime())
+        ) {
+          throw new Error("GitHub review comment reactions response is malformed");
+        }
+        reactions.push({
+          id: value.id,
+          content,
+          createdAt,
+          user: { id: value.user.id, login: value.user.login, ...(value.user.type ? { type: value.user.type } : {}) },
+        });
+      }
+      if (values.length < perPage) break;
+    }
+  }
+  return reactions;
 }
 
 export class AmbiguousCheckRunCreationError extends Error {
@@ -664,8 +729,126 @@ export interface PullRequestReviewContext {
   open: boolean;
   merged: boolean;
   draft: boolean;
+  updatedAt?: string;
   authorGithubId?: number;
   authorLogin?: string;
+}
+
+export type PullRequestUpdatedAt =
+  | { kind: "valid"; seconds: number }
+  | { kind: "missing" }
+  | { kind: "malformed" };
+
+const GITHUB_TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+
+/** Classify a GitHub pull-request update timestamp at whole-second precision. */
+export function parsePullRequestUpdatedAt(value: unknown): PullRequestUpdatedAt {
+  if (value === undefined) return { kind: "missing" };
+  if (typeof value !== "string") return { kind: "malformed" };
+  const components = GITHUB_TIMESTAMP_PATTERN.exec(value);
+  if (!components) return { kind: "malformed" };
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return { kind: "malformed" };
+  const parsed = new Date(milliseconds);
+  const expected = components.slice(1, 7).map(Number);
+  const actual = [
+    parsed.getUTCFullYear(),
+    parsed.getUTCMonth() + 1,
+    parsed.getUTCDate(),
+    parsed.getUTCHours(),
+    parsed.getUTCMinutes(),
+    parsed.getUTCSeconds(),
+  ];
+  if (actual.some((component, index) => component !== expected[index])) {
+    return { kind: "malformed" };
+  }
+  return { kind: "valid", seconds: Math.trunc(milliseconds / 1_000) };
+}
+
+export type PullRequestSnapshotOrder =
+  | "event_newer"
+  | "live_newer"
+  | "equal"
+  | "unknown";
+
+/** Compare signed-event and live pull-request timestamps at whole-second precision. */
+export function comparePullRequestSnapshotTimes(
+  eventUpdatedAt: unknown,
+  liveUpdatedAt: unknown,
+): PullRequestSnapshotOrder {
+  const eventTimestamp = parsePullRequestUpdatedAt(eventUpdatedAt);
+  const liveTimestamp = parsePullRequestUpdatedAt(liveUpdatedAt);
+  if (eventTimestamp.kind !== "valid" || liveTimestamp.kind !== "valid") {
+    return "unknown";
+  }
+  if (eventTimestamp.seconds > liveTimestamp.seconds) return "event_newer";
+  if (liveTimestamp.seconds > eventTimestamp.seconds) return "live_newer";
+  return "equal";
+}
+
+export interface OpenPullRequestHead {
+  number: number;
+  headSha: string;
+  draft: boolean;
+}
+
+export async function listOpenPullRequestHeadsPage(
+  token: string,
+  repoFullName: string,
+  page: number,
+  signal?: AbortSignal,
+): Promise<{ pullRequests: OpenPullRequestHead[]; nextPage: number | null }> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repoFullName) ||
+      !Number.isSafeInteger(page) || page < 1) {
+    throw new Error("GitHub pull request listing identity is malformed");
+  }
+  const path = `/repos/${repoFullName}/pulls`;
+  const query = new URLSearchParams({
+    state: "open", per_page: "100", sort: "created", direction: "asc", page: String(page),
+  });
+  const response = await githubFetch(token, "GET", `${path}?${query}`, undefined, signal);
+  const expected = new URL(`${apiBase()}${path}`);
+  let nextPage: number | null = null;
+  const relations = new Set<string>();
+  const link = response.headers.get("link");
+  if (link !== null) {
+    for (const entry of link.split(",")) {
+      const match = /^\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*$/u.exec(entry);
+      if (!match || relations.has(match[2]!)) throw new Error("GitHub pull request pagination is malformed");
+      relations.add(match[2]!);
+      const url = new URL(match[1]!);
+      const linkedPage = Number(url.searchParams.get("page"));
+      if (url.origin !== expected.origin || url.pathname !== expected.pathname ||
+          url.username || url.password || url.hash ||
+          [...url.searchParams].length !== 5 ||
+          !["state", "per_page", "sort", "direction"].every((key) =>
+            url.searchParams.getAll(key).length === 1 && url.searchParams.get(key) === query.get(key)) ||
+          url.searchParams.getAll("page").length !== 1 ||
+          !/^[1-9][0-9]*$/u.test(url.searchParams.get("page") ?? "") ||
+          !Number.isSafeInteger(linkedPage)) {
+        throw new Error("GitHub pull request pagination changed its endpoint");
+      }
+      if (match[2] === "next") {
+        if (linkedPage !== page + 1) throw new Error("GitHub pull request pagination did not advance");
+        nextPage = linkedPage;
+      }
+    }
+  }
+  const values: unknown = await response.json();
+  if (!Array.isArray(values) || values.length > 100 || (nextPage !== null && values.length === 0)) {
+    throw new Error("GitHub open pull request page is malformed");
+  }
+  const pullRequests = values.map((value): OpenPullRequestHead => {
+    if (typeof value !== "object" || value === null ||
+        !Number.isSafeInteger(value.number) || value.number <= 0 ||
+        value.state !== "open" || typeof value.draft !== "boolean" ||
+        typeof value.head?.sha !== "string" || !/^[a-f0-9]{40}$/u.test(value.head.sha)) {
+      throw new Error("GitHub open pull request head is malformed");
+    }
+    return { number: value.number, headSha: value.head.sha, draft: value.draft };
+  });
+  return { pullRequests, nextPage };
 }
 
 /** Load the immutable refs required by the existing review-job payload. */
@@ -688,6 +871,7 @@ export async function getPullRequestReviewContext(
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    updated_at?: unknown;
     user?: { id?: number; login?: string };
   };
   const headSha = data.head?.sha;
@@ -700,12 +884,14 @@ export async function getPullRequestReviewContext(
   const authorGithubId = data.user?.id;
   const authorLogin =
     typeof data.user?.login === "string" ? data.user.login.trim() : undefined;
+  const updatedAt = parsePullRequestUpdatedAt(data.updated_at);
   return {
     headSha,
     baseSha,
     open: data.state === "open",
     merged: data.merged === true,
     draft: data.draft === true,
+    ...(updatedAt.kind === "valid" ? { updatedAt: data.updated_at as string } : {}),
     ...(typeof authorGithubId === "number" &&
     Number.isSafeInteger(authorGithubId) &&
     authorGithubId > 0
@@ -713,4 +899,33 @@ export async function getPullRequestReviewContext(
       : {}),
     ...(authorLogin && authorLogin.length <= 100 ? { authorLogin } : {}),
   };
+}
+
+/**
+ * Whether a previously reviewed head can still anchor an incremental diff.
+ *
+ * The compare's merge base equals the ancestor exactly when that commit is
+ * still in the head's history. A rebase or force-push replaces the reviewed
+ * commits, the merge base moves, and an incremental diff from the old head
+ * would describe changes the pull request no longer contains, so the CLI
+ * refuses it and the review fails with no verdict. Checking here lets the
+ * worker request a full review instead. `per_page=1` bounds the response
+ * size; the merge base is reported regardless of file pagination.
+ */
+export async function incrementalBaselineUsable(
+  token: string,
+  repoFullName: string,
+  baselineHeadSha: string,
+  headSha: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const res = await githubFetch(
+    token,
+    "GET",
+    `/repos/${repoFullName}/compare/${baselineHeadSha}...${headSha}?per_page=1`,
+    undefined,
+    signal,
+  );
+  const data = (await res.json()) as { merge_base_commit?: { sha?: string } };
+  return data.merge_base_commit?.sha === baselineHeadSha;
 }

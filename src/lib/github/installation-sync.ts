@@ -15,7 +15,6 @@ import {
 } from "@/lib/github/app-auth";
 import { redactSecrets } from "@/lib/redact";
 import { recordRepositoryEnablementEvent } from "@/lib/repository-enablement";
-import { hostedInferenceCapability } from "@/lib/release-job-rollout";
 import { grantSelfServiceTrial } from "@/lib/self-service-trial";
 
 /**
@@ -397,9 +396,7 @@ export async function upsertInstallation(
       // activation promotes that same immutable grant once the fleet is ready.
       subscriptionMode: "hosted",
       hostedInferenceEnabled: hostedInferenceEnabled(),
-      hostedReleaseCapability: releaseSha
-        ? hostedInferenceCapability(releaseSha)
-        : null,
+      hostedReleaseSha: releaseSha ?? null,
     });
   }
   return saved.installationRowId;

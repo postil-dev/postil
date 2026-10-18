@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, Pool } from "pg";
 
 import * as schema from "@/lib/db/schema";
+import { OPERATIONAL_FINDING_PATHS } from "@/lib/envelope";
 import { claimPausedHostedReview } from "@/lib/hosted-review-pause";
 import { getOperatorReviewRows } from "@/lib/operator-reviews";
 
@@ -196,5 +197,46 @@ describeDb("paused hosted review claims", () => {
     });
     expect(unavailableRows).toHaveLength(3);
     expect(unavailableRows.every(({ status }) => status === "unavailable")).toBe(true);
+
+    for (const [index, path] of OPERATIONAL_FINDING_PATHS.entries()) {
+      await pool!.query(
+        `INSERT INTO reviews (
+           repository_id, pr_number, head_sha, base_sha, status, envelope
+         ) VALUES ($1, $2, $3, 'base', 'completed', $4::jsonb)`,
+        [
+          repositoryId,
+          44 + index,
+          `operational-envelope-${index}`,
+          JSON.stringify({ findings: [{ path }] }),
+        ],
+      );
+    }
+    await pool!.query(
+      `INSERT INTO reviews (
+         repository_id, pr_number, head_sha, base_sha, status, envelope
+       ) VALUES ($1, 47, 'clean-envelope', 'base', 'completed', '{"findings": []}'::jsonb)`,
+      [repositoryId],
+    );
+
+    const effectiveFailedRows = await getOperatorReviewRows(db, {
+      ...filters,
+      status: "failed",
+    });
+    expect(effectiveFailedRows.map(({ headSha }) => headSha).sort()).toEqual([
+      "operational-envelope-0",
+      "operational-envelope-1",
+      "operational-envelope-2",
+      "ordinary-failure",
+    ]);
+    expect(effectiveFailedRows.every(({ status }) => status === "failed")).toBe(true);
+    expect(effectiveFailedRows.every(({ totalRows }) => totalRows === 4)).toBe(true);
+
+    const effectiveCompletedRows = await getOperatorReviewRows(db, {
+      ...filters,
+      status: "completed",
+    });
+    expect(effectiveCompletedRows.map(({ headSha }) => headSha)).toEqual(["clean-envelope"]);
+    expect(effectiveCompletedRows[0]?.status).toBe("completed");
+    expect(effectiveCompletedRows[0]?.totalRows).toBe(1);
   });
 });

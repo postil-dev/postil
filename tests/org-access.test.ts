@@ -9,6 +9,8 @@ let queryCount: number;
 
 mock.module("@/lib/session", () => ({
   getVerifiedSessionUser: async () => verification,
+  loginRedirectPath: async (error?: string) =>
+    error ? `/login?error=${error}` : "/login",
 }));
 
 mock.module("@/lib/db", () => ({

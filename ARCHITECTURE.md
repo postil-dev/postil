@@ -38,11 +38,22 @@ or publishes the private dataset.
 
 Postil is PostgreSQL-native. The hosted control plane runs on Supabase Free Postgres through the Supabase connection pooler and uses enums, `jsonb`, `bytea`, identity columns, and row-lock queue claims. Cloudflare D1, Turso/libSQL, and other SQLite-style services are not drop-in replacements; adopting them requires a schema and queue rewrite.
 
-Web, worker, and monitor processes use `DATABASE_URL`. The release migration subprocess
+Web, worker, and monitor processes use `DATABASE_URL`. Release preparation
 uses an optional `POSTIL_DIRECT_DATABASE_URL`, or derives the known Supabase
-session-pool endpoint from a port-6543 transaction-pool URL. Only the Drizzle
-child receives that value as `DATABASE_URL`; ordinary runtime connections keep
-the configured pooling mode.
+session-pool endpoint from a port-6543 transaction-pool URL. Managed preparation
+uses this direct connection in its database pool; unmanaged migration commands
+receive it as `DATABASE_URL`. Ordinary runtime connections keep the configured
+pooling mode.
+
+Managed release preparation applies only the exact hash-approved feedback
+reconciliation migration. The migration and journal entry share a transaction
+with a 5-second lock timeout and a 30-second statement timeout. Source release
+capabilities and the applied journal watermark remain prerequisites; older
+journal gaps below that watermark remain valid. Unknown or mismatched journal
+entries and unapproved pending migrations stop preparation. The existing strict
+journal verification runs before the new release receives capabilities.
+`bun run scripts/run-release-migrations.ts --inspect-additive` checks the same
+migration identity and source compatibility in a read-only transaction.
 
 The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling when the private monitor is disabled. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 
@@ -77,28 +88,63 @@ callbacks before exit. Fly gives the process a bounded termination window. A
 forced exit during webhook dispatch leaves the inbox job recoverable by the
 queue watchdog; completed delivery IDs remain durable dedupe records.
 
+Review-thread feedback has two queue stages. `review-feedback-reconciliation`
+observes bounded conversations under known publication roots and verifies human
+authority. It uses generic watchdog recovery. `review-feedback` carries the
+exact repository, pull request, head, and conversation snapshot into a full CLI
+review with the normal review publication and shutdown recovery paths. Evidence
+digests deduplicate admission; replies and resolution flags do not grant approvals
+or dismiss findings. Polling supplies discovery when App thread events are absent.
+Admission reads the singleton `review_feedback_control` row for eligible webhook
+events, watchdog scheduling, and reconciliation. The row starts `disabled` so
+new admission cannot begin during a rolling release. Its `inherit` mode uses
+`POSTIL_REVIEW_FEEDBACK_ENABLED=1` when explicitly selected. `enabled`
+admits feedback regardless of the process environment; `disabled` stops new
+admission regardless of that environment. An unavailable or invalid control
+fails closed without failing unrelated webhook or watchdog work. Disabling
+admission leaves already queued full feedback reviews processable.
+
 Every queue consumer supplies its explicit supported job kinds to the claim query.
 The bounded web drain uses the latency-sensitive capability list. The long-running
 worker adds maintenance jobs such as repository-rule discovery, keeping those jobs
 away from request-serving processes.
-Release job kinds are also staged in PostgreSQL with an infinite `run_after` until
-the deploy workflow confirms that every managed web and worker Machine is running
-one image. Activation and inserts share a transaction advisory lock, so no job can
-become claimable between the fleet check and capability activation.
+The claim query also caps how many `review`, `review-feedback`, and `respond` jobs one organization
+runs at once, which reduces how much of the fleet a single organization opening
+many pull requests occupies. Cheap kinds carry no cap, and the limit is
+best-effort: concurrent claim loops read the running count independently, so an
+organization can exceed it by up to the number of loops. A claim that finds only
+capped work reports it as deferred rather than as an empty queue, so the poll
+loop holds its interval instead of backing off toward the idle ceiling while a
+ready backlog waits.
+Release changes follow the same additive rollout rule as other runtime changes:
+old and new processes remain compatible while the fleet is replaced, and hosted
+reviews remain available. Schema retirement and incompatible transitions use
+separate reviewed maintenance operations.
 
 `humanEscalation` is a GitHub-native, kind-blocking maintainer decision. The PR review
 contains the grounded finding and directs the author to encode the intended behavior
-in code, tests, configuration, or the pull request before pushing again. The
+in code, tests, configuration, or the pull request before pushing again.
 New organizations use `postil/gate` as an advisory check. An organization admin
 can enable blocking in settings. The raw CLI verdict lives in `engine_gate_failing`, while
-`gate_failing` records the verdict after applying organization mode and eligible
-approvals. Mode changes and approvals atomically enqueue gate-state synchronization.
+`gate_failing` records the verdict after applying organization mode and active
+finding decisions. Mode changes, approvals, and dismissals atomically enqueue
+gate-state synchronization.
 Publishers take a per-review database lease, lock approval and organization mode
 in one order, verify the pull request head, and republish until the observed
 generation is stable. A disabled gate is neutral on normal completion,
-operational failure, watchdog cleanup, and approval changes. Severity-blocking
-findings require a code or configuration change and cannot be cleared by an
-override.
+operational failure, watchdog cleanup, and finding-decision changes. Approvals
+clear eligible kind blockers. Admin dismissals clear severity and kind blockers
+for one non-operational finding on the reviewed commit.
+
+Review completion keeps `postil/gate` pending until Postil reconciles its GitHub
+review threads. The publisher holds the pull-request decision lock while it
+derives terminal thread state from the latest stable finding occurrence,
+observes and resolves the matching GitHub threads, persists those observations,
+and records lifecycle completion. That durable marker queues the gate update.
+The release capability parks gate jobs during fleet replacement, recovers any
+receipt-backed completion that crosses the replacement boundary, and fails
+closed when the lifecycle cannot be verified within its bounded recovery
+budget.
 
 A bounded worker sweep reads the effective default-branch protection and active
 ruleset APIs for each enabled repository. Coverage is `required` only when
@@ -110,6 +156,12 @@ scoped re-check with visible progress.
 
 Billing credits are append-only rows in `billing_credit_grants`, granted through `scripts/grant-billing-credit.ts` with a per-org idempotency key. `src/lib/billing-credits.ts` prices `private_hosted` usage events from the checked-in model catalog in millionths of one US dollar and computes the remaining credit balance shown on `/orgs/[slug]/billing`. Public and BYOK events remain `analytics` telemetry and never consume hosted allowance. Historical rows default to analytics because their original visibility and provider mode are not durable. The legacy whole-cent columns remain only for rolling-deploy compatibility.
 
+The operator dashboard aggregates recorded model costs, missing-price counts,
+per-model usage, and settlement statuses over a bounded 30-day UTC period.
+Recorded usage includes customer-provider costs and does not represent total
+operating expense. Runtime invoices remain in the infrastructure provider's
+billing dashboard.
+
 Organization administrators manage the billing contact on the billing page.
 New addresses remain pending until a single-use, 24-hour token is consumed;
 replacements leave the existing verified address active until the new address is
@@ -117,9 +169,8 @@ verified. Link GET requests only render confirmation; a same-origin POST consume
 the token. Verification tokens are bound to the organization, purpose, and
 normalized address, stored as a digest plus sealed delivery material, and sent
 through durable, provider-idempotent jobs. Resends rotate the token after a
-cooldown. The post-deploy release activation queues verification for every migrated
-unverified contact without exposing addresses or tokens in output. Operator entitlement
-updates preserve the dashboard-managed billing contact.
+cooldown. Operator entitlement updates preserve the dashboard-managed billing
+contact.
 
 Customer notifications are immutable, organization-scoped events with a stable
 producer key, bounded copy, optional organization-local action, role visibility,
@@ -153,6 +204,11 @@ The organization GitHub ID is the trial identity, and the entitlement survives
 uninstall, so reinstalling cannot restart the trial. Alert delivery uses a
 provider idempotency key and contains account and installation metadata without
 repository content.
+The dedicated provider-key worker binds each OpenRouter key to the exact
+entitlement period and spending limit, stores the create intent before provider
+access, seals the runtime credential, and periodically reconciles renewal, BYOK
+changes, suspension, expiration, and revocation. Web processes never claim
+provider-key lifecycle jobs.
 `src/lib/private-repository-entitlement.ts` is the single decision point used by
 webhook intake and workers. The webhook stores delivery and repository metadata,
 then skips review/respond queue, check, and conversational comment side effects
@@ -184,8 +240,12 @@ validation to original and replayed response bytes. The active hosted-spend
 reservation is attached to the run and transferred to the replacement review
 only when the source review is terminal and every retry identity component
 matches. The registered plan must reproduce the stored run key before provider
-access. The proxy resolves and validates the upstream once, then pins that
-address while retaining TLS hostname verification for HTTPS. The loopback-only
+access. The proxy resolves and validates all upstream addresses once, then pins
+the connection candidates while retaining TLS hostname verification for HTTPS.
+`POSTIL_PROVIDER_ADDRESS_FAMILY` defaults to `auto`. Setting it to `ipv4`
+restricts connections to validated IPv4 addresses without skipping validation of
+IPv6 answers. An upstream with no IPv4 address fails before provider contact.
+The loopback-only
 private-base opt-in is scoped to the spawned CLI and never relaxes BYOK upstream
 validation.
 A legacy envelope without per-model usage is priced only when its aggregate names
@@ -223,8 +283,8 @@ billing page reports plan and provider state. BYOK billing copy directs
 administrators to provider-side budgets because Postil cannot enforce external
 charges. Before
 a private review row can run, the worker resolves the pull request's author ID,
-login, head, and base from GitHub. A rollout-activated database trigger rejects
-anonymous active reviews and makes the recorded author identity immutable.
+login, head, and base from GitHub. A database trigger rejects anonymous active
+reviews and makes the recorded author identity immutable.
 Historical rows remain unknown rather than receiving a guessed identity.
 Billing counts distinct GitHub author IDs on private pull requests within the
 entitlement period; bot and service identities count by the same ID rule.
@@ -276,15 +336,15 @@ Published review findings have a separate durable lifecycle. CLI publication
 receipts bind each review and stable finding ID to its initial channel and
 GitHub review/comment identities. The initial record is immutable. Later
 envelopes can mark the same stable finding carried, resolved, or suppressed;
-GitHub review-thread flags can mark an inline comment resolved, outdated, or
-deleted. Comment prose, reactions, and dismissed reviews do not change finding
-state. Reviews produced by a CLI without the receipt contract record their
-unobserved findings as `unknown`. Dashboard publication counts and confidence
-metrics read this normalized state instead of assuming every envelope finding
-reached the pull request. Receipts store finding identities, GitHub object
-identifiers, and lifecycle states only. They do not store comment prose or
-provider payloads, and dashboard rendering uses the same organization
-authorization boundary as the review envelope.
+GitHub review-thread flags can mark line-level and file-level review comments
+resolved, outdated, or deleted. Comment prose, reactions, and dismissed reviews
+do not change finding state. Reviews produced by a CLI without the receipt
+contract record their unobserved findings as `unknown`. Dashboard publication
+counts and confidence metrics read this normalized state instead of assuming
+every envelope finding reached the pull request. Receipts store finding
+identities, GitHub object identifiers, and lifecycle states only. They do not
+store comment prose or provider payloads, and dashboard rendering uses the same
+organization authorization boundary as the review envelope.
 
 ## Dashboard
 
@@ -306,8 +366,9 @@ noindexed:
   summary, findings (severity, kind, confidence, sha-pinned GitHub file
   links), resolved findings, retained policy-suppressed findings in collapsed
   detail, suppressed/ungrounded counts, gate verdict,
-  model, token usage, timing, immutable trigger provenance, and kind-blocking
-  override state. The recent-review table exposes the same trigger class and
+  model, token usage, timing, immutable trigger provenance, and commit-scoped
+  approval or dismissal state. Dismissals show their structured reason,
+  rationale, actor, and author-self-dismissal audit flag. The recent-review table exposes the same trigger class and
   includes it in text filtering.
 
 Authorization is uniform: every page and server action re-derives access from
@@ -320,14 +381,17 @@ writes. Rows and aggregates are scoped through `installations.org_id`, so an id
 belonging to another organization returns 404. Sign-in also synchronizes known
 GitHub App installations (`src/lib/github/installation-sync.ts`).
 
-GitHub approval commands authorize independently from dashboard sessions. The
+GitHub finding-decision commands authorize independently from dashboard sessions. The
 signed webhook identifies the actor, and the installation token reads that
-actor's live organization membership before an approval is stored. The response
+actor's live organization membership before an approval or dismissal is stored.
+Dashboard dismissal and revocation actions perform the same live check. The response
 must bind the expected user and organization identities and report an active
 `role=admin`. Missing, ambiguous, stale, or unavailable membership data fails
 closed. Personal-account installations bind the actor to the installed account
-id. The approval record snapshots the actor and rationale against the reviewed
-commit and finding, while the durable webhook delivery id prevents replay.
+id. The decision record snapshots the actor and rationale against the reviewed
+commit and finding. Dismissals also retain their structured reason and whether
+the pull request author performed the action. The durable webhook delivery id
+prevents replay.
 
 Repository config status crosses the latest completed review's recorded
 `config_files` with a cached default-branch GitHub contents probe. The settings
@@ -363,9 +427,10 @@ review to constrain policy changes.
 
 Aggregates (silence rate, effective gate failures) read the denormalized `silent`
 and `gate_failing` columns; `engine_gate_failing` stores the immutable CLI gate
-result independently of organization mode. Active rows in `finding_approvals` clear kind-based blockers for the
-same review and head SHA, while severity blockers remain governed by the
-configured severity threshold. Per-review detail reads the stored envelope
+result independently of organization mode. Active approval rows in
+`finding_approvals` clear eligible kind blockers for the same review and head
+SHA. Active dismissal rows clear both blocker classes for one non-operational
+finding. Per-review detail reads the stored envelope
 `jsonb` verbatim. The envelope is the CLI's frozen v1 output contract
 (`src/lib/envelope.ts`); the dashboard renders it and never reshapes it.
 `large_review_runs` and `large_review_attempts` contain the bounded, expiring
@@ -404,6 +469,24 @@ suppressing an alert. Monitoring state and target details are visible only on
 the operator dashboard. Active incidents and retained resolved alerts use separate
 operator-only views. Alert messages identify the affected capability, state, first
 and last observation, bounded evidence, and the recommended operator action.
+
+Public probes retry transport failures and transient statuses (408, 425, 429,
+and 5xx) twice within a pass before a check is unhealthy; a deterministic
+mismatch such as a wrong redirect target or a missing header fails without
+retry. Serving probes (site, liveness, dependencies) are critical; hygiene
+probes (sitemap, favicon, robots, redirects, noindex headers) are warnings.
+Every failed attempt, including one a retry recovered, is retained for 30 days
+with its evidence, is exposed as a labeled metric, and is listed on the
+dashboard. More than two retry-recovered attempts in 24 hours open a warning
+incident so a flapping probe is reported without paging. Incident rows keep
+the evidence captured at open separately from the latest observation, and an
+append-only transition history retained for 90 days backs the resolved-alert
+view, so a resolved incident still shows what failed. Each pass also logs
+unhealthy checks and retry recoveries to the process log. The external
+dead-man heartbeat is itself a critical check: a configured heartbeat URL that
+has not accepted a ping within 15 minutes opens an incident that carries the
+provider's last rejection, and monitoring alerts fall back to the operator
+email path when the alerting service rejects an event.
 The monitor uses a non-inference OpenRouter management credential to read
 account credits and paginated key metadata. Account-wide credit depletion and
 each review key's daily-cap depletion are separate incidents. The configured
@@ -422,14 +505,28 @@ aggregate operational metrics without receiving private monitor targets.
 Alert delivery for monitoring is owned by ilert, an external alerting service:
 the platform and the GitHub monitor report events to an alert source
 (`ILERT_INTEGRATION_KEY`), and ilert owns paging, escalation, deduplication by
-incident key, and auto-close on resolve events. The platform never pages the
-operator by its own email path for monitoring; operator email remains for
-business lifecycle and billing notifications only. After each completed pass
+incident key, and auto-close on resolve events. Operator email carries a
+monitoring alert only when ilert rejects the event, so a lapsed or
+misconfigured alerting account cannot silence paging. After each completed pass
 the monitor pings an ilert heartbeat (`POSTIL_MONITOR_HEARTBEAT_URL`), so a
 dead monitor process or persistently failing pass raises a missed-heartbeat
 alert outside the platform's failure domain. Without a configured integration
 key, monitoring alerts are logged only and paging relies on the heartbeat, the
 external uptime checks, and the GitHub monitor.
+
+iLert alert actions can deliver bounded alert lifecycle events to
+`/api/webhooks/ilert` with HTTP Basic authentication. The receiver stores the
+validated operator metadata and a raw-payload digest in PostgreSQL, deduplicates
+by iLert event id, and publishes the committed sequence through PostgreSQL
+`NOTIFY`. `/api/operator/alerts/stream` replays committed sequences and then
+uses a dedicated session-capable `LISTEN` connection for SSE delivery. A known
+Supabase port-6543 transaction-pool URL is converted to its port-5432 session
+endpoint for that connection only; ordinary runtime queries retain transaction
+pooling. The stream requires a
+renewable CLI bearer token and the separate `POSTIL_OPERATOR_GITHUB_IDS`
+allowlist. Transport keepalives do not query alert state. The receiver and
+stream make no outbound iLert API calls and cannot acknowledge, accept, or
+resolve an alert.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
@@ -440,7 +537,7 @@ stale aggregate heartbeat.
 PostHog operational telemetry is a separate private signal for process failures
 when enabled; it is not the source of incident state or alert deduplication.
 
-PostHog is configured for anonymous cookieless capture on an exact allowlist of public pages. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Browser event payloads are rebuilt from an allowlist that keeps the public path, bounded campaign labels, referrer origin, numeric engagement metrics, and numeric Web Vitals. Query strings, persistent device or session identifiers, arbitrary SDK properties, and protected dashboard paths are discarded.
+PostHog is configured for anonymous cookieless capture on an exact allowlist of public pages. The browser sends pageviews, pageleave engagement, scroll depth, and Core Web Vitals through a fixed same-origin relay with person profiles, click autocapture, surveys, heatmaps, exceptions, and session replay disabled. It stores no analytics cookies or browser-persistent identifiers and honors DNT/GPC. PostHog derives a rotating daily anonymous identifier from the project, hostname, IP address, and user agent, then discards the raw IP address. Cookieless ingestion drops any event that omits one of those hash inputs, so browser events report the user agent. Browser event payloads are rebuilt from an allowlist that keeps the public path, bounded campaign labels, referrer origin, the user agent, numeric engagement metrics, and numeric Web Vitals. Query strings, persistent device or session identifiers, arbitrary SDK properties, and protected dashboard paths are discarded.
 
 ## Transactional email
 

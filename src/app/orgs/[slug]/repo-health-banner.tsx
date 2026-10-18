@@ -15,7 +15,7 @@ interface RepoHealthBannerProps {
   liveConfigFilesByRepositoryId?: ReadonlyMap<number, readonly string[]>;
 }
 
-interface SuspendedInstallation {
+interface InstallationRef {
   githubInstallationId: number;
   accountLogin: string;
   accountType: string;
@@ -23,11 +23,94 @@ interface SuspendedInstallation {
 
 const MAX_REPOSITORY_NAMES = 5;
 
+interface RemovedRepository {
+  githubRepoId: number;
+  fullName: string;
+  occurredAt: Date;
+}
+
+/**
+ * Link to GitHub's repository picker for each installation behind this
+ * organization. Choosing repositories is a GitHub App permission, so the
+ * picker is the only place it can happen and the dashboard's job is to make it
+ * reachable from the list it governs. Only administrators can save a selection
+ * there, matching the suspended-installation action.
+ */
+export function AddRepositoriesLinks({
+  installations,
+  isAdmin,
+}: {
+  installations: readonly InstallationRef[];
+  isAdmin: boolean;
+}) {
+  if (!isAdmin || installations.length === 0) return null;
+  const named = installations.length > 1;
+
+  return (
+    <span className="flex flex-wrap items-baseline gap-2">
+      {installations.map((installation) => (
+        <a
+          key={installation.githubInstallationId}
+          href={githubInstallationSettingsUrl(installation)}
+          title={`Choose which ${installation.accountLogin} repositories Postil reviews`}
+          className="rounded-card border border-stone px-2 py-0.5 font-mono text-xs text-charcoal/70 transition-colors hover:border-charcoal hover:text-charcoal"
+        >
+          + add{named ? ` ${installation.accountLogin}` : ""}
+        </a>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * Repositories the installation covered recently and no longer does. GitHub's
+ * picker replaces the selection on save, so a repository can leave without
+ * anyone intending it, and Postil receives no further events for it.
+ */
+export function RemovedRepositoriesNotice({
+  repositories,
+  now,
+}: {
+  repositories: readonly RemovedRepository[];
+  now: Date;
+}) {
+  if (repositories.length === 0) return null;
+
+  return (
+    <div className="card mt-3 border-rust p-4 text-sm">
+      <p>
+        <span className="font-medium text-rust">
+          Removed from the installation.
+        </span>{" "}
+        Postil no longer receives pull requests or <code>@postil</code> mentions
+        for {repositories.length === 1 ? "this repository" : "these repositories"}.
+        Re-add {repositories.length === 1 ? "it" : "them"} on GitHub to resume
+        reviews.
+      </p>
+      <ul className="mt-2 space-y-1">
+        {repositories.slice(0, MAX_REPOSITORY_NAMES).map((repository) => (
+          <li key={repository.githubRepoId} className="font-mono text-xs">
+            {repository.fullName}{" "}
+            <span className="text-charcoal/60">
+              {relative(repository.occurredAt, now)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {repositories.length > MAX_REPOSITORY_NAMES && (
+        <p className="mt-2 text-xs text-charcoal/60">
+          and {repositories.length - MAX_REPOSITORY_NAMES} more
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function SuspendedInstallationsNotice({
   installations,
   isAdmin,
 }: {
-  installations: readonly SuspendedInstallation[];
+  installations: readonly InstallationRef[];
   isAdmin: boolean;
 }) {
   if (installations.length === 0) return null;

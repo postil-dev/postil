@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   addCommentReaction,
+  comparePullRequestSnapshotTimes,
   completeExpectedCheckRun,
   createCheckRun,
   findCheckRunByExternalId,
@@ -9,6 +10,9 @@ import {
   findPullRequestReviewCommentByMarker,
   getPullRequestReviewComment,
   getPullRequestReviewContext,
+  listOpenPullRequestHeadsPage,
+  listPullRequestReviewCommentReactions,
+  parsePullRequestUpdatedAt,
   RESPOND_MARKER_MAX_PAGES,
   verifyCompletedCheckRun,
 } from "@/lib/github/checks";
@@ -26,6 +30,74 @@ function comments(count: number, page: number) {
     user: { login: "postil-dev[bot]" },
   }));
 }
+
+describe("open pull request head listing", () => {
+  const pull = { number: 41, state: "open", draft: false, head: { sha: "a".repeat(40) } };
+  const nextUrl = "https://api.github.com/repos/octo/repo/pulls?state=open&per_page=100&sort=created&direction=asc&page=2";
+
+  test("projects only head identities and preserves the caller cancellation signal", async () => {
+    const signal = new AbortController().signal;
+    const privateBody = crypto.randomUUID();
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requested.push(String(input));
+      expect(init?.signal).toBe(signal);
+      return Response.json([{ ...pull, body: privateBody }], {
+        headers: requested.length === 1 ? { link: `<${nextUrl}>; rel="next", <${nextUrl}>; rel="last"` } : {},
+      });
+    }) as unknown as typeof fetch;
+    expect(await listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1, signal)).toEqual({
+      pullRequests: [{ number: 41, headSha: pull.head.sha, draft: false }], nextPage: 2,
+    });
+    expect(await listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 2, signal)).toEqual({
+      pullRequests: [{ number: 41, headSha: pull.head.sha, draft: false }], nextPage: null,
+    });
+    expect(requested).toEqual([nextUrl.replace("page=2", "page=1"), nextUrl]);
+  });
+
+  test("rejects malformed list shapes, PR numbers, states, head identities and draft flags", async () => {
+    for (const value of [{}, null, [null], [{ ...pull, number: 0 }], [{ ...pull, number: 1.5 }],
+      [{ ...pull, number: "41" }], [{ ...pull, state: "closed" }], [{ ...pull, draft: undefined }],
+      [{ ...pull, draft: "false" }], [{ ...pull, head: null }], [{ ...pull, head: { sha: "invalid" } }],
+      Array.from({ length: 101 }, () => pull)]) {
+      globalThis.fetch = (async () => Response.json(value)) as unknown as typeof fetch;
+      await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+    }
+  });
+
+  test("rejects foreign endpoints, changed filters, duplicate links and nonadvancing pages without following them", async () => {
+    const next = (url: string) => `<${url}>; rel="next"`;
+    for (const link of [
+      next(nextUrl.replace("api.github.com", "other.example.test")),
+      next(nextUrl.replace("octo/repo", "octo/other")),
+      next(nextUrl.replace("state=open", "state=all")),
+      next(`${nextUrl}&page=2`), next(`${nextUrl}&extra=1`), next(`${nextUrl}#fragment`),
+      next(nextUrl.replace("page=2", "page=1")), next(nextUrl.replace("page=2", "page=3")),
+      `${next(nextUrl)}, ${next(nextUrl)}`, "malformed", "",
+    ]) {
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls += 1;
+        return Response.json([pull], { headers: { link } });
+      }) as unknown as typeof fetch;
+      await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+      expect(calls).toBe(1);
+    }
+  });
+
+  test("an empty complete listing is valid but HTTP errors and an empty continuing page are unknown", async () => {
+    globalThis.fetch = (async () => Response.json([])) as unknown as typeof fetch;
+    expect(await listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).toEqual({
+      pullRequests: [], nextPage: null,
+    });
+    for (const status of [401, 403, 404, 429, 500]) {
+      globalThis.fetch = (async () => new Response(null, { status })) as unknown as typeof fetch;
+      await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+    }
+    globalThis.fetch = (async () => Response.json([], { headers: { link: `<${nextUrl}>; rel="next"` } })) as unknown as typeof fetch;
+    await expect(listOpenPullRequestHeadsPage(crypto.randomUUID(), "octo/repo", 1)).rejects.toThrow();
+  });
+});
 
 describe("review request reactions", () => {
   test("uses the comment-kind endpoint and recognizes GitHub idempotency", async () => {
@@ -78,6 +150,91 @@ describe("review request reactions", () => {
 });
 
 describe("pull-request review conversations", () => {
+  test("loads bounded reaction pages with validated immutable identities", async () => {
+    const requestedPages: Array<{ content: string | null; page: number }> = [];
+    globalThis.fetch = (async (input) => {
+      const url = new URL(String(input));
+      const page = Number(url.searchParams.get("page"));
+      const content = url.searchParams.get("content");
+      requestedPages.push({ content, page });
+      const count = content === "+1" && page === 1 ? 100 : 1;
+      return Response.json(Array.from({ length: count }, (_, index) => ({
+        id: (content === "+1" ? 1_000 : 2_000) + page * 100 + index,
+        content,
+        created_at: "2026-08-24T12:34:56Z",
+        user: {
+          id: 500 + index,
+          login: index === 0 && content === "-1" ? "dependabot[bot]" : `reviewer-${index}`,
+          type: index === 0 && content === "-1" ? "Bot" : "User",
+        },
+      })));
+    }) as typeof fetch;
+
+    const reactions = await listPullRequestReviewCommentReactions(
+      "token",
+      "octo/repo",
+      41,
+    );
+    expect(requestedPages).toEqual([
+      { content: "+1", page: 1 },
+      { content: "+1", page: 2 },
+      { content: "-1", page: 1 },
+    ]);
+    expect(reactions).toHaveLength(102);
+    expect(reactions[0]).toMatchObject({
+      id: 1_100,
+      content: "+1",
+      user: { id: 500, login: "reviewer-0", type: "User" },
+    });
+    expect(reactions[0]!.createdAt).toEqual(new Date("2026-08-24T12:34:56Z"));
+    expect(reactions.at(-1)).toMatchObject({
+      content: "-1",
+      user: { login: "dependabot[bot]", type: "Bot" },
+    });
+  });
+
+  test("returns a bounded prefix when every reaction page is full", async () => {
+    const requestedPages: Array<{ content: string | null; page: number }> = [];
+    globalThis.fetch = (async (input) => {
+      const url = new URL(String(input));
+      const content = url.searchParams.get("content");
+      const page = Number(url.searchParams.get("page"));
+      requestedPages.push({ content, page });
+      return Response.json(Array.from({ length: 100 }, (_, index) => ({
+        id: (content === "+1" ? 1_000_000 : 2_000_000) + page * 100 + index,
+        content,
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 10_000 + page * 100 + index, login: `reviewer-${page}-${index}`, type: "User" },
+      })));
+    }) as typeof fetch;
+
+    const reactions = await listPullRequestReviewCommentReactions(
+      "token",
+      "octo/repo",
+      41,
+    );
+
+    expect(reactions).toHaveLength(1_000);
+    expect(requestedPages).toHaveLength(10);
+    expect(requestedPages.at(-1)).toEqual({ content: "-1", page: 5 });
+  });
+
+  test("rejects an unrelated reaction returned despite the server content filter", async () => {
+    globalThis.fetch = Object.assign(
+      async () => Response.json([{
+        id: 1,
+        content: "unsupported",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 2, login: "reviewer", type: "User" },
+      }]),
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    await expect(
+      listPullRequestReviewCommentReactions("token", "octo/repo", 41),
+    ).rejects.toThrow("GitHub review comment reactions response is malformed");
+  });
+
   test("loads a bounded root identity and posts a thread reply", async () => {
     const requests: Array<{ url: string; method: string; body?: unknown }> = [];
     globalThis.fetch = (async (input, init) => {
@@ -198,12 +355,67 @@ describe("respond delivery marker lookup", () => {
 });
 
 describe("pull-request review context", () => {
+  test("classifies update timestamps without collapsing malformed input into missing", () => {
+    expect(parsePullRequestUpdatedAt(undefined)).toEqual({ kind: "missing" });
+    expect(parsePullRequestUpdatedAt(null)).toEqual({ kind: "malformed" });
+    expect(parsePullRequestUpdatedAt("not-a-timestamp")).toEqual({
+      kind: "malformed",
+    });
+    for (const looseDate of ["08/24/2026", "2026-08-24", "0"]) {
+      expect(parsePullRequestUpdatedAt(looseDate)).toEqual({ kind: "malformed" });
+    }
+    expect(parsePullRequestUpdatedAt("2026-02-29T12:34:56Z")).toEqual({
+      kind: "malformed",
+    });
+    expect(parsePullRequestUpdatedAt("2024-02-29T12:34:56Z")).toEqual({
+      kind: "valid",
+      seconds: 1_709_210_096,
+    });
+    expect(parsePullRequestUpdatedAt("2026-08-24T12:34:56.999Z")).toEqual(
+      parsePullRequestUpdatedAt("2026-08-24T12:34:56Z"),
+    );
+  });
+
+  test("orders valid timestamps by parsed seconds and fails closed otherwise", () => {
+    expect(
+      comparePullRequestSnapshotTimes(
+        "2026-08-24T12:34:57Z",
+        "2026-08-24T12:34:56Z",
+      ),
+    ).toBe("event_newer");
+    expect(
+      comparePullRequestSnapshotTimes(
+        "2026-08-24T12:34:55Z",
+        "2026-08-24T12:34:56Z",
+      ),
+    ).toBe("live_newer");
+    expect(
+      comparePullRequestSnapshotTimes(
+        "2026-08-24T12:34:56.100Z",
+        "2026-08-24T12:34:56.900Z",
+      ),
+    ).toBe("equal");
+    expect(comparePullRequestSnapshotTimes(undefined, "2026-08-24T12:34:56Z")).toBe(
+      "unknown",
+    );
+    expect(
+      comparePullRequestSnapshotTimes("not-a-timestamp", "2026-08-24T12:34:56Z"),
+    ).toBe("unknown");
+    expect(
+      comparePullRequestSnapshotTimes("08/24/2026", "2026-08-24T12:34:56Z"),
+    ).toBe("unknown");
+    expect(
+      comparePullRequestSnapshotTimes("2026-08-24T12:34:56Z", "2026-08-24"),
+    ).toBe("unknown");
+  });
+
   test("loads immutable refs and optional author identity", async () => {
     globalThis.fetch = (async (_input) =>
       Response.json({
         state: "open",
         merged: false,
         draft: false,
+        updated_at: "2026-08-24T12:34:56Z",
         head: { sha: "head-sha" },
         base: { sha: "base-sha" },
         user: { id: 42, login: "octocat" },
@@ -217,10 +429,35 @@ describe("pull-request review context", () => {
       headSha: "head-sha",
       baseSha: "base-sha",
       draft: false,
+      updatedAt: "2026-08-24T12:34:56Z",
       authorGithubId: 42,
       authorLogin: "octocat",
     });
   });
+
+  for (const updatedAt of [undefined, "not-a-timestamp"] as const) {
+    test(`omits a ${updatedAt === undefined ? "missing" : "malformed"} update timestamp`, async () => {
+      globalThis.fetch = (async (_input) =>
+        Response.json({
+          state: "open",
+          merged: false,
+          draft: false,
+          head: { sha: "head-sha" },
+          base: { sha: "base-sha" },
+          ...(updatedAt === undefined ? {} : { updated_at: updatedAt }),
+        })) as typeof fetch;
+
+      await expect(
+        getPullRequestReviewContext("token", "octo/repo", 7),
+      ).resolves.toEqual({
+        open: true,
+        merged: false,
+        headSha: "head-sha",
+        baseSha: "base-sha",
+        draft: false,
+      });
+    });
+  }
 
   test("normalizes only a complete bounded author identity", async () => {
     globalThis.fetch = (async (_input) =>

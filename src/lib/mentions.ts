@@ -1,16 +1,43 @@
+import { githubAppSlug } from "@/lib/github-app";
+
+/** Match the portable Postil handle and the configured GitHub App slug. */
+function handlePattern(): string {
+  const handles = new Set(["postil", githubAppSlug().toLowerCase()]);
+  return `(?:${[...handles].map(escapeRegExp).join("|")})`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * A mention of the bot. Matches @postil as a whole handle, case-insensitive.
+ * Match a Postil mention as a whole handle, case-insensitively.
  *
- * GitHub handles may contain hyphens, so `-` must count as part of a handle,
- * not a boundary: @postil-dev (the org), @postil-cli, @postil-action are
- * different accounts and must not summon the bot. Mentions quoted inside
- * fenced code blocks or inline code spans are documentation, not requests,
- * and are stripped before matching.
+ * The canonical `@postil` handle remains portable across forges. GitHub also
+ * displays the configured App slug, so that exact handle is accepted as an
+ * alias. A following slash identifies an organization team mention and does
+ * not summon Postil. Mentions inside code are documentation, not requests.
  */
 export function mentionsPostil(text: string | undefined | null): boolean {
   if (!text) return false;
   const prose = stripCode(text);
-  return /(^|[^a-z0-9_-])@postil($|[^a-z0-9_-])/i.test(prose);
+  return new RegExp(
+    `(^|[^a-z0-9_-])@${handlePattern()}($|[^a-z0-9_\\/-])`,
+    "i",
+  ).test(prose);
+}
+
+/** Remove canonical and configured App handles before classifying a request. */
+export function removePostilMentions(text: string): string {
+  return text.replace(
+    new RegExp(`(^|[^\\w])@${handlePattern()}(?=$|[^\\w/-])`, "giu"),
+    "$1",
+  );
+}
+
+/** Remove one attribution marker only when it precedes a command. */
+function commandProse(text: string): string {
+  return stripCode(text).trim().replace(/^🤖 /u, "");
 }
 
 /**
@@ -23,9 +50,7 @@ export function mentionsPostil(text: string | undefined | null): boolean {
  */
 export function isPostilReviewCommand(text: string | undefined | null): boolean {
   if (!text) return false;
-  const prose = stripCode(text)
-    .trim()
-    .replace(/\s+/g, " ");
+  const prose = commandProse(text).replace(/\s+/g, " ");
   const boundary = prose.search(/[.!?]\s+/u);
   const firstSentence = (boundary === -1 ? prose : prose.slice(0, boundary + 1)).replace(
     /[.!?]+$/,
@@ -33,7 +58,10 @@ export function isPostilReviewCommand(text: string | undefined | null): boolean 
   );
   const explanation = boundary === -1 ? "" : prose.slice(boundary + 1).trim();
   if (explanation && !isReviewFailureExplanation(explanation)) return false;
-  return /^@postil\s+(?:(?:please|can you(?: please)?)\s+)?(?:re-?review(?:\s+(?:this|this pr|the pull request|the current head|current head))?|re-?run(?:\s+the)?\s+review(?:\s+for\s+(?:the\s+)?current\s+head)?|review(?:\s+(?:this|this pr|the pull request|the current head|current head))?)$/i.test(firstSentence);
+  return new RegExp(
+    `^@${handlePattern()}\\s+(?:(?:please|can you(?: please)?)\\s+)?(?:re-?review(?:\\s+(?:this|this pr|the pull request|the current head|current head))?|re-?run(?:\\s+the)?\\s+review(?:\\s+for\\s+(?:the\\s+)?current\\s+head)?|review(?:\\s+(?:this|this pr|the pull request|the current head|current head))?)$`,
+    "i",
+  ).test(firstSentence);
 }
 
 function isReviewFailureExplanation(text: string): boolean {
@@ -50,11 +78,14 @@ export function parsePostilApproveCommand(
   text: string | undefined | null,
 ): PostilApproveCommand | null {
   if (!text) return null;
-  const prose = stripCode(text).trim();
-  if (!/^@postil(?:\s|$)/i.test(prose)) return null;
-  if (!/^@postil\s+approve(?:\s|$)/i.test(prose)) return null;
+  const prose = commandProse(text);
+  const handle = handlePattern();
+  if (!new RegExp(`^@${handle}(?:\\s|$)`, "i").test(prose)) return null;
+  if (!new RegExp(`^@${handle}\\s+approve(?:\\s|$)`, "i").test(prose)) return null;
 
-  const match = prose.match(/^@postil\s+approve\s+(\S+)\s+--\s*([\s\S]*)$/i);
+  const match = prose.match(
+    new RegExp(`^@${handle}\\s+approve\\s+(\\S+)\\s+--\\s*([\\s\\S]*)$`, "i"),
+  );
   if (!match) {
     return { ok: false, error: "Use `@postil approve <finding-id> -- <reason>`." };
   }
@@ -63,6 +94,49 @@ export function parsePostilApproveCommand(
   if (!findingId) return { ok: false, error: "Approval requires a finding id." };
   if (!rationale) return { ok: false, error: "Approval requires a non-empty rationale." };
   return { ok: true, findingId, rationale };
+}
+
+export const DISMISSAL_REASON_TAGS = [
+  "false-positive",
+  "accepted-risk",
+  "out-of-scope",
+] as const;
+
+export type DismissalReasonTag = (typeof DISMISSAL_REASON_TAGS)[number];
+
+export type PostilDismissCommand =
+  | { ok: true; findingId: string | null; reasonTag: DismissalReasonTag; rationale: string }
+  | { ok: false; error: string };
+
+/** Parse a finding dismissal. A reply to the finding's root comment may omit its id. */
+export function parsePostilDismissCommand(
+  text: string | undefined | null,
+): PostilDismissCommand | null {
+  if (!text) return null;
+  const prose = commandProse(text);
+  const handle = handlePattern();
+  if (!new RegExp(`^@${handle}(?:\\s|$)`, "i").test(prose)) return null;
+  if (!new RegExp(`^@${handle}\\s+dismiss(?:\\s|$)`, "i").test(prose)) return null;
+  const match = prose.match(
+    new RegExp(
+      `^@${handle}\\s+dismiss(?:\\s+(\\S+))?\\s+--\\s*(false-positive|accepted-risk|out-of-scope)\\s*:\\s*([\\s\\S]*)$`,
+      "i",
+    ),
+  );
+  if (!match) {
+    return {
+      ok: false,
+      error: "Use `@postil dismiss [finding-id] -- false-positive|accepted-risk|out-of-scope: <rationale>`.",
+    };
+  }
+  const rationale = match[3]?.trim();
+  if (!rationale) return { ok: false, error: "Dismissal requires a non-empty rationale." };
+  return {
+    ok: true,
+    findingId: match[1]?.trim() || null,
+    reasonTag: match[2]!.toLowerCase() as DismissalReasonTag,
+    rationale,
+  };
 }
 
 /** Remove fenced code blocks (```...``` / ~~~...~~~) and inline `code` spans. */

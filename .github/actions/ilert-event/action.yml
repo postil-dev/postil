@@ -19,6 +19,12 @@ inputs:
     description: HIGH or LOW; ignored for RESOLVE
     required: false
     default: HIGH
+  require-delivery:
+    description: >-
+      Fail when no integration key is configured instead of recording the
+      undelivered event. Use for alerts whose delivery must be observable.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -31,18 +37,49 @@ runs:
         ALERT_KEY: ${{ inputs.alert-key }}
         DETAILS: ${{ inputs.details }}
         PRIORITY: ${{ inputs.priority }}
+        REQUIRE_DELIVERY: ${{ inputs.require-delivery }}
       run: |
         set -euo pipefail
         if [[ -z "${ILERT_INTEGRATION_KEY:-}" ]]; then
+          if [[ "${REQUIRE_DELIVERY}" == "true" ]]; then
+            # A required event that reached nobody must fail this step.
+            echo "::error title=External alerting is not configured::ILERT_INTEGRATION_KEY is unset, so this ${EVENT_TYPE} reached nobody. Configure the alerting secret and review the failed event in this run."
+            {
+              echo "### External alert delivery failed"
+              echo
+              echo "\`ILERT_INTEGRATION_KEY\` is unset, so ilert received nothing."
+              echo
+              echo "- **Event:** ${EVENT_TYPE}"
+              echo "- **Summary:** ${SUMMARY}"
+              echo "- **Alert key:** \`${ALERT_KEY}\`"
+              echo
+              echo "Configure the alerting secret and review the failed event in this run."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
           if [[ "${EVENT_TYPE}" == "RESOLVE" ]]; then
-            # No alert can exist without a configured key, so there is
-            # nothing to resolve; exiting nonzero here would mark the run
-            # failed and re-trigger the resolve job on every following run.
+            # No alert can exist without a configured key, so there is nothing
+            # to resolve, and a resolve is never the subject of a delivery
+            # test; exiting nonzero here would mark the run failed and
+            # re-trigger the resolve job on every following run.
             echo "ILERT_INTEGRATION_KEY is not configured; nothing to resolve"
             exit 0
           fi
-          echo "ILERT_INTEGRATION_KEY is missing from the environment; external alerting is not configured"
-          exit 1
+          echo "::warning title=External alerting is not configured::ILERT_INTEGRATION_KEY is unset, so this ${EVENT_TYPE} was not delivered to ilert. The condition it describes still needs attention."
+          {
+            echo "### External alert not delivered"
+            echo
+            echo "\`ILERT_INTEGRATION_KEY\` is unset, so ilert received nothing for this event."
+            echo "Set it in the alerting secret path to page on this condition."
+            echo
+            echo "- **Summary:** ${SUMMARY}"
+            echo "- **Alert key:** \`${ALERT_KEY}\`"
+            echo "- **Priority:** ${PRIORITY}"
+            if [[ -n "${DETAILS}" ]]; then
+              echo "- **Details:** ${DETAILS}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          exit 0
         fi
         jq -n \
           --arg key "${ILERT_INTEGRATION_KEY}" \

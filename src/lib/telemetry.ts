@@ -1,12 +1,32 @@
 const CAMPAIGN_KEYS = ["utm_source", "utm_medium", "utm_campaign"] as const;
 const CAMPAIGN_VALUE = /^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$/;
+// Bounded numeric engagement metrics. The content pair measures how far down
+// the article body a reader reached, which is the depth web analytics reports;
+// the scroll pair measures the viewport alone and cannot stand in for it.
 const PAGE_ENGAGEMENT_PROPERTIES = new Set([
   "$prev_pageview_duration",
+  "$prev_pageview_last_content",
+  "$prev_pageview_last_content_percentage",
   "$prev_pageview_last_scroll",
   "$prev_pageview_last_scroll_percentage",
+  "$prev_pageview_max_content",
+  "$prev_pageview_max_content_percentage",
   "$prev_pageview_max_scroll",
   "$prev_pageview_max_scroll_percentage",
 ]);
+const SDK_LIBRARY = "web";
+const SDK_VERSION = /^\d+\.\d+\.\d+$/;
+const INSERT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const PAGEVIEW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Bare hostname only: the character class admits no scheme, port, path, or whitespace.
+const REFERRING_DOMAIN = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+const DIRECT_REFERRING_DOMAIN = "$direct";
+const DEVICE_TYPES = new Set(["Desktop", "Mobile", "Tablet"]);
+const CLIENT_LABEL = /^[A-Za-z0-9 ._-]{1,32}$/;
+const CLIENT_VERSION = /^\d+(\.\d+){0,3}$/;
+// Printable ASCII, the character set a User-Agent header is defined over. The
+// SDK already truncates at 1000 characters; the bound rejects anything longer.
+const RAW_USER_AGENT = /^[ -~]{1,1024}$/;
 const WEB_VITAL_EVENT_KEY = /^\$web_vitals_(?:LCP|CLS|FCP|INP)_event$/;
 const WEB_VITAL_RATINGS = new Set(["good", "needs-improvement", "poor"]);
 const WEB_VITAL_NAVIGATION_TYPES = new Set([
@@ -21,14 +41,11 @@ const WEB_VITAL_NAVIGATION_TYPES = new Set([
 
 const PUBLIC_EXACT_PATHS = new Set([
   "/",
+  "/bench",
   "/blog",
-  "/blog/ai-code-review-benchmarks",
-  "/blog/ai-code-review-pricing-2026",
   "/blog/best-ai-code-review-tools-2026",
-  "/blog/evidence-has-to-link-back",
-  "/blog/self-hosted-ai-code-review",
   "/blog/silence-rate",
-  "/blog/the-gate-is-separate-from-the-review",
+  "/blog/the-least-useful-number",
   "/blog/where-does-your-code-go",
   "/blog/why-copilot-cant-block-your-merge",
   "/changelog",
@@ -129,8 +146,12 @@ export function sanitizePostHogEventProperties(
   properties: Record<string, unknown>,
   currentOrigin: string,
   projectToken: string,
+  sessionId: string,
 ): boolean {
-  const technical = cookielessTransportProperties(properties, projectToken);
+  const technical = {
+    ...cookielessTransportProperties(properties, projectToken, sessionId),
+    ...browserContextProperties(properties),
+  };
   if (eventName === "$web_vitals") {
     const vitals = sanitizeWebVitals(properties, currentOrigin);
     if (!vitals) return false;
@@ -275,6 +296,7 @@ function pageEngagementProperties(
 function cookielessTransportProperties(
   properties: Record<string, unknown>,
   projectToken: string,
+  sessionId: string,
 ): Record<string, string | number | boolean> {
   return removeEmpty({
     token: properties.token === projectToken ? projectToken : undefined,
@@ -285,7 +307,65 @@ function cookielessTransportProperties(
     $cookieless_mode: properties.$cookieless_mode === true ? true : undefined,
     $process_person_profile:
       properties.$process_person_profile === false ? false : undefined,
+    $session_id: sessionId,
+    // Cookieless ingestion builds the rotating daily anonymous identifier by
+    // hashing the calendar day with the project, host, IP address, and user
+    // agent, and discards any cookieless event whose user agent is missing.
+    // Without this property no browser event is countable at all. The value is
+    // a hash input rather than a stored identity, and server-side request
+    // telemetry already reports the same string.
+    $raw_user_agent: matchedString(properties.$raw_user_agent, RAW_USER_AGENT),
   });
+}
+
+/**
+ * The automatic SDK properties Web Analytics breakdowns need, each validated
+ * against its expected shape. Fingerprinting surface (screen and viewport
+ * geometry, timezone, language, device identifiers) stays dropped.
+ */
+function browserContextProperties(
+  properties: Record<string, unknown>,
+): Record<string, string | number | boolean> {
+  return removeEmpty({
+    $lib: properties.$lib === SDK_LIBRARY ? SDK_LIBRARY : undefined,
+    $lib_version: matchedString(properties.$lib_version, SDK_VERSION),
+    $insert_id: matchedString(properties.$insert_id, INSERT_ID),
+    $time: positiveNumber(properties.$time),
+    $pageview_id: matchedString(properties.$pageview_id, PAGEVIEW_ID),
+    $referring_domain: sanitizedReferringDomain(properties.$referring_domain),
+    $device_type: matchedMember(properties.$device_type, DEVICE_TYPES),
+    $browser: matchedString(properties.$browser, CLIENT_LABEL),
+    $browser_version: sanitizedClientVersion(properties.$browser_version),
+    $os: matchedString(properties.$os, CLIENT_LABEL),
+    $os_version: sanitizedClientVersion(properties.$os_version),
+    $prev_pageview_pathname: sanitizedPublicPathname(properties.$prev_pageview_pathname),
+  });
+}
+
+function sanitizedReferringDomain(value: unknown): string | undefined {
+  if (value === DIRECT_REFERRING_DOMAIN) return DIRECT_REFERRING_DOMAIN;
+  return matchedString(value, REFERRING_DOMAIN);
+}
+
+function sanitizedClientVersion(value: unknown): string | number | undefined {
+  return finiteNumber(value) ?? matchedString(value, CLIENT_VERSION);
+}
+
+function sanitizedPublicPathname(value: unknown): string | undefined {
+  return typeof value === "string" && isPublicTelemetryPath(value) ? value : undefined;
+}
+
+function matchedString(value: unknown, pattern: RegExp): string | undefined {
+  return typeof value === "string" && pattern.test(value) ? value : undefined;
+}
+
+function matchedMember(value: unknown, allowed: Set<string>): string | undefined {
+  return typeof value === "string" && allowed.has(value) ? value : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  const numeric = finiteNumber(value);
+  return numeric !== undefined && numeric > 0 ? numeric : undefined;
 }
 
 function replaceProperties(

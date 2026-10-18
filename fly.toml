@@ -8,31 +8,22 @@
 #     GITHUB_WEBHOOK_SECRET=... GITHUB_OAUTH_CLIENT_ID=... \
 #     GITHUB_OAUTH_CLIENT_SECRET=... POSTIL_SEALING_KEY=... \
 #     GITHUB_APP_ID=... GITHUB_APP_PRIVATE_KEY=... MODEL_API_KEY=... \
-#     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=... \
-#     ILERT_INTEGRATION_KEY=... POSTIL_MONITOR_HEARTBEAT_URL=...
-#
-# ILERT_INTEGRATION_KEY is the ilert alert-source integration key that
-# receives monitoring alerts; POSTIL_MONITOR_HEARTBEAT_URL is the ilert
-# heartbeat ping URL the private monitor calls after each completed pass.
-# Monitoring never pages by platform-sent email.
+#     POSTIL_API_KEY=... METRICS_TOKEN=... POSTHOG_PROJECT_TOKEN=...
 #
 # Browser PostHog receives the public project token from a runtime route so
 # POSTHOG_CLIENT_CAPTURE can disable initialization without rebuilding.
 #
-# Migrations and retired-job quiescence run automatically via
-# [deploy].release_command below. Fly runs it as a one-off machine from the
-# new image, with the app's env/secrets
-# (including DATABASE_URL), before any existing machine is updated. A
-# non-zero exit aborts the deploy, so code that depends on a migration can
-# no longer ship ahead of it. `drizzle-kit` and the `drizzle/` migrations
-# folder ship in the runtime image (full node_modules incl. devDependencies,
-# full repo via `COPY . .` in the Dockerfile), so no image changes were
-# needed. For a one-off manual run: fly ssh console -C "bun run db:migrate"
+# The release command runs the current release preparation before rolling
+# updates. Existing reviews remain available. Schema changes and data retirement
+# use separate reviewed maintenance operations.
 
 app = "postil-web"
 primary_region = "lhr"
 kill_signal = "SIGTERM"
-kill_timeout = "30s"
+# The worker drains in-flight reviews on SIGTERM (finish-naturally window,
+# then abort and requeue); the timeout must cover the drain and settle
+# windows below plus the requeue writes.
+kill_timeout = "120s"
 
 [build]
 
@@ -41,6 +32,7 @@ kill_timeout = "30s"
 NEXT_PUBLIC_POSTHOG_HOST = "https://eu.i.posthog.com"
 
 [deploy]
+strategy = "rolling"
 release_command = "bun scripts/start-managed-process.ts release"
 
 [processes]
@@ -60,16 +52,19 @@ GITHUB_APP_SLUG = "postil-dev"
 POSTIL_BIN = "/usr/local/bin/postil"
 POSTIL_DB_POOL_MAX = "2"
 # The pinned CLI owns the managed roster. This switch permits hosted inference;
-# the exact release also requires durable post-deploy activation.
+# compatibility checks remain part of the deployment path.
 POSTIL_HOSTED_INFERENCE_ENABLED = "1"
 POSTIL_PROVISIONAL_HOSTED_ROSTER = "1"
 POSTIL_WEBHOOK_DRAIN_ENABLED = "1"
 POSTIL_QUEUE_DRAIN_MAX_JOBS = "1"
 POSTIL_QUEUE_DRAIN_DEADLINE_MS = "720000"
 WORKER_CONCURRENCY = "1"
+WORKER_PER_ORG_CONCURRENCY = "2"
 WORKER_POLL_INTERVAL_MS = "1000"
 WORKER_IDLE_POLL_MAX_MS = "900000"
 WORKER_WATCHDOG_INTERVAL_MS = "60000"
+WORKER_SHUTDOWN_DRAIN_MS = "60000"
+WORKER_SHUTDOWN_SETTLE_MS = "30000"
 WORKER_HEARTBEAT_INTERVAL_MS = "30000"
 POSTIL_MONITOR_INTERVAL_MS = "300000"
 POSTIL_MONITOR_ALERT_STATE_PATH = "/var/lib/postil-monitor/alert-state.json"

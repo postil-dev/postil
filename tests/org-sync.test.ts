@@ -1,11 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
 import { and, eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import * as schema from "@/lib/db/schema";
 import { reconcileOrgMemberships } from "@/lib/org-sync";
 
@@ -20,29 +19,15 @@ const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDb = TEST_URL ? describe : describe.skip;
 
 describeDb("org membership reconciliation", () => {
+  let ephemeralDb: EphemeralDatabase;
   let pool: Pool;
   let db: NodePgDatabase<typeof schema>;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_URL, max: 4 });
+    ephemeralDb = await createEphemeralDatabase("org_sync");
+    pool = ephemeralDb.pool;
     db = drizzle(pool, { schema });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          // 42P07 duplicate table, 42710 duplicate object (enum/index).
-          if (code !== "42P07" && code !== "42710") throw err;
-        }
-      }
-    }
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query(
@@ -51,8 +36,8 @@ describeDb("org membership reconciliation", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-  });
+    await ephemeralDb?.drop();
+  }, 30_000);
 
   async function makeUser(githubId: number, login: string): Promise<number> {
     const [row] = await db

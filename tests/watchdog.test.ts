@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
+
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 
 /**
  * Watchdog kill semantics against a real Postgres. The row's `startedAt`
@@ -43,33 +43,22 @@ mock.module("@/worker/review", () => ({
   },
 }));
 
-process.env.DATABASE_URL = TEST_URL;
-
 const schemaModule = await import("@/lib/db/schema");
 const schema = schemaModule;
-const { watchdogPass } = await import("@/worker/watchdog");
+const { failStuckReview, watchdogPass } = await import("@/worker/watchdog");
+const { closeDb, getDb } = await import("@/lib/db");
 
 describeDb("watchdog stuck-review kill", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_URL, max: 8 });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (code !== "42P07" && code !== "42710") throw err;
-        }
-      }
-    }
-  });
+    db = await createEphemeralDatabase("watchdog");
+    pool = db.pool;
+    // watchdogPass() reaches the database through the getDb() singleton,
+    // which is keyed off DATABASE_URL rather than this suite's own pool.
+    process.env.DATABASE_URL = db.url;
+  }, 30_000);
 
   beforeEach(async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
@@ -84,10 +73,14 @@ describeDb("watchdog stuck-review kill", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
+    // Release the getDb() singleton's connection before dropping the
+    // database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await db?.drop();
     if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
     else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
-  });
+  }, 30_000);
 
   async function seedRepo(): Promise<number> {
     const org = await pool.query<{ id: string }>(
@@ -111,8 +104,10 @@ describeDb("watchdog stuck-review kill", () => {
     startedAt = new Date(Date.now() - 20 * 60 * 1000),
   ): Promise<number> {
     const row = await pool.query<{ id: string }>(
-      `INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status, started_at)
-       VALUES ($1, 1, 'head', 'base', 'running', $2) RETURNING id`,
+      `INSERT INTO reviews
+        (repository_id, pr_number, head_sha, base_sha, status, started_at,
+         publication_lifecycle_reconciled_at)
+       VALUES ($1, 1, 'head', 'base', 'running', $2, NULL) RETURNING id`,
       [repositoryId, startedAt],
     );
     return Number(row.rows[0]!.id);
@@ -123,6 +118,23 @@ describeDb("watchdog stuck-review kill", () => {
       reviewId,
     ]);
     return row.rows[0]!.status;
+  }
+
+  async function stagePublication(
+    reviewId: number,
+    observedAt = new Date(),
+  ): Promise<void> {
+    await pool.query(
+      `UPDATE reviews
+          SET envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb
+        WHERE id = $1`,
+      [reviewId],
+    );
+    await pool.query(
+      `INSERT INTO review_publication_receipts (review_id, observed_at)
+       VALUES ($1, $2)`,
+      [reviewId, observedAt],
+    );
   }
 
   test("kills a review stuck past the deadline and completes its check-runs once", async () => {
@@ -180,17 +192,204 @@ describeDb("watchdog stuck-review kill", () => {
   test("does not fail a staged publication while its exact checks are reconciled", async () => {
     const repositoryId = await seedRepo();
     const reviewId = await seedStuckReview(repositoryId);
+    await stagePublication(reviewId);
+
+    const result = await watchdogPass();
+
+    expect(result.killed).toBe(0);
+    expect(await reviewStatus(reviewId)).toBe("running");
+    const cleanup = await pool.query(
+      "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(cleanup.rows).toHaveLength(0);
+  });
+
+  test("does not fail a staged publication that is within the reconciliation budget", async () => {
+    const repositoryId = await seedRepo();
+    const startedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const reviewId = await seedStuckReview(repositoryId, startedAt);
+    await stagePublication(reviewId, new Date(Date.now() - 59 * 60 * 1000));
+
+    const result = await watchdogPass();
+
+    expect(result.killed).toBe(0);
+    expect(await reviewStatus(reviewId)).toBe("running");
+    const cleanup = await pool.query(
+      "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(cleanup.rows).toHaveLength(0);
+  });
+
+  test("fails a staged publication past the reconciliation budget and completes its check-runs", async () => {
+    const repositoryId = await seedRepo();
+    const startedAt = new Date(Date.now() - 61 * 60 * 1000);
+    const reviewId = await seedStuckReview(repositoryId, startedAt);
+    await stagePublication(reviewId, startedAt);
     await pool.query(
-      `UPDATE reviews
-          SET envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb
+      `UPDATE reviews SET advisory_check_run_id = 501, gate_check_run_id = 502
         WHERE id = $1`,
       [reviewId],
     );
 
     const result = await watchdogPass();
 
+    expect(result.killed).toBe(1);
+    expect(await reviewStatus(reviewId)).toBe("failed");
+    const errorMessage = await pool.query<{ error_message: string }>(
+      "SELECT error_message FROM reviews WHERE id = $1",
+      [reviewId],
+    );
+    // The message reports why publication could not be verified, not that
+    // the review timed out: it did complete, GitHub just never confirmed it.
+    expect(errorMessage.rows[0]!.error_message).toContain(
+      "could not be verified",
+    );
+    expect(errorMessage.rows[0]!.error_message).not.toContain(
+      "review exceeded",
+    );
+    const cleanup = await pool.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+    }>("SELECT kind, payload FROM jobs WHERE kind = 'check-run-cleanup'");
+    expect(cleanup.rows).toHaveLength(1);
+    expect(cleanup.rows[0]!.payload).toMatchObject({
+      installationId: 42,
+      repoFullName: "octo/repo",
+      advisoryCheckRunId: 501,
+      gateCheckRunId: 502,
+      advisoryCheckRunMayExist: false,
+      gateCheckRunMayExist: false,
+      publicationIncomplete: true,
+      message: expect.stringContaining("could not be verified"),
+    });
+  });
+
+  test("fails a completed review whose thread lifecycle remains unreconciled", async () => {
+    const repositoryId = await seedRepo();
+    const finishedAt = new Date(Date.now() - 61 * 60 * 1000);
+    const reviewId = await seedStuckReview(repositoryId, finishedAt);
+    await pool.query(
+      `UPDATE reviews
+          SET status = 'completed',
+              envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb,
+              advisory_check_run_id = 601,
+              gate_check_run_id = 602,
+              finished_at = $2,
+              publication_lifecycle_reconciled_at = NULL
+        WHERE id = $1`,
+      [reviewId, finishedAt],
+    );
+
+    const result = await watchdogPass();
+
+    expect(result.killed).toBe(1);
+    expect(await reviewStatus(reviewId)).toBe("failed");
+    const cleanup = await pool.query<{
+      kind: string;
+      payload: Record<string, unknown>;
+    }>("SELECT kind, payload FROM jobs WHERE kind = 'check-run-cleanup'");
+    expect(cleanup.rows).toHaveLength(1);
+    expect(cleanup.rows[0]!.payload).toMatchObject({
+      advisoryCheckRunId: 601,
+      gateCheckRunId: 602,
+      publicationIncomplete: true,
+      message: expect.stringContaining("publication lifecycle could not reconcile"),
+    });
+  });
+
+  test("preserves a completed review whose thread lifecycle reconciled", async () => {
+    const repositoryId = await seedRepo();
+    const finishedAt = new Date(Date.now() - 61 * 60 * 1000);
+    const reviewId = await seedStuckReview(repositoryId, finishedAt);
+    await pool.query(
+      `UPDATE reviews
+          SET status = 'completed',
+              envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb,
+              advisory_check_run_id = 701,
+              gate_check_run_id = 702,
+              finished_at = $2,
+              publication_lifecycle_reconciled_at = $2
+        WHERE id = $1`,
+      [reviewId, finishedAt],
+    );
+
+    const result = await watchdogPass();
+
     expect(result.killed).toBe(0);
-    expect(await reviewStatus(reviewId)).toBe("running");
+    expect(await reviewStatus(reviewId)).toBe("completed");
+    const cleanup = await pool.query(
+      "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
+    );
+    expect(cleanup.rows).toHaveLength(0);
+  });
+
+  test("completed-review cleanup loses the race to a lifecycle marker", async () => {
+    const repositoryId = await seedRepo();
+    const reviewId = await seedStuckReview(
+      repositoryId,
+      new Date(Date.now() - 61 * 60 * 1000),
+    );
+    await pool.query(
+      `UPDATE reviews
+          SET status = 'completed', finished_at = now() - interval '61 minutes',
+              envelope = '{"version":1,"findings":[],"gate":{"failing":false}}'::jsonb,
+              advisory_check_run_id = 701, gate_check_run_id = 702
+        WHERE id = $1`,
+      [reviewId],
+    );
+    const selected = await pool.query<{
+      id: string;
+      public_id: string;
+      head_sha: string;
+      started_at: Date;
+      finished_at: Date;
+      advisory_check_run_id: string;
+      gate_check_run_id: string;
+      full_name: string;
+      github_installation_id: string;
+      slug: string;
+    }>(
+      `SELECT review.id, review.public_id, review.head_sha, review.started_at,
+              review.finished_at, review.advisory_check_run_id,
+              review.gate_check_run_id, repository.full_name,
+              installation.github_installation_id, organization.slug
+         FROM reviews review
+         JOIN repositories repository ON repository.id = review.repository_id
+         JOIN installations installation ON installation.id = repository.installation_id
+         LEFT JOIN organizations organization ON organization.id = installation.org_id
+        WHERE review.id = $1`,
+      [reviewId],
+    );
+    await pool.query(
+      "UPDATE reviews SET publication_lifecycle_reconciled_at = now() WHERE id = $1",
+      [reviewId],
+    );
+    const review = selected.rows[0]!;
+
+    await expect(
+      failStuckReview(
+        getDb(),
+        {
+          id: Number(review.id),
+          publicId: review.public_id,
+          headSha: review.head_sha,
+          startedAt: review.started_at,
+          finishedAt: review.finished_at,
+          publicationLifecycleRequiredAt: new Date(),
+          publicationLifecycleReconciledAt: null,
+          publicationStagedAt: null,
+          advisoryCheckRunId: Number(review.advisory_check_run_id),
+          gateCheckRunId: Number(review.gate_check_run_id),
+          repoFullName: review.full_name,
+          githubInstallationId: Number(review.github_installation_id),
+          orgSlug: review.slug,
+        },
+        "stale watchdog selection",
+        new Date(),
+        { publicationIncomplete: true, expectedStatus: "completed" },
+      ),
+    ).resolves.toBe(false);
+    expect(await reviewStatus(reviewId)).toBe("completed");
     const cleanup = await pool.query(
       "SELECT id FROM jobs WHERE kind = 'check-run-cleanup'",
     );
@@ -220,7 +419,11 @@ describeDb("watchdog stuck-review kill", () => {
     const secondReviewId = await seedStuckReview(repositoryId);
     const stuckJob = await pool.query<{ id: string }>(`
       INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at, locked_by)
-      VALUES ('review', '{}', 'running', 1, 3, now() - interval '20 minutes', 'dead-worker')
+      VALUES (
+        'review',
+        '{"githubRepoId":7777,"repoFullName":"octo/repo","prNumber":7,"headSha":"stuck-head"}',
+        'running', 1, 3, now() - interval '20 minutes', 'dead-worker'
+      )
       RETURNING id
     `);
     const result = await watchdogPass(new Date());
@@ -347,6 +550,7 @@ describeDb("watchdog stuck-review kill", () => {
   test("promotes retained metadata after a review worker lease expires", async () => {
     const pending = {
       installationId: 42,
+      githubRepoId: 7777,
       repoFullName: "octo/repo",
       prNumber: 7,
       headSha: "same-head",

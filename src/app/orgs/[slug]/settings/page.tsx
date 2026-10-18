@@ -289,6 +289,7 @@ export default async function OrgSettingsPage({
                 slug={org.slug}
                 repositories={repos.filter((repo) => repo.enabled)}
                 now={now}
+                gateEnabled={settings?.gateEnabled ?? false}
               />
             )}
             <div className="flex items-center justify-between gap-3">
@@ -305,7 +306,13 @@ export default async function OrgSettingsPage({
                       <div key={repo.id} className="space-y-3 px-4 py-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
-                            <p className="font-mono text-sm">{repo.fullName}</p>
+                            <a
+                              href={`https://github.com/${repo.fullName}`}
+                              className="font-mono text-sm hover:underline"
+                              rel="noopener noreferrer"
+                            >
+                              {repo.fullName}
+                            </a>
                             <RepoHealthLine
                               enabled={repo.enabled}
                               health={health}
@@ -318,26 +325,59 @@ export default async function OrgSettingsPage({
                           </div>
                         </div>
                         <div className="grid gap-2">
-                          {artifacts.map((artifact) => (
-                            <div
-                              key={artifact.key}
-                              className="grid gap-2 rounded-card border border-stone/70 px-3 py-2 sm:grid-cols-[1fr_auto]"
-                            >
-                              <div>
-                                <p className="font-mono text-[11px] text-charcoal">
-                                  {artifact.label}
-                                </p>
-                                <p className="mt-0.5 text-xs text-charcoal/60">
-                                  {configArtifactDescription(artifact)}
-                                </p>
-                              </div>
-                              <span
-                                className={`h-fit rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${configArtifactClass(artifact)}`}
+                          {artifacts.map((artifact) => {
+                            const artifactHref = configArtifactHref(
+                              artifact,
+                              repo.fullName,
+                              sharedSnapshot?.sourceFullName ?? sharedSourceFullName,
+                            );
+                            return (
+                              <div
+                                key={artifact.key}
+                                className="grid gap-2 rounded-card border border-stone/70 px-3 py-2 sm:grid-cols-[1fr_auto]"
                               >
-                                {configArtifactLabel(artifact)}
-                              </span>
-                            </div>
-                          ))}
+                                <div>
+                                  {artifactHref ? (
+                                    <a
+                                      href={artifactHref}
+                                      className="font-mono text-[11px] text-charcoal underline decoration-stone hover:decoration-charcoal"
+                                      rel="noopener noreferrer"
+                                    >
+                                      {artifact.label}
+                                    </a>
+                                  ) : (
+                                    <p className="font-mono text-[11px] text-charcoal">
+                                      {artifact.label}
+                                    </p>
+                                  )}
+                                  <p className="mt-0.5 text-xs text-charcoal/60">
+                                    {configArtifactDescription(artifact)}
+                                  </p>
+                                </div>
+                                {artifact.state !== "active" && (
+                                  <span
+                                    className={`flex h-fit shrink-0 items-center gap-1.5 font-mono text-[11px] ${
+                                      artifact.state === "removed"
+                                        ? "text-rust"
+                                        : artifact.state === "pending"
+                                          ? "text-charcoal/70"
+                                          : "text-charcoal/55"
+                                    }`}
+                                  >
+                                    <StatusIcon
+                                      kind={artifact.state === "removed"
+                                        ? "warn"
+                                        : artifact.state === "pending"
+                                          ? "info"
+                                          : "unknown"}
+                                      size={13}
+                                    />
+                                    {artifact.state}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );
@@ -362,6 +402,15 @@ export default async function OrgSettingsPage({
           </div>
         )}
       </div>
+
+      <p className="mt-12 border-t border-stone/60 pt-4 text-xs text-charcoal/60">
+        The <Link href="/docs" className="text-rust hover:underline">documentation</Link>{" "}
+        covers setup, configuration, and the merge gate. For anything unclear, email{" "}
+        <a href="mailto:hello@postil.dev" className="text-rust hover:underline">
+          hello@postil.dev
+        </a>
+        .
+      </p>
     </div>
   );
 }
@@ -370,8 +419,10 @@ function GateEnforcementCoverage({
   slug,
   repositories,
   now,
+  gateEnabled,
 }: {
   slug: string;
+  gateEnabled: boolean;
   repositories: Array<{
     id: number;
     fullName: string;
@@ -383,6 +434,11 @@ function GateEnforcementCoverage({
         exactMatch: boolean;
         match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
       };
+      protectionApi?: {
+        status?: "ok" | "forbidden" | "not_protected" | "error";
+        exactMatch?: boolean;
+        match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+      } | null;
       activeRules: {
         exactMatch: boolean;
         match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
@@ -394,81 +450,123 @@ function GateEnforcementCoverage({
   }>;
   now: Date;
 }) {
-  const enforcementCounts = repositories.reduce(
-    (counts, repository) => {
-      const status = deriveGateEnforcementPresentation(
-        {
-          status: repository.gateEnforcementStatus,
-          checkedAt: repository.gateCheckedAt,
-          lastError: repository.gateLastError,
-        },
-        now,
-      ).status;
-      counts[status] += 1;
+  const rows = repositories.map((repository) => ({
+    repository,
+    presentation: deriveGateEnforcementPresentation(
+      {
+        status: repository.gateEnforcementStatus,
+        checkedAt: repository.gateCheckedAt,
+        lastError: repository.gateLastError,
+      },
+      now,
+    ),
+  }));
+  const enforcementCounts = rows.reduce(
+    (counts, row) => {
+      counts[row.presentation.status] += 1;
       return counts;
     },
     { required: 0, not_required: 0, unknown: 0 },
   );
+  // Action-needed states first, then unknowns, then verified rows.
+  const statusRank = { not_required: 0, unknown: 1, required: 2 } as const;
+  const sortedRows = [...rows].sort(
+    (a, b) =>
+      statusRank[a.presentation.status] - statusRank[b.presentation.status] ||
+      a.repository.fullName.localeCompare(b.repository.fullName),
+  );
+  const statusTone = (status: "required" | "not_required" | "unknown") =>
+    status === "required"
+      ? "text-gate"
+      : status === "not_required"
+        ? gateEnabled
+          ? "text-rust"
+          : "text-charcoal/70"
+        : "text-charcoal/55";
+  const statusKind = (status: "required" | "not_required" | "unknown") =>
+    status === "required"
+      ? ("pass" as const)
+      : status === "not_required"
+        ? gateEnabled
+          ? ("warn" as const)
+          : ("info" as const)
+        : ("unknown" as const);
+  const countEntries = [
+    { status: "not_required" as const, count: enforcementCounts.not_required, label: "not enforced" },
+    { status: "unknown" as const, count: enforcementCounts.unknown, label: "unverified" },
+    { status: "required" as const, count: enforcementCounts.required, label: "enforced" },
+  ].filter((entry) => entry.count > 0);
   return (
     <section className="mb-8">
       <div className="flex items-center justify-between gap-3">
         <p className="eyebrow">Installation health</p>
         <GateEnforcementRecheckButton slug={slug} />
       </div>
-      <div className="mt-3 rounded-card border border-stone/70 bg-paper p-4">
-        <p className="text-sm text-charcoal">
-          Postil publishes <code>postil/gate</code>. GitHub blocks a merge only when the
-          default branch requires that check from this App.
-        </p>
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 font-mono text-[11px] text-charcoal/65">
-          <span>{enforcementCounts.required} enforced</span>
-          <span>{enforcementCounts.not_required} not enforced</span>
-          <span>{enforcementCounts.unknown} unverified</span>
+      <div className="mt-3 rounded-card border border-stone/70 bg-paper px-4 py-3">
+        {!gateEnabled && (
+          <p className="mb-2 text-xs text-charcoal/65">
+            The merge gate is off for this organization, so <code>postil/gate</code>{" "}
+            reports without blocking regardless of findings. These statuses matter
+            once the gate is on.
+          </p>
+        )}
+        <div className="flex flex-wrap gap-x-5 gap-y-2">
+          {countEntries.map((entry) => (
+            <span
+              key={entry.status}
+              className={`flex items-center gap-1.5 font-mono text-[11px] ${statusTone(entry.status)}`}
+            >
+              <StatusIcon kind={statusKind(entry.status)} size={13} />
+              {entry.count} {entry.label}
+            </span>
+          ))}
         </div>
       </div>
       <div className="card mt-3 divide-y divide-stone/60">
-        {repositories.map((repository) => {
-          const presentation = deriveGateEnforcementPresentation(
-            {
-              status: repository.gateEnforcementStatus,
-              checkedAt: repository.gateCheckedAt,
-              lastError: repository.gateLastError,
-            },
-            now,
-          );
+        {sortedRows.map(({ repository, presentation }) => {
           const plan = buildGateEnforcementDryRunPlan(
             presentation,
             repository.gateDefaultBranch,
           );
-          const anySource =
-            repository.gateEvidence?.branchProtection.match === "any_source" ||
-            repository.gateEvidence?.activeRules.match === "any_source";
-          const identityUnknown =
-            repository.gateEvidence?.branchProtection.match === "unknown_identity" ||
-            repository.gateEvidence?.activeRules.match === "unknown_identity";
-          const foreignSource =
-            repository.gateEvidence?.branchProtection.match === "foreign_app" ||
-            repository.gateEvidence?.activeRules.match === "foreign_app";
+          const evidence = repository.gateEvidence;
+          const matches = [
+            evidence?.branchProtection.match,
+            evidence?.protectionApi?.match,
+            evidence?.activeRules.match,
+          ];
+          const anySource = matches.includes("any_source");
+          const identityUnknown = matches.includes("unknown_identity");
+          const foreignSource = matches.includes("foreign_app");
+          const protectionForbidden = evidence?.protectionApi?.status === "forbidden";
           const detail = presentation.status === "required" &&
-              repository.gateEvidence?.branchProtection.exactMatch
-            ? "exact App and context required by classic branch protection"
-            : presentation.status === "required" &&
-                repository.gateEvidence?.activeRules.exactMatch
-              ? "exact App and context required by an active ruleset"
+              (evidence?.branchProtection.exactMatch || evidence?.protectionApi?.exactMatch)
+            ? "branch protection requires the check from the Postil App"
+            : presentation.status === "required" && evidence?.activeRules.exactMatch
+              ? "an active ruleset requires the check from the Postil App"
             : anySource
-              ? "postil/gate accepts any source"
+              ? "a required check named postil/gate exists, but any app may satisfy it"
               : foreignSource
-                ? "postil/gate requires another App"
+                ? "postil/gate is required from a different app, not Postil"
                 : identityUnknown
-                  ? "classic protection names postil/gate, but its App binding is not readable"
-                  : `branch protection: ${repository.gateBranchProtection ?? "unknown"}`;
+                  ? "branch protection requires a check named postil/gate without saying which app must post it"
+                  : repository.gateBranchProtection === "unprotected"
+                    ? "the default branch has no branch protection or ruleset"
+                    : repository.gateBranchProtection === "protected"
+                      ? "branch rules exist but do not require postil/gate"
+                      : "branch rules could not be read";
           const settingsHref = `https://github.com/${repository.fullName}/settings/rules`;
           return (
             <div key={repository.id} className="px-4 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="truncate font-mono text-sm">{repository.fullName}</p>
-                  <p className="mt-0.5 text-xs text-charcoal/60">
+                  <a
+                    href={`https://github.com/${repository.fullName}`}
+                    className="block truncate font-mono text-sm hover:underline"
+                    rel="noopener noreferrer"
+                  >
+                    {repository.fullName}
+                  </a>
+                  <p className="mt-0.5 font-mono text-[11px] text-charcoal/55">
                     {repository.gateDefaultBranch
                       ? `default: ${repository.gateDefaultBranch}`
                       : "default branch unavailable"}
@@ -477,20 +575,36 @@ function GateEnforcementCoverage({
                       : " · not checked"}
                   </p>
                 </div>
-                <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-stone px-2.5 py-0.5 font-mono text-[11px] text-charcoal/70">
-                  <StatusIcon
-                    kind={presentation.status === "required"
-                      ? "pass"
-                      : presentation.status === "not_required"
-                        ? "warn"
-                        : "info"}
-                    size={13}
-                  />
+                <span
+                  className={`flex shrink-0 items-center gap-1.5 font-mono text-[11px] ${statusTone(presentation.status)} ${
+                    presentation.status === "not_required" && gateEnabled ? "font-medium" : ""
+                  }`}
+                >
+                  <StatusIcon kind={statusKind(presentation.status)} size={13} />
                   {presentation.enforcementLabel}
                 </span>
               </div>
-              <p className="mt-2 text-xs text-charcoal/70">{presentation.consequence}</p>
-              <p className="mt-0.5 text-xs text-charcoal/55">{detail}</p>
+              {presentation.status !== "required" && (
+                <p className="mt-2 text-xs text-charcoal/70">{presentation.consequence}</p>
+              )}
+              {presentation.status === "not_required" && gateEnabled && (
+                <a
+                  href={settingsHref}
+                  className="mt-1 inline-block text-xs text-rust underline"
+                  rel="noopener noreferrer"
+                >
+                  Open repository rules
+                </a>
+              )}
+              {presentation.status === "unknown" && (
+                <p className="mt-1 text-xs text-charcoal/55">
+                  {presentation.stale
+                    ? "Re-check to refresh this status."
+                    : identityUnknown && protectionForbidden
+                      ? "A ruleset naming the Postil App verifies without extra access. Granting the App's optional repository Administration (read-only) permission verifies classic protection too."
+                      : "Re-check, or open the panel below for what Postil could not read."}
+                </p>
+              )}
               {repository.gateLastError && (
                 <p className="mt-1 text-xs text-rust">
                   {repository.gateLastError}
@@ -501,9 +615,24 @@ function GateEnforcementCoverage({
               )}
               <details className="mt-3 rounded-card border border-stone/60 px-3 py-2 text-xs text-charcoal/65">
                 <summary className="cursor-pointer font-medium text-charcoal">
-                  {plan.action === "none" ? "Verified rule" : "Setup plan"}
+                  {plan.action === "none"
+                    ? "Verified rule"
+                    : plan.action === "inspect"
+                      ? "How to verify"
+                      : "How to enforce"}
                 </summary>
                 <div className="mt-3 space-y-2">
+                  <p><strong>Evidence:</strong> {detail}.</p>
+                  {identityUnknown && (
+                    <p>
+                      Classic branch protection does not tell Postil which app a
+                      required check is bound to unless the App&apos;s optional
+                      repository Administration (read-only) permission is granted. A branch
+                      ruleset that requires <code>postil/gate</code> from the Postil
+                      App is verifiable without extra access: recreate the
+                      requirement there and remove it from classic protection.
+                    </p>
+                  )}
                   <p><strong>Target:</strong> {plan.target}</p>
                   <p><strong>Rule:</strong> {plan.desiredRule}</p>
                   <p><strong>Effect:</strong> {plan.impact}</p>
@@ -526,7 +655,12 @@ function GateEnforcementCoverage({
       <p className="mt-3 text-xs text-charcoal/60">
         Enforced means GitHub names <code>postil/gate</code> and binds it to the Postil
         App. Missing identities and unreadable rules stay unverified. See the{" "}
-        <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>.
+        <Link href="/docs/gate" className="text-rust hover:underline">gate guide</Link>,
+        or email{" "}
+        <a href="mailto:hello@postil.dev" className="text-rust hover:underline">
+          hello@postil.dev
+        </a>{" "}
+        for help with rollout.
       </p>
     </section>
   );
@@ -602,22 +736,26 @@ function relative(value: Date, now: Date): string {
   return formatRelativeTime(value.toISOString(), now.getTime());
 }
 
-function configArtifactLabel(artifact: VisibleConfigArtifact): string {
-  if (artifact.state === "active") {
-    if (artifact.recordedSource === "shared") return "shared";
-    return artifact.liveSource === "repository" ? "repo" : "org";
+/**
+ * Link a config artifact to its file on GitHub. Only live repository and
+ * shared files link; organization fallbacks are edited in the form on this
+ * page, and removed or unverified paths may no longer exist on HEAD.
+ */
+function configArtifactHref(
+  artifact: VisibleConfigArtifact,
+  repoFullName: string,
+  sharedSourceFullName: string,
+): string | null {
+  if (!artifact.file || (artifact.state !== "active" && artifact.state !== "pending")) {
+    return null;
   }
-  return artifact.state;
-}
-
-function configArtifactClass(artifact: VisibleConfigArtifact): string {
-  if (artifact.state === "active") {
-    return artifact.liveSource === "repository"
-      ? "border-gate text-gate"
-      : "border-rust text-rust";
+  if (artifact.liveSource === "repository") {
+    return `https://github.com/${repoFullName}/blob/HEAD/${artifact.file}`;
   }
-  if (artifact.state === "unverified") return "border-stone text-charcoal/55";
-  return "border-rust text-rust";
+  if (artifact.liveSource === "shared") {
+    return `https://github.com/${sharedSourceFullName}/blob/HEAD/${artifact.file}`;
+  }
+  return null;
 }
 
 function configArtifactDescription(artifact: VisibleConfigArtifact): string {

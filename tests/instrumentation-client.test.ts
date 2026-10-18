@@ -97,6 +97,14 @@ describe("browser PostHog instrumentation", () => {
       },
     });
     expect(capturedEvents.map((event) => event.event)).toEqual(["$pageview"]);
+    const sessionId = capturedEvents[0]?.properties?.$session_id;
+    expect(sessionId).toBeString();
+    expect(String(sessionId)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(browser.cookies()).toEqual({ postil_session: "keep" });
+    expect(browser.localStorage.entries()).toEqual({ postil_preference: "keep" });
+    expect(browser.sessionStorage.entries()).toEqual({ postil_draft: "keep" });
     expect(capturedEvents[0]?.properties?.$current_url).toBe("https://postil.dev/docs");
     expect(capturedEvents[0]?.properties?.$utm_source).toBe("launch");
     expect(JSON.stringify(capturedEvents[0]?.properties)).not.toContain("secret");
@@ -111,6 +119,7 @@ describe("browser PostHog instrumentation", () => {
     expect(capturedEvents).toHaveLength(2);
     expect(capturedEvents[1]?.properties?.$current_url).toBe("https://postil.dev/pricing");
     expect(capturedEvents[1]?.properties?.$utm_campaign).toBe("summer");
+    expect(capturedEvents[1]?.properties?.$session_id).toBe(sessionId);
 
     browser.navigate("/dashboard?secret=drop");
     await capturePublicPageview(window.location.href, document.referrer);
@@ -137,6 +146,7 @@ describe("browser PostHog instrumentation", () => {
       },
     });
     expect(returnPageview?.properties).toEqual({
+      $session_id: sessionId,
       $current_url: "https://postil.dev/pricing",
       $host: "postil.dev",
       $pathname: "/pricing",
@@ -207,6 +217,21 @@ describe("browser PostHog instrumentation", () => {
         $session_id: "session-id",
         $initial_current_url: "https://postil.dev/orgs/private",
         $utm_source: "release",
+        $lib: "web",
+        $lib_version: "1.396.2",
+        $insert_id: "jpzmsl07yq9r5sk8",
+        $time: 1_787_001_374.548,
+        $pageview_id: "0198f0f3-6a52-7f4b-9c31-1b2c3d4e5f60",
+        $referring_domain: "example.com",
+        $device_type: "Desktop",
+        $browser: "Chrome",
+        $browser_version: 139,
+        $os: "Linux",
+        $raw_user_agent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/139.0.0.0",
+        $screen_width: 2560,
+        $screen_height: 1440,
+        $timezone: "Atlantic/Reykjavik",
+        $browser_language: "en-GB",
       },
       $set: { email: "private@example.com" },
       $set_once: { $initial_current_url: "https://postil.dev/orgs/private" },
@@ -218,11 +243,23 @@ describe("browser PostHog instrumentation", () => {
         distinct_id: "$posthog_cookieless",
         $cookieless_mode: true,
         $process_person_profile: false,
+        $session_id: sessionId,
+        $raw_user_agent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/139.0.0.0",
         $current_url: "https://postil.dev/docs",
         $host: "postil.dev",
         $pathname: "/docs",
         $referrer: "https://example.com/",
         $utm_source: "release",
+        $lib: "web",
+        $lib_version: "1.396.2",
+        $insert_id: "jpzmsl07yq9r5sk8",
+        $time: 1_787_001_374.548,
+        $pageview_id: "0198f0f3-6a52-7f4b-9c31-1b2c3d4e5f60",
+        $referring_domain: "example.com",
+        $device_type: "Desktop",
+        $browser: "Chrome",
+        $browser_version: 139,
+        $os: "Linux",
       },
     });
     expect(

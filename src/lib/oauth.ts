@@ -3,12 +3,22 @@ export const OAUTH_RETURN_TO_COOKIE = "postil_oauth_return_to";
 export const GITHUB_SETUP_INSTALLATION_COOKIE = "postil_setup_installation";
 export const OAUTH_CALLBACK_PATH = "/api/auth/callback";
 
+/**
+ * Requested path and query, forwarded by the middleware to the page beneath
+ * it. The middleware verifies only the session cookie signature; the page
+ * re-checks the session row and redirects when it is expired or revoked, and
+ * needs this header to send the visitor back after sign-in. The middleware
+ * overwrites any inbound value on every protected route, and readers pass it
+ * through `safeReturnTarget`, so a forged header cannot widen the redirect.
+ */
+export const REQUESTED_PATH_HEADER = "x-postil-requested-path";
+
 const RETURN_TARGET_BASE = "https://postil.invalid";
 
 /**
  * Accept a same-site account path for the post-authentication redirect.
- * Keeping the allowlist aligned with middleware prevents open redirects,
- * redirect loops, and unexpected API navigation.
+ * Reusing the middleware's own predicate prevents open redirects, redirect
+ * loops, and unexpected API navigation.
  */
 export function safeReturnTarget(
   value: string | null | undefined,
@@ -35,13 +45,20 @@ export function safeReturnTarget(
   return `${url.pathname}${url.search}`;
 }
 
-function isProtectedAccountPath(pathname: string): boolean {
+/**
+ * Paths the middleware gates and the post-authentication redirect may return
+ * to. One definition: a path the middleware protects but this rejects strands
+ * the reader on the dashboard root after signing in, and the reverse is an
+ * open redirect into an ungated route.
+ */
+export function isProtectedAccountPath(pathname: string): boolean {
   return (
     pathname === "/operator" ||
     pathname.startsWith("/operator/") ||
     pathname === "/reports" ||
     pathname.startsWith("/reports/") ||
-    pathname.startsWith("/orgs/")
+    pathname.startsWith("/orgs/") ||
+    pathname === "/cli/authorize"
   );
 }
 

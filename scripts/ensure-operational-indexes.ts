@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { closeDb, getPool } from "@/lib/db";
 
-const RELEASE_STEP = "operational-indexes-v3";
+const RELEASE_STEP = "operational-indexes-v6";
 const RELEASE_LOCK_NAMESPACE = 1_349_481_332;
 const RELEASE_LOCK_OPERATION = 1_768_704_356;
 const RELEASE_LOCK_WAIT_MS = 15 * 60 * 1_000;
@@ -16,16 +16,61 @@ interface OperationalIndex {
 
 const OPERATIONAL_INDEXES: OperationalIndex[] = [
   {
+    name: "reviews_publication_lifecycle_pending_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx" ON "reviews" ("finished_at") WHERE "status" = \'completed\' AND "publication_lifecycle_required_at" IS NOT NULL AND "publication_lifecycle_reconciled_at" IS NULL',
+    definitionFragments: [
+      "public.reviews",
+      "finished_at",
+      "where",
+      "status",
+      "completed",
+      "publication_lifecycle_required_at is not null",
+      "publication_lifecycle_reconciled_at is null",
+    ],
+  },
+  {
+    name: "cli_tokens_refresh_session_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "cli_tokens_refresh_session_idx" ON "cli_tokens" ("refresh_session_id")',
+    definitionFragments: ["public.cli_tokens", "refresh_session_id"],
+  },
+  {
     name: "reviews_running_started_at_idx",
     createSql:
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_running_started_at_idx" ON "reviews" ("started_at") WHERE "status" = \'running\'',
-    definitionFragments: ["public.reviews", "(started_at)", "where", "status", "running"],
+    definitionFragments: [
+      "public.reviews",
+      "(started_at)",
+      "where",
+      "status",
+      "running",
+    ],
   },
   {
     name: "jobs_running_locked_at_idx",
     createSql:
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_locked_at_idx" ON "jobs" ("locked_at") WHERE "status" = \'running\'',
-    definitionFragments: ["public.jobs", "(locked_at)", "where", "status", "running"],
+    definitionFragments: [
+      "public.jobs",
+      "(locked_at)",
+      "where",
+      "status",
+      "running",
+    ],
+  },
+  {
+    name: "jobs_running_org_concurrency_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_org_concurrency_idx" ON "jobs" ("kind", ("payload"->>\'sourceOrgId\')) WHERE "status" = \'running\'',
+    definitionFragments: [
+      "public.jobs",
+      "kind",
+      "payload ->> 'sourceOrgId'",
+      "where",
+      "status",
+      "running",
+    ],
   },
   {
     name: "webhook_deliveries_completed_at_idx",
@@ -98,7 +143,9 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
     for (const index of OPERATIONAL_INDEXES) {
       let state = await loadIndexState(client, index.name);
       if (state && (!state.indisvalid || !state.indisready)) {
-        await client.query(`DROP INDEX CONCURRENTLY IF EXISTS "public"."${index.name}"`);
+        await client.query(
+          `DROP INDEX CONCURRENTLY IF EXISTS "public"."${index.name}"`,
+        );
         state = null;
       }
       if (!state) {
@@ -150,13 +197,18 @@ async function acquireReleaseLock(client: PoolClient): Promise<void> {
     );
     if (result.rows[0]?.acquired === true) return;
     if (Date.now() >= deadline) {
-      throw new Error("timed out waiting for the operational index release lock");
+      throw new Error(
+        "timed out waiting for the operational index release lock",
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, RELEASE_LOCK_POLL_MS));
   }
 }
 
-async function loadIndexState(client: PoolClient, name: string): Promise<IndexState | null> {
+async function loadIndexState(
+  client: PoolClient,
+  name: string,
+): Promise<IndexState | null> {
   const result = await client.query<IndexState>(
     `SELECT pg_index.indisvalid,
             pg_index.indisready,
@@ -168,15 +220,26 @@ async function loadIndexState(client: PoolClient, name: string): Promise<IndexSt
   return result.rows[0] ?? null;
 }
 
-function assertExpectedIndex(index: OperationalIndex, state: IndexState | null): void {
+function assertExpectedIndex(
+  index: OperationalIndex,
+  state: IndexState | null,
+): void {
   if (!state || !state.indisvalid || !state.indisready) {
     throw new Error(`operational index ${index.name} is not valid and ready`);
   }
-  const normalized = state.definition.toLowerCase().replace(/["()]/gu, "").replace(/\s+/gu, " ");
+  const normalized = state.definition
+    .toLowerCase()
+    .replace(/["()]/gu, "")
+    .replace(/\s+/gu, " ");
   for (const fragment of index.definitionFragments) {
-    const expected = fragment.toLowerCase().replace(/["()]/gu, "").replace(/\s+/gu, " ");
+    const expected = fragment
+      .toLowerCase()
+      .replace(/["()]/gu, "")
+      .replace(/\s+/gu, " ");
     if (!normalized.includes(expected)) {
-      throw new Error(`operational index ${index.name} has an unexpected definition`);
+      throw new Error(
+        `operational index ${index.name} has an unexpected definition`,
+      );
     }
   }
 }

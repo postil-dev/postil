@@ -17,7 +17,7 @@ describe("GET /api/auth/login", () => {
   test("binds a safe return target to the OAuth attempt", async () => {
     const response = await GET(
       new Request(
-        "http://localhost:3000/api/auth/login?next=%2Forgs%2Fpostil-dev%2Fsettings%3Ftab%3Dbilling",
+        "http://localhost:3000/api/auth/login?next=%2Forgs%2Fexample-org%2Fruns%2F11111111-2222-4333-8444-555555555555%3Ftab%3Dfindings",
       ),
     );
 
@@ -26,7 +26,7 @@ describe("GET /api/auth/login", () => {
       "https://github.com/login/oauth/authorize?",
     );
     expect(response.headers.get("set-cookie")).toContain(
-      "postil_oauth_return_to=%2Forgs%2Fpostil-dev%2Fsettings%3Ftab%3Dbilling",
+      "postil_oauth_return_to=%2Forgs%2Fexample-org%2Fruns%2F11111111-2222-4333-8444-555555555555%3Ftab%3Dfindings",
     );
   });
 

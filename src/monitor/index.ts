@@ -10,6 +10,7 @@ import {
 import {
   acquirePrivateMonitorLease,
   claimPrivateMonitoringNotifications,
+  deliverExternalMonitorHeartbeat,
   deliverPrivateMonitoringNotification,
   failPrivateMonitoringPass,
   finishPrivateMonitoringPass,
@@ -135,6 +136,7 @@ async function main(): Promise<void> {
         runPublicMonitoringChecks(publicOrigin),
         runDatabaseMonitoringChecks(pool, {
           workerHeartbeatMaxAgeSeconds,
+          externalHeartbeatConfigured: Boolean(heartbeatUrl),
         }),
         runOpenRouterCapMonitoringChecks({
           managementKey: openRouterManagementKey,
@@ -142,12 +144,21 @@ async function main(): Promise<void> {
           reviewOutageThresholdUsd: openRouterReviewOutageThresholdUsd,
         }),
       ]);
-      await finishPrivateMonitoringPass(
-        pool,
-        pass,
-        [...publicChecks, ...databaseChecks, ...openRouterChecks],
-        new Date(),
-      );
+      const checks = [...publicChecks, ...databaseChecks, ...openRouterChecks];
+      await finishPrivateMonitoringPass(pool, pass, checks, new Date());
+      // Failure evidence goes to the process log as well as the database so
+      // platform log capture retains it independently of incident state.
+      for (const check of checks) {
+        if (!check.healthy) {
+          console.error(
+            `[monitor] check ${check.key} unhealthy (${check.severity}): ${check.detail}`,
+          );
+        } else if ((check.attemptFailures?.length ?? 0) > 0) {
+          console.warn(
+            `[monitor] check ${check.key} recovered on attempt ${check.attempts}: ${check.attemptFailures?.[0]}`,
+          );
+        }
+      }
       await recordServiceHeartbeat(pool, "monitor", owner, new Date());
       monitorFailureState = recordMonitorPassSuccess(monitorFailureState);
 
@@ -175,7 +186,21 @@ async function main(): Promise<void> {
       console.log(
         `[monitor] pass ${pass.runId} completed with ${publicChecks.length + databaseChecks.length + openRouterChecks.length} checks and ${notifications.length} notification claim(s)`,
       );
-      await pingMonitorHeartbeat(heartbeatUrl);
+      try {
+        await deliverExternalMonitorHeartbeat(pool, {
+          url: heartbeatUrl,
+          instanceId: owner,
+        });
+      } catch (error) {
+        reportOperationalFailure(
+          "monitor",
+          "monitor_heartbeat_delivery_failed",
+          error,
+        );
+        console.error(
+          `[monitor] heartbeat delivery failed: ${redactSecrets(error)}`,
+        );
+      }
     } catch (error) {
       const failure = recordMonitorPassFailure(
         monitorFailureState,
@@ -253,20 +278,6 @@ function sleepUntilNextPass(ms: number): Promise<void> {
     const timer = setTimeout(finish, ms);
     wakeSleep = finish;
   });
-}
-
-// A missed ping raises a dead-man's-switch alert in the external alerting
-// service, so a dead monitor process or persistently failing pass is detected
-// outside the platform's own failure domain. Pings fire only after a fully
-// completed pass.
-async function pingMonitorHeartbeat(url: string | undefined): Promise<void> {
-  if (!url) return;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  } catch (error) {
-    console.error(`[monitor] heartbeat ping failed: ${redactSecrets(error)}`);
-  }
 }
 
 function monitoringBucket(now: Date, intervalMs: number): Date {

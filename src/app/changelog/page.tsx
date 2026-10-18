@@ -35,11 +35,259 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
-    version: "0.8.1–0.8.3",
-    date: "July 24, 2026",
+    version: "0.9.19",
+    date: "September 30, 2026",
     summary:
-      "The builtin content policy judges prose by function instead of fixed vocabulary, and reviews can resolve their own uncertainty findings against repository files.",
+      "Incremental re-reviews are judged against the complete pull-request change instead of each new commit in isolation.",
     changes: [
+      {
+        label: "Fixed",
+        text: "A follow-up commit that cleans up references to code removed earlier in the pull request is no longer reported as a regression; incremental reviews compare against the complete change under review.",
+      },
+      {
+        label: "Fixed",
+        text: "An unresolved check of a finding on a file deleted later in the pull request no longer fails the whole review.",
+      },
+    ],
+  },
+  {
+    version: "0.9.17",
+    date: "September 23, 2026",
+    summary:
+      "Hosted reviews keep blocking findings tied to the changes under review.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A new finding on unchanged code must cite an exact added or removed line as its cause before it can block a pull request. Complete diff evidence excludes new findings that predate the change; existing published findings keep their recorded state.",
+      },
+      {
+        label: "Fixed",
+        text: "Review summaries group duplicate suppressed copies separately and avoid repeating their inline finding text.",
+      },
+    ],
+  },
+  {
+    version: "0.9.8",
+    date: "September 11, 2026",
+    summary:
+      "Hosted reviews cover more changed source within their review limits and recover from unsupported dismissals through independent scoring.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Large hosted reviews use the available review budget to cover more changed source. When required source remains unreviewed, the review reports incomplete coverage and keeps the gate blocked.",
+      },
+      {
+        label: "Fixed",
+        text: "Reviews can recover from unsupported dismissals of new findings after a complete independent scoring check. Those findings are suppressed only when scored below the reporting threshold. An unavailable or incomplete check preserves findings and prior review state and keeps the gate blocked.",
+      },
+    ],
+  },
+  {
+    version: "0.9.4",
+    date: "August 27, 2026",
+    summary:
+      "The CLI starts useful reviews without model or diff-selection setup, keeps terminal progress concise, and keeps agent-box logins renewable.",
+    changes: [
+      {
+        label: "Changed",
+        text: "After authentication, `postil review` selects staged changes, commits since the default branch, or tracked working-tree changes and uses the embedded `openai/gpt-5.6-luna` low-effort reviewer when no local model is configured.",
+      },
+      {
+        label: "Added",
+        text: "`postil models` explains the embedded default, local scorer behavior, and how explicit endpoint model IDs are accepted.",
+      },
+      {
+        label: "Changed",
+        text: "Interactive terminals show compact progress and a final result while automation retains detailed telemetry. `--verbose` exposes the detailed stream when a person needs it.",
+      },
+      {
+        label: "Changed",
+        text: "CLI logins refresh automatically and remain renewable for up to 180 days of inactivity. The service-only mention responder is no longer exposed as a local CLI command.",
+      },
+    ],
+  },
+  {
+    version: "0.8.28",
+    date: "August 24, 2026",
+    summary:
+      "Reviews recover from rebased incremental baselines and intermittent provider routing metadata without failing the pull request.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "An incremental review whose stored baseline is no longer an ancestor of the pull-request head restarts as a full review instead of failing.",
+      },
+      {
+        label: "Fixed",
+        text: "A routed model response that temporarily omits the upstream provider identity is retried before the review reports a provider failure.",
+      },
+    ],
+  },
+  {
+    version: "0.8.27",
+    date: "August 20, 2026",
+    summary:
+      "Hosted reviews run on a different model, chosen because it decides the merge gate correctly more often and interrupts clean pull requests less.",
+    changes: [
+      {
+        label: "Changed",
+        text: "Hosted reviews now use a model that gets the block-or-pass decision right 86% of the time against the previous model's 74%, measured across repeated runs of the same 70-fixture suite. It raised no false finding in any run and stayed silent on every clean fixture. Reviews also return faster: the slowest one in twenty finishes in 18 seconds rather than 29.",
+      },
+      {
+        label: "Changed",
+        text: "The benchmark that gates a release now measures the model the release ships, read from the configuration the binary is built with. It previously named a model separately, so a release that changed the model still measured the old one.",
+      },
+    ],
+  },
+  {
+    version: "0.8.24–0.8.26",
+    date: "August 18, 2026",
+    summary:
+      "A hosted review gets the share of its time budget that its own plan reserved, instead of the share a much larger review would have been given.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A review split across several batches sends them together rather than one after another, so each batch gets the review's whole time budget instead of a fraction of it. Sending them in sequence divided the budget by the number of batches, and larger changes lost a batch to the deadline.",
+      },
+      {
+        label: "Fixed",
+        text: "Hosted reviews divide their time budget by the work they actually scheduled. Every review was held to the slice sized for a review split across many batches, so a review that needed only one model request was cut off partway through and reported as a provider outage. Reviews of ordinary changes were the ones affected, because they are the ones that finish in a single request.",
+      },
+    ],
+  },
+  {
+    version: "0.8.17–0.8.23",
+    date: "August 18, 2026",
+    summary:
+      "Hosted reviews admit the plans they are meant to run, a review that stops early reports the reason it stopped, and findings keep the direct evidence they were established from.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Hosted reviews measure their planned worst-case cost against a ceiling for plans rather than against the limit on what a review may spend. The two differ by orders of magnitude, and holding the plan to the spending limit refused every hosted review before it reached a model, whatever the size of the change.",
+      },
+      {
+        label: "Fixed",
+        text: "A review that stops before reaching a verdict reports the cause it stopped for. Failures unrelated to scoring were previously published as unvalidated model output, which named a stage that had not run and dropped the text identifying the fault.",
+      },
+      {
+        label: "Fixed",
+        text: "Findings keep the direct evidence they were established from, repository-dependent findings are distinguished from ones grounded in the change alone, and publication evidence stays direct.",
+      },
+      {
+        label: "Added",
+        text: "GitHub publication plans are emitted immutably, so what a review intends to post is fixed before it posts.",
+      },
+      {
+        label: "Security",
+        text: "The HTTP/2 dependency moves to the release that rejects unbounded empty data frames.",
+      },
+    ],
+  },
+  {
+    version: "0.8.13, 0.8.15–0.8.16",
+    date: "August 13–14, 2026",
+    summary:
+      "Review findings are adjudicated against candidate-bound direct evidence and a complete repository receipt before publication, while large changes remain bounded without silently skipping required source.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Repetitive source is encoded losslessly within the review budget, reconstructed only for exact citations, and cannot impersonate the evidence transport format.",
+      },
+      {
+        label: "Changed",
+        text: "Absence, removal, conditional, and delegated-verification claims use the same complete-corpus adjudication regardless of generated kind; refuted and unresolved delegated checks are not published.",
+      },
+      {
+        label: "Fixed",
+        text: "Repository-wide claims are bound to immutable search receipts, and time-sensitive claims use the trusted UTC request date instead of model memory.",
+      },
+      {
+        label: "Fixed",
+        text: "Inline code in GitHub review findings preserves comparison operators while surrounding prose remains HTML-safe.",
+      },
+    ],
+  },
+  {
+    version: "0.8.9–0.8.12",
+    date: "August 12, 2026",
+    summary:
+      "Large pull-request descriptions no longer consume review context that is never sent to the model, and bounded retries retain their complete evidence.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Long pull-request descriptions are budgeted from the bounded text rendered into the review request, so dependency updates with extensive release notes reach review instead of failing before model contact.",
+      },
+      {
+        label: "Fixed",
+        text: "Retry and correction requests preserve their route, phase, evidence coordinates, and bounded prior response, including quoted Git paths and Unicode source text.",
+      },
+      {
+        label: "Fixed",
+        text: "Provider-contract and timeout-fallback tests use isolated process state and structured attempt records, keeping release checks deterministic under parallel and slower runners.",
+      },
+    ],
+  },
+  {
+    version: "0.8.7–0.8.8",
+    date: "August 9, 2026",
+    summary:
+      "Ignored paths do not consume bounded-review coverage, and uncertainty resolution can continue from exact diff evidence when repository lookup is unavailable.",
+    changes: [
+      {
+        label: "Changed",
+        text: "Files matched by ignore rules are excluded before grounding, batching, and coverage planning. Generated-looking source remains reviewable unless a repository explicitly ignores it.",
+      },
+      {
+        label: "Fixed",
+        text: "When repository file lookup fails, uncertainty resolution uses exact evidence already present in the reviewed diff. Any uncertainty that remains unresolved is reported as a warning rather than an operational failure.",
+      },
+    ],
+  },
+  {
+    version: "0.8.5–0.8.6",
+    date: "July 30, 2026",
+    summary:
+      "A finding's citation is checked against the code its prose names, and the CLI can review without your own model credential.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "A finding whose prose names a construct the diff places on a different line is no longer published. Citing the wrong line makes a claim the reader cannot check against the code in front of them.",
+      },
+      {
+        label: "Fixed",
+        text: "A content-policy claim can no longer state more confidence than the finding it argues from, and is withdrawn when that finding was itself withdrawn as mis-anchored.",
+      },
+      {
+        label: "Changed",
+        text: "One observation about several files is published once, naming every location it affects, instead of once per file.",
+      },
+      {
+        label: "Changed",
+        text: "An uncertainty finding whose body only asks you to confirm something no longer carries a blocking severity. Findings that report what the review checked are unaffected.",
+      },
+      {
+        label: "Fixed",
+        text: "A second review of an unchanged commit no longer repeats inline comments the previous review already left on the pull request.",
+      },
+      {
+        label: "Added",
+        text: "postil login authorizes the CLI against Postil through a browser, so reviews run without your own model provider credential.",
+      },
+    ],
+  },
+  {
+    version: "0.8.1–0.8.4",
+    date: "July 24–28, 2026",
+    summary:
+      "Reviews can resolve uncertainty against repository files and publish each GitHub finding on one configured surface.",
+    changes: [
+      {
+        label: "Added",
+        text: "review.findingPresentation selects batched review comments by default or advisory check annotations on GitHub, so the same finding is not rendered twice.",
+      },
+      {
+        label: "Fixed",
+        text: "A review that cannot produce a verdict fails postil/review instead of appearing skipped; postil/gate still follows the configured outage policy.",
+      },
       {
         label: "Changed",
         text: "Finding bodies over six hundred bytes are rewritten to state the defect, evidence, and fix in at most three sentences; reviews.conciseFindings: false opts out.",

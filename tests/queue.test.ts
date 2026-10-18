@@ -1,19 +1,22 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import {
   backoffMs,
+  BoundedJobRetryError,
   claimJob as claimJobWithCapabilities,
+  claimNextJob,
   completeJob,
   enqueueGithubReactionJobOnce,
   enqueueJob,
   enqueueRespondJobWithinHourlyCap,
   enqueueReviewJobOnce,
   failJob,
+  isBoundedJobRetryError,
+  nextClaimPollDelay,
   queueDepth,
   requeueJobsOwnedBy,
   retryJobIndefinitely,
@@ -43,31 +46,74 @@ function claimJob(pool: Pool, workerId: string) {
   return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS);
 }
 
+const capped = { perOrganizationConcurrency: 2 } as const;
+
+function claimBudgetedJob(
+  pool: Pool,
+  workerId: string,
+  perOrganizationConcurrency: number,
+) {
+  return claimJobWithCapabilities(pool, workerId, TEST_JOB_KINDS, {
+    perOrganizationConcurrency,
+  });
+}
+
+/**
+ * Poll pacing after a claim returns nothing. Pure, so it runs without a
+ * database: the distinction it encodes is what keeps a capped backlog from
+ * waiting out the idle ceiling.
+ */
+describe("claim poll pacing", () => {
+  const state = { idleDelayMs: 4_000, pollIntervalMs: 1_000, idlePollMaxMs: 900_000 };
+
+  test("a deferred claim holds the base interval and leaves the idle delay alone", () => {
+    expect(nextClaimPollDelay("deferred", state)).toEqual({
+      sleepMs: 1_000,
+      idleDelayMs: 4_000,
+    });
+  });
+
+  test("an empty queue backs off toward the idle ceiling", () => {
+    expect(nextClaimPollDelay("empty", state)).toEqual({
+      sleepMs: 4_000,
+      idleDelayMs: 8_000,
+    });
+  });
+
+  test("the idle delay never passes its ceiling", () => {
+    expect(
+      nextClaimPollDelay("empty", { ...state, idleDelayMs: 800_000 }).idleDelayMs,
+    ).toBe(900_000);
+  });
+
+  test("a claim error sleeps for the grown delay rather than the old one", () => {
+    expect(nextClaimPollDelay("error", state)).toEqual({
+      sleepMs: 8_000,
+      idleDelayMs: 8_000,
+    });
+  });
+});
+
+describe("bounded job retry classification", () => {
+  test("recognizes class instances and structural markers", () => {
+    expect(isBoundedJobRetryError(new BoundedJobRetryError("retry"))).toBe(true);
+    expect(
+      isBoundedJobRetryError({
+        [Symbol.for("postil.bounded-job-retry")]: true,
+      }),
+    ).toBe(true);
+    expect(isBoundedJobRetryError(new Error("retry"))).toBe(false);
+  });
+});
+
 describeDb("postgres job queue", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_URL, max: 8 });
-    // Apply the generated drizzle migration(s), tolerating reruns.
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          // 42P07 duplicate table, 42710 duplicate object (enum/index/trigger),
-          // 42723 duplicate function. The CI database is shared by focused
-          // migration suites, so this runner tolerates their prior objects.
-          if (code !== "42P07" && code !== "42710" && code !== "42723") throw err;
-        }
-      }
-    }
-  });
+    db = await createEphemeralDatabase("queue");
+    pool = db.pool;
+  }, 30_000);
 
   beforeEach(async () => {
     await pool.query(
@@ -76,8 +122,8 @@ describeDb("postgres job queue", () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-  });
+    await db?.drop();
+  }, 30_000);
 
   test("claim returns the oldest runnable job and marks it running", async () => {
     const id = await enqueueJob(pool, "review", { prNumber: 1 });
@@ -421,6 +467,187 @@ describeDb("postgres job queue", () => {
     expect(a?.id).not.toBe(b?.id);
   });
 
+  test("one organization at its cap yields the next claim to another", async () => {
+    const busy: number[] = [];
+    for (let n = 1; n <= 5; n += 1) {
+      busy.push(await enqueueJob(pool, "review", { sourceOrgId: 11, n }));
+    }
+    const waiting = await enqueueJob(pool, "review", { sourceOrgId: 22, n: 6 });
+
+    expect((await claimBudgetedJob(pool, "w1", 2))?.id).toBe(busy[0]);
+    expect((await claimBudgetedJob(pool, "w2", 2))?.id).toBe(busy[1]);
+    expect((await claimBudgetedJob(pool, "w3", 2))?.id).toBe(waiting);
+    expect(await claimBudgetedJob(pool, "w4", 2)).toBeNull();
+  });
+
+  test("respond jobs draw on the same organization budget as reviews", async () => {
+    const firstRespond = await enqueueJob(pool, "respond", { sourceOrgId: 11, n: 1 });
+    const secondRespond = await enqueueJob(pool, "respond", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    const otherOrg = await enqueueJob(pool, "review", { sourceOrgId: 22, n: 4 });
+
+    expect((await claimBudgetedJob(pool, "w1", 2))?.id).toBe(firstRespond);
+    expect((await claimBudgetedJob(pool, "w2", 2))?.id).toBe(secondRespond);
+    expect((await claimBudgetedJob(pool, "w3", 2))?.id).toBe(otherOrg);
+  });
+
+  test("work without an organization stays claimable past the cap", async () => {
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    const unattributed = await enqueueJob(pool, "review", { n: 4 });
+    const acknowledgement = await enqueueJob(pool, "github-reaction", {
+      sourceOrgId: 11,
+      sourceDeliveryId: "capped-org-reaction",
+    });
+
+    await claimBudgetedJob(pool, "w1", 2);
+    await claimBudgetedJob(pool, "w2", 2);
+
+    // Acknowledgement work is cheap and ordered ahead of reviews, so it is
+    // claimed first even though its organization already holds the budget.
+    const reaction = await claimJobWithCapabilities(
+      pool,
+      "w3",
+      [...TEST_JOB_KINDS, "github-reaction"],
+      { perOrganizationConcurrency: 2 },
+    );
+    expect(reaction?.id).toBe(acknowledgement);
+    expect((await claimBudgetedJob(pool, "w4", 2))?.id).toBe(unattributed);
+  });
+
+  test("a claim held back only by the cap reports itself as deferred", async () => {
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+
+    expect((await claimNextJob(pool, "w1", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+    expect((await claimNextJob(pool, "w2", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+
+    // Ready work exists; only the cap is holding it. A caller that reads this
+    // as an empty queue backs off toward the idle ceiling and leaves the
+    // backlog sitting there after a slot frees.
+    expect((await claimNextJob(pool, "w3", TEST_JOB_KINDS, capped)).status).toBe("deferred");
+  });
+
+  test("classifies a capped claim from one snapshot while a slot is released", async () => {
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    const waiting = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+
+    const first = await claimNextJob(pool, "w1", TEST_JOB_KINDS, capped);
+    expect(first.status).toBe("claimed");
+    expect((await claimNextJob(pool, "w2", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+    if (first.status !== "claimed") throw new Error("first capped claim was not acquired");
+
+    const releaseClient = await pool.connect();
+    let releaseCommitted = false;
+    try {
+      await releaseClient.query("BEGIN");
+      await releaseClient.query("UPDATE jobs SET status = 'done' WHERE id = $1", [
+        first.job.id,
+      ]);
+
+      const snapshotPool = {
+        connect: async () => {
+          const client = await pool.connect();
+          return new Proxy(client, {
+            get(target, property) {
+              if (property === "query") {
+                return async (...args: unknown[]) => {
+                  const result = await Reflect.apply(target.query, target, args);
+                  const query = args[0];
+                  const text =
+                    typeof query === "string"
+                      ? query
+                      : query && typeof query === "object" && "text" in query
+                        ? String((query as { text: unknown }).text)
+                        : "";
+                  if (
+                    !releaseCommitted &&
+                    text.includes("FROM jobs candidate") &&
+                    text.includes("FOR UPDATE SKIP LOCKED")
+                  ) {
+                    await releaseClient.query("COMMIT");
+                    releaseCommitted = true;
+                  }
+                  return result;
+                };
+              }
+              const value = Reflect.get(target, property, target);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          }) as PoolClient;
+        },
+      } as Pool;
+
+      const outcome = await claimNextJob(snapshotPool, "w3", TEST_JOB_KINDS, capped);
+      expect(releaseCommitted).toBe(true);
+      expect(outcome.status).toBe("deferred");
+
+      const afterRelease = await claimNextJob(pool, "w4", TEST_JOB_KINDS, capped);
+      expect(afterRelease.status).toBe("claimed");
+      expect(afterRelease.status === "claimed" ? afterRelease.job.id : null).toBe(waiting);
+    } finally {
+      if (!releaseCommitted) await releaseClient.query("ROLLBACK");
+      releaseClient.release();
+    }
+  });
+
+  test("an empty queue is reported as empty, not deferred", async () => {
+    expect((await claimNextJob(pool, "w1", TEST_JOB_KINDS, capped)).status).toBe("empty");
+
+    await enqueueJob(pool, "review", { sourceOrgId: 22, n: 1 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 4 });
+    for (const worker of ["w1", "w2", "w3"]) {
+      expect((await claimNextJob(pool, worker, TEST_JOB_KINDS, capped)).status).toBe("claimed");
+    }
+    // Organization 11 now holds its two, so its last job is capped rather than
+    // absent, even though another organization's work drained cleanly.
+    expect((await claimNextJob(pool, "w4", TEST_JOB_KINDS, capped)).status).toBe("deferred");
+  });
+
+  test("a null organization in the running set does not block every claim", async () => {
+    // `NOT IN` over a subselect containing NULL is NULL for every row, which
+    // would silently stop the queue. The subselect excludes them for that
+    // reason, and this is the shape that catches it if the guard is dropped.
+    // The NULL group only reaches the subselect once it satisfies HAVING, so
+    // the cap's worth of unattributed work has to be running for the guard to
+    // be under test at all.
+    await enqueueJob(pool, "review", { n: 1 });
+    await enqueueJob(pool, "review", { n: 2 });
+    expect((await claimNextJob(pool, "w1", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+    expect((await claimNextJob(pool, "w2", TEST_JOB_KINDS, capped)).status).toBe("claimed");
+
+    const attributed = await enqueueJob(pool, "review", { sourceOrgId: 33, n: 3 });
+    const claimed = await claimNextJob(pool, "w3", TEST_JOB_KINDS, capped);
+    expect(claimed.status).toBe("claimed");
+    expect(claimed.status === "claimed" ? claimed.job.id : null).toBe(attributed);
+  });
+
+  test("a cap of zero removes the per-organization limit", async () => {
+    const first = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    const second = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    const third = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+
+    expect((await claimBudgetedJob(pool, "w1", 0))?.id).toBe(first);
+    expect((await claimBudgetedJob(pool, "w2", 0))?.id).toBe(second);
+    expect((await claimBudgetedJob(pool, "w3", 0))?.id).toBe(third);
+  });
+
+  test("the configured default admits two running jobs per organization", async () => {
+    const first = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 1 });
+    const second = await enqueueJob(pool, "review", { sourceOrgId: 11, n: 2 });
+    await enqueueJob(pool, "review", { sourceOrgId: 11, n: 3 });
+    const otherOrg = await enqueueJob(pool, "review", { sourceOrgId: 22, n: 4 });
+
+    expect((await claimJob(pool, "w1"))?.id).toBe(first);
+    expect((await claimJob(pool, "w2"))?.id).toBe(second);
+    expect((await claimJob(pool, "w3"))?.id).toBe(otherOrg);
+  });
+
   test("worker shutdown requeues only its claims without consuming attempts", async () => {
     const first = await enqueueJob(pool, "review", { n: 1 });
     const second = await enqueueJob(pool, "review", { n: 2 });
@@ -477,6 +704,7 @@ describeDb("postgres job queue", () => {
   test("concurrent review enqueue creates one active job per repository PR head", async () => {
     const payload = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/repo",
       prNumber: 42,
       headSha: "a".repeat(40),
@@ -502,9 +730,23 @@ describeDb("postgres job queue", () => {
     expect(await enqueueReviewJobOnce(pool, payload)).not.toBeNull();
   });
 
+  test("rejects an invalid review repository identity before enqueue", async () => {
+    await expect(
+      enqueueReviewJobOnce(pool, {
+        installationId: 1,
+        githubRepoId: undefined as unknown as number,
+        repoFullName: "octo/repo",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+      }),
+    ).rejects.toThrow("review job requires a positive GitHub repository ID");
+  });
+
   test("same-head queued reviews retain newest metadata and sticky full-review intent", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/queued-upgrade",
       prNumber: 42,
       headSha: "a".repeat(40),
@@ -565,6 +807,7 @@ describeDb("postgres job queue", () => {
   test("same-head requests during a running review produce one retained rerun", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/running-upgrade",
       prNumber: 43,
       headSha: "c".repeat(40),
@@ -611,6 +854,7 @@ describeDb("postgres job queue", () => {
   test("a terminal failure promotes its retained review", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/failed-upgrade",
       prNumber: 44,
       headSha: "d".repeat(40),
@@ -670,6 +914,7 @@ describeDb("postgres job queue", () => {
   test("a transient failure records the old attempt before promoting retained intent", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/transient-upgrade",
       prNumber: 45,
       headSha: "e".repeat(40),
@@ -719,6 +964,7 @@ describeDb("postgres job queue", () => {
   test("a queued base retarget creates a fresh immutable publication identity", async () => {
     const initial = {
       installationId: 1,
+      githubRepoId: 99,
       repoFullName: "octo/base-retarget",
       prNumber: 46,
       headSha: "f".repeat(40),
@@ -868,6 +1114,68 @@ describeDb("postgres job queue", () => {
       max_attempts: 1,
       last_error: "GitHub unavailable",
     });
+  });
+
+  test("durable reconciliation keeps requeuing within its budget despite exhausted attempts", async () => {
+    // Production showed attempts=10 and attempts=28 against max_attempts=3:
+    // indefinite reconciliation must never consult attempts. Wall clock is
+    // the only thing that can end it.
+    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    const job = await claimJob(pool, "reconciler");
+    expect(job?.attempts).toBe(1);
+
+    expect(
+      await retryJobIndefinitely(
+        pool,
+        { ...job!, attempts: 10 },
+        "GitHub unavailable",
+        60 * 60 * 1000,
+      ),
+    ).toBe("retried");
+    const row = await pool.query(
+      "SELECT status, max_attempts FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(row.rows[0]).toMatchObject({ status: "queued", max_attempts: 1 });
+  });
+
+  test("durable reconciliation fails permanently once its wall-clock budget is exceeded", async () => {
+    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    await pool.query(
+      "UPDATE jobs SET created_at = now() - interval '2 hours' WHERE id = $1",
+      [id],
+    );
+    const job = await claimJob(pool, "reconciler");
+
+    expect(
+      await retryJobIndefinitely(pool, job!, "GitHub unavailable", 60 * 60 * 1000),
+    ).toBe("exhausted");
+    const row = await pool.query(
+      "SELECT status, last_error FROM jobs WHERE id = $1",
+      [id],
+    );
+    expect(row.rows[0].status).toBe("failed");
+    expect(row.rows[0].last_error).toContain("reconciliation budget");
+    // A permanently exhausted job never comes back for another attempt.
+    expect(await claimJob(pool, "reconciler")).toBeNull();
+  });
+
+  test("review publication reconciliation receives a fresh lifecycle budget", async () => {
+    const id = await enqueueJob(pool, "review", { reconcile: true }, { maxAttempts: 1 });
+    await pool.query(
+      "UPDATE jobs SET created_at = now() - interval '2 hours' WHERE id = $1",
+      [id],
+    );
+    const job = await claimJob(pool, "reconciler");
+
+    expect(
+      await retryJobIndefinitely(pool, job!, "GitHub unavailable", {
+        budgetMs: 60 * 60 * 1000,
+        startedAt: new Date(),
+      }),
+    ).toBe("retried");
+    const row = await pool.query("SELECT status FROM jobs WHERE id = $1", [id]);
+    expect(row.rows[0].status).toBe("queued");
   });
 
   test("failJob {permanent} on an already-failed job returns 'lost' (single-post guard holds)", async () => {

@@ -31,14 +31,9 @@ const ROUTES: {
   { path: "/vs/macroscope", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/vs/copilot", priority: 0.7, changeFrequency: "monthly", lastModified: "2026-07-08" },
   { path: "/blog", priority: 0.7, changeFrequency: "weekly", lastModified: "2026-07-08" },
+  { path: "/bench", priority: 0.8, changeFrequency: "monthly", lastModified: MODEL_CATALOG_CAPTURE_DATE },
   {
     path: "/blog/where-does-your-code-go",
-    priority: 0.7,
-    changeFrequency: "monthly",
-    lastModified: "2026-07-08",
-  },
-  {
-    path: "/blog/self-hosted-ai-code-review",
     priority: 0.7,
     changeFrequency: "monthly",
     lastModified: "2026-07-08",
@@ -49,18 +44,12 @@ const ROUTES: {
     changeFrequency: "monthly",
     lastModified: "2026-07-08",
   },
-  {
-    path: "/blog/ai-code-review-benchmarks",
-    priority: 0.7,
-    changeFrequency: "monthly",
-    lastModified: "2026-07-08",
-  },
   { path: "/blog/silence-rate", priority: 0.6, changeFrequency: "monthly", lastModified: "2026-06-13" },
   {
-    path: "/blog/ai-code-review-pricing-2026",
+    path: "/blog/the-least-useful-number",
     priority: 0.7,
     changeFrequency: "monthly",
-    lastModified: "2026-07-08",
+    lastModified: "2026-08-19",
   },
   {
     path: "/blog/why-copilot-cant-block-your-merge",

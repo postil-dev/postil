@@ -136,7 +136,7 @@ beforeEach(() => {
     allowed: false,
     reason: "no_entitlement",
     entitlement: null,
-    usageMicros: 0,
+    usageMicros: 0n,
     usageLimitMicros: null,
   };
 });
@@ -255,14 +255,14 @@ function entitlementDecision(
       pastDueGraceEndsAt: null,
       periodStartsAt: new Date("2026-07-18T12:00:00.000Z"),
       periodEndsAt: trialEndsAt,
-      includedUsageMicros: 100_000_000,
-      overageHardCapMicros: 0,
+      includedUsageMicros: 100_000_000n,
+      overageHardCapMicros: 0n,
       promotionalEligible: false,
       promotionalEndsAt: null,
       billingContactEmail: null,
       billingContactVerifiedAt: null,
     },
-    usageMicros: 0,
+    usageMicros: 0n,
     usageLimitMicros: null,
   };
 }

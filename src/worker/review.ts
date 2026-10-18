@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import { and, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 
 import {
   appendPreparedReceiptBatch,
@@ -30,16 +30,18 @@ import {
 } from "@/lib/env";
 import {
   classifyOperationalModelIncidents,
-  gateCheckConclusionForEnvelope,
   ingestEnvelope,
   envelopeSchema,
   isEnvelopeOperationallyUnavailable,
+  isReviewCoverageCapacityFailure,
   type Envelope,
-  type GateCheckConclusion,
 } from "@/lib/envelope";
-import { getActiveApprovalIds } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
+import { withReviewDecisionScopeLock } from "@/lib/finding-approvals";
+import {
+  observeGitHubReviewThreads,
+  resolveGitHubReviewThreads,
+} from "@/lib/github/publication-threads";
 import { fetchRepositorySummary } from "@/lib/github/installation-sync";
 import {
   ADVISORY_CHECK_NAME,
@@ -52,6 +54,7 @@ import {
   createCheckRun,
   findCheckRunByExternalId,
   getPullRequestReviewContext,
+  incrementalBaselineUsable,
   verifyCompletedCheckRun,
   type ExpectedCheckRunIdentity,
 } from "@/lib/github/checks";
@@ -98,7 +101,9 @@ import {
   type LargeReviewProviderProxy,
 } from "@/lib/large-review-resume";
 import { redactAndTruncate, redactSecrets } from "@/lib/redact";
+import { writeReviewFeedbackFile } from "@/lib/review-feedback";
 import {
+  completeReviewPublicationLifecycle,
   finalizeStagedReviewCompletionWithGateMode,
   stageReviewCompletionCandidate,
   insertReviewForClaim,
@@ -110,8 +115,15 @@ import {
   getOrganizationGateEnabled,
 } from "@/lib/gate-mode";
 import { discoverPreventionCommands } from "@/lib/review-guidance";
-import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
-import { HostedInferenceReleaseDarkError } from "@/lib/release-job-rollout";
+import {
+  HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE,
+  HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
+  PUBLICATION_INELIGIBLE_MESSAGE,
+} from "@/lib/review-outcome";
+import {
+  HostedInferenceReleaseDarkError,
+  publicationLifecycleReleaseActivated,
+} from "@/lib/release-job-rollout";
 import { shouldSendPreventionHint } from "@/lib/review-prevention-db";
 import {
   consumePrivateWorkerRehearsalAfterStaging,
@@ -119,7 +131,7 @@ import {
 } from "@/lib/private-worker-rehearsal";
 import {
   applyPublicationThreadObservations,
-  getPullRequestPublicationCommentIds,
+  getPullRequestPublicationThreadPlan,
   readPublicationReceipt,
   type PublicationReceipt,
 } from "@/lib/publication-receipt";
@@ -142,6 +154,14 @@ class OperationalError extends Error {}
 
 class TerminalReviewError extends OperationalError {}
 
+export class ReviewCoverageCapacityError extends TerminalReviewError {
+  override name = "ReviewCoverageCapacityError";
+
+  constructor(readonly unreviewedHunks: number) {
+    super(`Review incomplete: the request limit left ${unreviewedHunks} source ${unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed. Partial findings are retained; this review cannot pass.`);
+  }
+}
+
 export class WorkerShutdownError extends OperationalError {
   constructor() {
     super("review interrupted by worker shutdown");
@@ -150,7 +170,10 @@ export class WorkerShutdownError extends OperationalError {
 }
 
 export class ReviewPublicationReconciliationError extends OperationalError {
-  constructor(message = "review publication reconciliation is pending") {
+  constructor(
+    message = "review publication reconciliation is pending",
+    readonly reconciliationStartedAt = new Date(),
+  ) {
     super(message);
     this.name = "ReviewPublicationReconciliationError";
   }
@@ -369,6 +392,19 @@ interface CliResult {
 
 const REQUIRED_HOSTED_PUBLICATION_FAILURE =
   /required hosted (?:check )?publication failed/i;
+
+// The publication receipt carries no structured field for why the CLI left a
+// check-run incomplete; its stderr text is the only signal available. A moved
+// pull request head is the one reason worth distinguishing from a transient
+// forge failure: a check-run for a snapshot that no longer exists can never
+// report completed, so it must never be handed to indefinite reconciliation.
+const PULL_REQUEST_SNAPSHOT_CHANGED =
+  /pull request snapshot changed after review/i;
+
+/** True when the CLI declined to publish because the reviewed head moved. */
+export function publicationSkippedForChangedSnapshot(stderr: string): boolean {
+  return PULL_REQUEST_SNAPSHOT_CHANGED.test(stderr);
+}
 
 /**
  * A strict hosted CLI can compute and emit a complete envelope before one of
@@ -692,21 +728,120 @@ function reviewUsageFromEnvelope(
   }));
 }
 
-async function resumeStagedReviewCompletion(input: {
+/** Failed inference evidence becomes visible only with its terminal state. */
+export async function failHostedReviewAttempt(
+  db: Pick<Database, "update">,
+  input: { reviewId: number; errorMessage: string; envelope?: Envelope },
+) {
+  return db.update(schema.reviews)
+    .set({
+      status: "failed",
+      errorMessage: input.errorMessage,
+      finishedAt: new Date(),
+      ...(input.envelope ? {
+        envelope: input.envelope,
+        silent: input.envelope.silent,
+        engineGateFailing: input.envelope.gate.failing,
+      } : {}),
+    })
+    .where(and(eq(schema.reviews.id, input.reviewId), eq(schema.reviews.status, "running")))
+    .returning({ id: schema.reviews.id });
+}
+
+/** Failed completed inference settles before its cached output can be discarded. */
+export async function settleFailedHostedReviewAttempt(
+  db: Database,
+  input: Omit<Parameters<typeof reconcileHostedReviewSpendFromReceipt>[1], "reservationId" | "usage"> & {
+    reservationId: string | null;
+    usage: ReviewCompletionInput["usage"];
+  },
+  proxy: Pick<LargeReviewProviderProxy, "discardCompletedRun"> | undefined,
+): Promise<void> {
+  try {
+    if (input.reservationId) {
+      await reconcileHostedReviewSpendFromReceipt(db, {
+        ...input,
+        reservationId: input.reservationId,
+      });
+    } else {
+      await db.transaction(async (tx) => {
+        await tx.select({ id: schema.reviews.id }).from(schema.reviews)
+          .where(eq(schema.reviews.id, input.reviewId)).for("update");
+        const existing = await tx.select({ id: schema.usageEvents.id }).from(schema.usageEvents)
+          .where(eq(schema.usageEvents.reviewId, input.reviewId)).limit(1);
+        if (existing.length === 0 && input.usage.length > 0) {
+          await tx.insert(schema.usageEvents).values(input.usage.map((usage) => ({
+            ...usage, reviewId: input.reviewId, triggerSource: input.triggerSource,
+          })));
+        }
+      });
+    }
+    await proxy?.discardCompletedRun();
+  } catch (error) {
+    throw new PermanentJobError(
+      `failed review accounting or artifact retirement could not complete safely: ${redactSecrets(error)}`,
+    );
+  }
+}
+
+async function reconcileReviewPublicationLifecycle(input: {
+  pool: import("pg").Pool;
+  token: string;
+  reviewId: number;
+  reviewPublicId: string;
+  repositoryId: number;
+  repoFullName: string;
+  prNumber: number;
+  signal?: AbortSignal;
+}): Promise<number> {
+  return withReviewDecisionScopeLock(
+    input.pool,
+    input.reviewId,
+    async (lockedDb) => {
+      const threadPlan = await getPullRequestPublicationThreadPlan(
+        lockedDb,
+        input.repositoryId,
+        input.prNumber,
+      );
+      const observed = await observeGitHubReviewThreads(
+        input.token,
+        input.repoFullName,
+        input.prNumber,
+        threadPlan.commentIds,
+        input.signal,
+      );
+      const observations = await resolveGitHubReviewThreads(
+        input.token,
+        observed,
+        threadPlan.resolveCommentIds,
+        input.signal,
+      );
+      await applyPublicationThreadObservations(lockedDb, observations);
+      await completeReviewPublicationLifecycle(lockedDb, {
+        reviewId: input.reviewId,
+        reviewPublicId: input.reviewPublicId,
+      });
+      return observations.length;
+    },
+  );
+}
+
+export async function resumeStagedReviewCompletion(input: {
   db: Database;
+  pool: import("pg").Pool;
   payload: ReviewJobPayload;
   installation: { id: number; orgId: number | null; orgSlug: string | null };
   repository: { id: number; githubRepoId: number; fullName: string };
   signal?: AbortSignal;
   lease?: ExternalSideEffectLease;
 }): Promise<boolean> {
-  const { db, payload, installation, repository, signal } = input;
+  const { db, pool, payload, installation, repository, signal } = input;
   const trigger = normalizeReviewTriggerContext(payload.trigger);
   const selection = {
     id: schema.reviews.id,
+    originClaimReceiptId: schema.reviews.originClaimReceiptId,
     publicId: schema.reviews.publicId,
     status: schema.reviews.status,
-    originClaimReceiptId: schema.reviews.originClaimReceiptId,
     repositoryId: schema.reviews.repositoryId,
     sourceOrgId: schema.reviews.sourceOrgId,
     sourceInstallationId: schema.reviews.sourceInstallationId,
@@ -719,12 +854,18 @@ async function resumeStagedReviewCompletion(input: {
     envelope: schema.reviews.envelope,
     advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
     gateCheckRunId: schema.reviews.gateCheckRunId,
+    finishedAt: schema.reviews.finishedAt,
+    publicationStagedAt: schema.reviewPublicationReceipts.observedAt,
   };
   const stagedReview = payload.recoveryReviewId
     ? (
         await db
           .select(selection)
           .from(schema.reviews)
+          .leftJoin(
+            schema.reviewPublicationReceipts,
+            eq(schema.reviewPublicationReceipts.reviewId, schema.reviews.id),
+          )
           .where(eq(schema.reviews.id, payload.recoveryReviewId))
           .limit(1)
       )[0]
@@ -732,6 +873,10 @@ async function resumeStagedReviewCompletion(input: {
         await db
           .select(selection)
           .from(schema.reviews)
+          .leftJoin(
+            schema.reviewPublicationReceipts,
+            eq(schema.reviewPublicationReceipts.reviewId, schema.reviews.id),
+          )
           .where(
             and(
               eq(schema.reviews.repositoryId, repository.id),
@@ -741,8 +886,8 @@ async function resumeStagedReviewCompletion(input: {
               eq(schema.reviews.triggerSource, trigger.source),
               eq(schema.reviews.triggerContext, trigger),
               eq(schema.reviews.status, "running"),
-              isNull(schema.reviews.originClaimReceiptId),
               isNotNull(schema.reviews.envelope),
+              isNull(schema.reviews.originClaimReceiptId),
             ),
           )
           .orderBy(desc(schema.reviews.id))
@@ -782,7 +927,7 @@ async function resumeStagedReviewCompletion(input: {
     .where(eq(schema.hostedUsageReservations.reviewId, stagedReview.id)).limit(1))[0] : undefined;
   let recoveryToken: string | undefined;
   try {
-    if (input.lease && !await externalSideEffectLeaseActive(getPool(), input.lease)) return true;
+    if (input.lease && !await externalSideEffectLeaseActive(pool, input.lease)) return true;
     if (
       stagedReview.status !== "running" &&
       stagedReview.status !== "completed"
@@ -823,6 +968,8 @@ async function resumeStagedReviewCompletion(input: {
       stagedReview.publicId,
       installation.orgSlug,
     );
+    const reconciliationStartedAt =
+      stagedReview.finishedAt ?? stagedReview.publicationStagedAt ?? new Date();
     try {
       await verifyCompletedCheckRun(
         token,
@@ -832,13 +979,12 @@ async function resumeStagedReviewCompletion(input: {
           name: ADVISORY_CHECK_NAME,
           externalId: checkRunExternalId(stagedReview.publicId, "review"),
           headSha: payload.headSha,
-          conclusion: operationallyUnavailable ? "neutral" : "success",
+          conclusion: operationallyUnavailable ? "failure" : "success",
           requireOutput: true,
           detailsUrl,
         },
         signal,
       );
-      let gateEnabled: boolean;
       if (stagedReview.status === "running") {
         const completion = await finalizeStagedReviewCompletionWithGateMode(
           db,
@@ -853,6 +999,7 @@ async function resumeStagedReviewCompletion(input: {
             hostedUsageReservationId: reservation?.id ?? null,
             usageAccountingComplete:
               stagedReview.envelope.usageAccountingComplete === true,
+            queueGateStateSync: false,
           },
           installation.orgId,
         );
@@ -861,47 +1008,29 @@ async function resumeStagedReviewCompletion(input: {
             "review publication recovery lost its terminal-state race",
           );
         }
-        gateEnabled = completion.gateEnabled;
-        void import("@/worker/runner").then(({ triggerQueueDrain }) =>
-          triggerQueueDrain("gate-state-sync"),
-        );
-      } else {
-        // The database transition can commit before the exact GitHub PATCH.
-        // Retry that final publication for completed rows without repeating
-        // accounting or model work.
-        gateEnabled = await getOrganizationGateEnabled(db, installation.orgId);
       }
-      const activeApprovalIds = await getActiveApprovalIds(db, stagedReview.id);
-      const gateConclusion = gateCheckConclusionForEnvelope(
-        stagedReview.envelope,
-        activeApprovalIds,
-        gateEnabled,
-      );
-      const gateOutput = gateCheckOutput(
-        gateConclusion,
-        gateEnabled,
-        operationallyUnavailable,
-      );
-      await completeExpectedCheckRun(
+      await reconcileReviewPublicationLifecycle({
+        pool,
         token,
-        payload.repoFullName,
-        {
-          id: stagedReview.gateCheckRunId,
-          name: GATE_CHECK_NAME,
-          externalId: checkRunExternalId(stagedReview.publicId, "gate"),
-          headSha: payload.headSha,
-          conclusion: gateConclusion,
-          detailsUrl,
-        },
-        gateOutput.title,
-        gateOutput.summary,
+        reviewId: stagedReview.id,
+        reviewPublicId: stagedReview.publicId,
+        repositoryId: repository.id,
+        repoFullName: payload.repoFullName,
+        prNumber: payload.prNumber,
         signal,
+      });
+      void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+        triggerQueueDrain("gate-state-sync"),
       );
       console.log(`review publication recovery ${stagedReview.id} completed`);
       return true;
     } catch (error) {
       if (signal?.aborted) throw new WorkerShutdownError();
-      throw new ReviewPublicationReconciliationError(redactSecrets(error));
+      if (error instanceof ReviewPublicationReconciliationError) throw error;
+      throw new ReviewPublicationReconciliationError(
+        redactSecrets(error),
+        reconciliationStartedAt,
+      );
     }
   } finally {
     await finalizeReviewAttempt(db, {
@@ -920,38 +1049,39 @@ async function resumeStagedReviewCompletion(input: {
   }
 }
 
-function gateCheckOutput(
-  conclusion: GateCheckConclusion,
-  gateEnabled: boolean,
-  unavailable: boolean,
-): { title: string; summary: string } {
-  if (!gateEnabled) {
-    return {
-      title: "Postil gate is advisory",
-      summary: "Merge blocking is disabled. Review findings remain advisory.",
-    };
-  }
-  if (unavailable) {
-    return conclusion === "failure"
-      ? {
-          title: "Review unavailable",
-          summary:
-            "Postil could not complete this review. The merge check remains blocked.",
-        }
-      : {
-          title: "Review unavailable",
-          summary: "Postil could not produce a merge verdict for this commit.",
-        };
-  }
-  return conclusion === "failure"
-    ? {
-        title: "Postil gate blocked",
-        summary: "One or more review findings block this commit.",
-      }
-    : {
-        title: "Postil gate passed",
-        summary: "No review findings block this commit.",
-      };
+/**
+ * Baseline for an incremental re-review: the newest completed review of the
+ * pull request that issued a verdict. A review whose envelope carries an
+ * operational sentinel reviewed nothing, so anchoring the next incremental
+ * diff on its head would skip every change that failed review never read.
+ */
+export async function loadIncrementalReviewBaseline(
+  db: Database,
+  repositoryId: number,
+  prNumber: number,
+): Promise<typeof schema.reviews.$inferSelect | undefined> {
+  return (
+    await db
+      .select()
+      .from(schema.reviews)
+      .where(
+        and(
+          eq(schema.reviews.repositoryId, repositoryId),
+          eq(schema.reviews.prNumber, prNumber),
+          eq(schema.reviews.status, "completed"),
+          isNotNull(schema.reviews.envelope),
+          sql`NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements(
+              CASE WHEN jsonb_typeof(${schema.reviews.envelope} -> 'findings') = 'array'
+                THEN ${schema.reviews.envelope} -> 'findings' ELSE '[]'::jsonb END
+            ) AS finding
+            WHERE finding ->> 'path' IN ('.postil/provider', '.postil/model-output', '.postil/operational')
+          )`,
+        ),
+      )
+      .orderBy(desc(schema.reviews.finishedAt))
+      .limit(1)
+  )[0];
 }
 
 /**
@@ -1031,9 +1161,17 @@ export async function runReviewJob(
       `review job cannot start: repository ${payload.repoFullName} is missing`,
     );
   }
+  const releaseSha = optionalEnv("POSTIL_RELEASE_SHA");
+  if (
+    releaseSha &&
+    !(await publicationLifecycleReleaseActivated(getPool()))
+  ) {
+    throw new HostedInferenceReleaseDarkError(releaseSha);
+  }
   if (
     await resumeStagedReviewCompletion({
       db,
+      pool: getPool(),
       payload,
       installation,
       repository,
@@ -1178,33 +1316,54 @@ export async function runReviewJob(
     authorLogin = context.authorLogin;
   }
 
-  // Incremental re-review: baseline = last completed review of this PR.
-  const baseline = (
-    await db
-      .select()
-      .from(schema.reviews)
-      .where(
-        and(
-          eq(schema.reviews.repositoryId, repository.id),
-          eq(schema.reviews.prNumber, payload.prNumber),
-          eq(schema.reviews.status, "completed"),
-          isNotNull(schema.reviews.envelope),
-        ),
-      )
-      .orderBy(desc(schema.reviews.finishedAt))
-      .limit(1)
-  )[0];
+  const baseline = await loadIncrementalReviewBaseline(
+    db,
+    repository.id,
+    payload.prNumber,
+  );
   const preventionHint = await shouldSendPreventionHint(
     db,
     repository.id,
     payload.prNumber,
   );
   const trigger = normalizeReviewTriggerContext(payload.trigger);
-  const forceFullReview = reviewRequiresFullDiff({
+  let forceFullReview = reviewRequiresFullDiff({
     requested: payload.forceFullReview === true,
     baselineBaseSha: baseline?.baseSha,
     currentBaseSha: payload.baseSha,
   });
+  if (!forceFullReview && baseline) {
+    // A rebase or force-push can replace the reviewed commits while keeping
+    // the same base, which no payload field reveals. The CLI refuses an
+    // incremental diff whose baseline is no longer an ancestor and the review
+    // ends with no verdict, so ask the forge up front and fall back to a full
+    // review. A compare failure falls back too: a full review is always
+    // complete, just costlier.
+    try {
+      const usable = await translateWorkerAbort(
+        incrementalBaselineUsable(
+          token,
+          payload.repoFullName,
+          baseline.headSha,
+          payload.headSha,
+          signal,
+        ),
+        signal,
+      );
+      if (!usable) {
+        forceFullReview = true;
+        console.log(
+          `review for ${payload.repoFullName}#${payload.prNumber}: baseline ${baseline.headSha.slice(0, 12)} is no longer an ancestor of ${payload.headSha.slice(0, 12)}; running a full review`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof WorkerShutdownError) throw error;
+      forceFullReview = true;
+      console.log(
+        `review for ${payload.repoFullName}#${payload.prNumber}: baseline ancestry check failed (${redactSecrets(error)}); running a full review`,
+      );
+    }
+  }
   const reviewValues = {
     repositoryId: repository.id,
     sourceOrgId: payload.sourceOrgId,
@@ -1220,6 +1379,10 @@ export async function runReviewJob(
     sinceSha: forceFullReview ? null : (baseline?.headSha ?? null),
     triggerSource: trigger.source,
     triggerContext: trigger,
+    // The database marks the review as lifecycle-gated when its publication
+    // envelope is staged. Keep reconciliation absent until GitHub confirms
+    // the terminal thread state.
+    publicationLifecycleReconciledAt: null,
     queuedAt: timing.queuedAt,
     startedAt: timing.startedAt,
   };
@@ -1244,11 +1407,12 @@ export async function runReviewJob(
   let sensitiveValues: string[] = [];
   let hostedUsageReservationId: string | null = null;
   let cliStarted = false;
-  let publicationStarted = false;
   let completionStaged = false;
   let publicationIncomplete = false;
+  let coverageCapacity: Parameters<typeof failCheckRuns>[10];
   let trustedReceiptUsage: ReviewCompletionInput["usage"] | undefined;
   let trustedUsageAccountingComplete = false;
+  let failedAttemptEnvelope: Envelope | undefined;
   let advisoryCheckRunMayExist = false;
   let gateCheckRunMayExist = false;
   let gateEnabled = false;
@@ -1329,9 +1493,8 @@ export async function runReviewJob(
     reviewLog.setSensitiveValues(sensitiveValues);
     if (!(await publicationAuthorized())) {
       reviewLog.line("publication cancelled before forge writes");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+      throw new TerminalReviewError(PUBLICATION_INELIGIBLE_MESSAGE);
     }
-    publicationStarted = true;
     onPublicationStarted?.();
     const superseded = await supersedeActiveReviews({
       repositoryId: repository.id,
@@ -1350,7 +1513,11 @@ export async function runReviewJob(
       payload.repoFullName,
       ADVISORY_CHECK_NAME,
       payload.headSha,
-      { signal: reviewSignal, externalId: advisoryCheckExternalId },
+      // Both check runs point at the same review page. Without this the
+      // advisory run falls back to GitHub's default target, which is the
+      // App's homepage, so "View more details" leaves the reader to find
+      // the run themselves.
+      { signal: reviewSignal, externalId: advisoryCheckExternalId, detailsUrl },
     ).catch((error) => {
       advisoryCheckRunMayExist =
         error instanceof AmbiguousCheckRunCreationError;
@@ -1510,9 +1677,14 @@ export async function runReviewJob(
       `configuration materialized (${configFiles.length > 0 ? configFiles.join(", ") : "no overrides"})`,
     );
 
+    const feedbackFile = "review-feedback.json";
+    const hasReviewFeedback = await writeReviewFeedbackFile(
+      join(workDir, feedbackFile),
+      payload,
+    );
     const configurationSha256 = await hashEffectiveReviewConfiguration(
       workDir,
-      configFiles,
+      hasReviewFeedback ? [...configFiles, feedbackFile] : configFiles,
     );
     const durableRunIdentity = {
       repositoryId: repository.id,
@@ -1552,8 +1724,7 @@ export async function runReviewJob(
           usesByok: llm.byok,
         });
         if (spendReservation && !spendReservation.allowed) {
-          const message =
-            "Hosted inference allowance is unavailable or fully reserved.";
+          const message = HOSTED_ALLOWANCE_UNAVAILABLE_MESSAGE;
           const settled = await db.transaction(async (tx) => {
             const failedRows = await tx
               .update(schema.reviews)
@@ -1625,11 +1796,16 @@ export async function runReviewJob(
       byok: llm.byok,
       configuredOptIn: optionalEnv("POSTIL_ALLOW_PRIVATE_API_BASE"),
     });
+    const providerAddressFamily = optionalEnv("POSTIL_PROVIDER_ADDRESS_FAMILY", "auto");
+    if (providerAddressFamily !== "auto" && providerAddressFamily !== "ipv4") {
+      throw new Error("POSTIL_PROVIDER_ADDRESS_FAMILY must be auto or ipv4");
+    }
     const activeLargeReviewProxy = await startLargeReviewProviderProxy({
       upstreamApiBase: llm.apiBase,
       apiFormat: llm.apiFormat,
       additionalAuthHeader: llm.apiAuthHeader,
       allowPrivateUpstream,
+      addressFamily: providerAddressFamily,
       identity: durableRunIdentity,
       runContext: {
         currentReviewId: reviewId,
@@ -1667,12 +1843,15 @@ export async function runReviewJob(
         // The path is optional. A CLI without receipt support ignores it, and
         // absence is persisted as legacy unknown.
         POSTIL_PUBLICATION_RECEIPT_PATH: publicationReceiptPath,
+        ...(hasReviewFeedback
+          ? { POSTIL_REVIEW_FEEDBACK_PATH: join(workDir, feedbackFile) }
+          : {}),
       },
     );
 
     if (!(await publicationAuthorized())) {
       reviewLog.line("publication cancelled before CLI start");
-      throw new TerminalReviewError("pull request is no longer eligible for publication");
+      throw new TerminalReviewError(PUBLICATION_INELIGIBLE_MESSAGE);
     }
     reviewLog.line("postil CLI spawned");
     cliStarted = true;
@@ -1700,6 +1879,7 @@ export async function runReviewJob(
       stderr: result.stderr,
       interrupted: result.interrupted,
     }, sensitiveValues);
+    const snapshotChanged = publicationSkippedForChangedSnapshot(result.stderr);
     const receiptUsage = reviewUsageFromEnvelope(ingested.envelope, {
       orgId: installation.orgId,
       repositoryId: repository.id,
@@ -1707,14 +1887,33 @@ export async function runReviewJob(
     });
     trustedReceiptUsage = receiptUsage;
     trustedUsageAccountingComplete = ingested.usageAccountingComplete;
+    const coverageReceipt = ingested.usageAccountingComplete &&
+      receiptUsage.length > 0 &&
+      receiptUsage.every((usage) => usage.costMicros !== null)
+      ? activeLargeReviewProxy.registeredCoverageReceipt()
+      : null;
     for (const incident of classifyOperationalModelIncidents(
       ingested.envelope,
+      coverageReceipt,
     )) {
       reportOperationalModelIncident(observabilityProcessGroup, incident);
     }
     reviewLog.line(
       `envelope ingested (${Buffer.byteLength(result.stdout)} bytes, ${ingested.envelope.findings.length} findings, gate ${ingested.gateFailing ? "failing" : "passing"})`,
     );
+    failedAttemptEnvelope = ingested.envelope;
+    if (isReviewCoverageCapacityFailure(
+      ingested.envelope,
+      coverageReceipt,
+    )) {
+      throw new ReviewCoverageCapacityError(ingested.envelope.reviewCoverage!.receipt!.unreviewedHunks);
+    }
+    const advisoryConclusion = isEnvelopeOperationallyUnavailable(ingested.envelope)
+      ? "failure"
+      : "success";
+    if (advisoryConclusion === "failure") {
+      throw new OperationalError("review unavailable: provider or model output failed; see retained review diagnostics");
+    }
     let publicationReceipt: PublicationReceipt | undefined;
     try {
       publicationReceipt = await readPublicationReceipt(publicationReceiptPath);
@@ -1728,9 +1927,6 @@ export async function runReviewJob(
         throw error;
       }
     }
-    const operationallyUnavailable = isEnvelopeOperationallyUnavailable(
-      ingested.envelope,
-    );
     const staged = await stageReviewCompletionCandidate(
       db,
       {
@@ -1763,6 +1959,40 @@ export async function runReviewJob(
     if (staged.claimOwned === false) return;
     await activeLargeReviewProxy.discardCompletedRun();
     reviewLog.line("review result and publication receipt staged durably");
+    if (snapshotChanged) {
+      // The CLI refused to complete a check-run for a pull request snapshot
+      // that has already moved on. A newer push means a fresher review
+      // already covers the new head, so this run is stale in exactly the
+      // sense supersession assigns, not a publication failure to reconcile.
+      if (hostedUsageReservationId) {
+        await reconcileHostedReviewSpendFromReceipt(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          usage: receiptUsage,
+          usageAccountingComplete: ingested.usageAccountingComplete,
+        });
+      }
+      await db
+        .update(schema.reviews)
+        .set({ status: "stale", finishedAt: new Date() })
+        .where(
+          and(eq(schema.reviews.id, reviewId), eq(schema.reviews.status, "running")),
+        );
+      await neutralizeSupersededCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId ?? null,
+        gateCheckRunId ?? null,
+        "the pull request snapshot changed before this review could publish",
+        detailsUrl,
+      );
+      reviewLog.line(
+        "review marked stale: CLI declined to publish for a superseded pull request snapshot",
+      );
+      return;
+    }
     const workerInstanceId = timing.lease?.lockedBy.match(/^(.+)#\d+$/)?.[1];
     if (observabilityProcessGroup === "worker" && workerInstanceId && timing.lease) {
       const rehearsalNonce = await consumePrivateWorkerRehearsalAfterStaging(
@@ -1791,7 +2021,7 @@ export async function runReviewJob(
           name: ADVISORY_CHECK_NAME,
           externalId: advisoryCheckExternalId,
           headSha: payload.headSha,
-          conclusion: operationallyUnavailable ? "neutral" : "success",
+          conclusion: advisoryConclusion,
           requireOutput: true,
           detailsUrl,
         },
@@ -1820,80 +2050,86 @@ export async function runReviewJob(
         usage: receiptUsage,
         hostedUsageReservationId,
         usageAccountingComplete: ingested.usageAccountingComplete,
+        queueGateStateSync: false,
       },
       installation.orgId,
     );
     const completed = completion.completed;
     if (completed) {
+      const reconciliationStartedAt = new Date();
+      try {
+        const observationCount = await reconcileReviewPublicationLifecycle({
+          pool: getPool(),
+          token,
+          reviewId,
+          reviewPublicId: publicId,
+          repositoryId: repository.id,
+          repoFullName: payload.repoFullName,
+          prNumber: payload.prNumber,
+          signal,
+        });
+        if (observationCount > 0) {
+          reviewLog.line(
+            `publication lifecycle reconciled (${observationCount} GitHub threads)`,
+          );
+        }
+      } catch (error) {
+        // Required-conversation rules make terminal Postil thread state part
+        // of publishing the verdict. Keep the merge gate pending here; the
+        // runner retries this staged, already-accounted review through
+        // resumeStagedReviewCompletion without rerunning inference.
+        throw new ReviewPublicationReconciliationError(
+          `publication lifecycle reconciliation deferred: ${redactSecrets(error)}`,
+          reconciliationStartedAt,
+        );
+      }
       void import("@/worker/runner").then(({ triggerQueueDrain }) =>
         triggerQueueDrain("gate-state-sync"),
       );
-      const activeApprovalIds = await getActiveApprovalIds(db, reviewId);
-      const gateConclusion = gateCheckConclusionForEnvelope(
-        ingested.envelope,
-        activeApprovalIds,
-        completion.gateEnabled,
-      );
-      const gateOutput = gateCheckOutput(
-        gateConclusion,
-        completion.gateEnabled,
-        operationallyUnavailable,
-      );
-      await completeExpectedCheckRun(
-        token,
-        payload.repoFullName,
-        {
-          id: gateCheckRunId,
-          name: GATE_CHECK_NAME,
-          externalId: gateCheckExternalId,
-          headSha: payload.headSha,
-          conclusion: gateConclusion,
-          detailsUrl,
-        },
-        gateOutput.title,
-        gateOutput.summary,
-        result.interrupted ? undefined : signal,
-      );
-      reviewLog.line("forge gate check-run completed from stored review truth");
+      reviewLog.line("durable gate synchronization queued from stored review truth");
     }
 
     if (!completed) {
       console.warn(
         `review ${reviewId} completed after it was already superseded or failed`,
       );
-    } else {
-      try {
-        const commentIds = await getPullRequestPublicationCommentIds(
-          db,
-          repository.id,
-          payload.prNumber,
-        );
-        const observations = await observeGitHubReviewThreads(
-          token,
-          payload.repoFullName,
-          payload.prNumber,
-          commentIds,
-          signal,
-        );
-        await applyPublicationThreadObservations(db, observations);
-        if (observations.length > 0) {
-          reviewLog.line(
-            `publication lifecycle reconciled (${observations.length} GitHub threads)`,
-          );
-        }
-      } catch (error) {
-        // A transient GitHub read does not invalidate the immutable receipt.
-        console.warn(
-          `review ${reviewId} publication lifecycle observation deferred: ${redactSecrets(error)}`,
-        );
-        reviewLog.line("publication lifecycle observation deferred");
-      }
     }
   } catch (err) {
     if (err instanceof CheckRunPublicationError && trustedReceiptUsage) {
-      const terminal = (await db.select({ status: schema.reviews.status })
-        .from(schema.reviews).where(eq(schema.reviews.id, reviewId)).limit(1))[0];
-      if (terminal?.status === "stale") return;
+      const terminal = (
+        await db
+          .select({ status: schema.reviews.status })
+          .from(schema.reviews)
+          .where(eq(schema.reviews.id, reviewId))
+          .limit(1)
+      )[0];
+      if (terminal?.status === "stale") {
+        if (hostedUsageReservationId) {
+          await reconcileHostedReviewSpendFromReceipt(db, {
+            reservationId: hostedUsageReservationId,
+            repositoryId: repository.id,
+            reviewId,
+            triggerSource: reviewValues.triggerSource,
+            usage: trustedReceiptUsage,
+            usageAccountingComplete: trustedUsageAccountingComplete,
+          });
+        }
+        await neutralizeSupersededCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? null,
+          gateCheckRunId ?? null,
+          "superseded by a newer review",
+          detailsUrl,
+        );
+        reviewLog.line(
+          "forge check-runs restored to neutral after supersession",
+        );
+        console.warn(
+          `review ${reviewId} publication verification raced with supersession`,
+        );
+        return;
+      }
     }
     if (completionStaged) {
       if (err instanceof WorkerInterruptionRehearsalError) throw err;
@@ -1905,55 +2141,113 @@ export async function runReviewJob(
       if (err instanceof ReviewPublicationReconciliationError) throw err;
       throw new ReviewPublicationReconciliationError(message);
     }
-    if (err instanceof WorkerShutdownError && !publicationStarted) {
-      reviewLog.line(err.message);
-      await db.transaction(async (tx) => {
-        await tx
-          .update(schema.reviews)
-          .set({ status: "stale", finishedAt: new Date() })
-          .where(
-            and(
-              eq(schema.reviews.id, reviewId),
-              eq(schema.reviews.status, "running"),
-            ),
-          );
-        if (timing.lease?.receiptClaim) {
-          const client = transactionReceiptClient(tx);
-          const events = await prepareReviewObservation(client, reviewId, "interrupted", timing.lease);
-          await appendPreparedReceiptBatch(client, events);
-        }
-      });
-      if (!trustedReceiptUsage) await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
-        (releaseError) => {
+    const reconcileInterruptedSpend = async (): Promise<void> => {
+      if (trustedReceiptUsage) {
+        await settleFailedHostedReviewAttempt(db, {
+          reservationId: hostedUsageReservationId,
+          repositoryId: repository.id,
+          reviewId,
+          triggerSource: reviewValues.triggerSource,
+          usage: trustedReceiptUsage,
+          usageAccountingComplete: trustedUsageAccountingComplete,
+        }, largeReviewProxy);
+        return;
+      }
+      if (hostedUsageReservationId && cliStarted) {
+        const reservationId = hostedUsageReservationId;
+        const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
+        const reconcile = billingOutcome === "resumable"
+          ? Promise.resolve()
+          : billingOutcome === "ambiguous"
+            ? largeReviewProxy!.boundRunKey().then((largeReviewRunKey) => {
+                if (!largeReviewRunKey) {
+                  throw new Error("ambiguous provider contact lacks a durable run");
+                }
+                return reconcileConservativeHostedReviewSpend(db, {
+                  reservationId,
+                  repositoryId: repository.id,
+                  reviewId,
+                  triggerSource: reviewValues.triggerSource,
+                  largeReviewRunKey,
+                });
+              })
+            : releaseHostedReviewSpend(db, reservationId);
+        await reconcile.catch((reconcileError) => {
           console.error(
-            `failed to release hosted usage reservation: ${redactSecrets(releaseError)}`,
+            `failed to reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
           );
-        },
+          if (billingOutcome === "ambiguous") {
+            throw new PermanentJobError(
+              "ambiguous provider usage could not be settled safely",
+            );
+          }
+        });
+      } else {
+        await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
+          (releaseError) => {
+            console.error(
+              `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
+            );
+          },
+        );
+      }
+    };
+    if (err instanceof WorkerShutdownError) {
+      // Publication has begun (check-runs exist on the forge), but an
+      // instance replacement is not a review failure: the requeued job runs
+      // a fresh attempt whose check-runs supersede these, so the gate stays
+      // pending instead of failing closed. The runner requeues this claim
+      // without consuming a retry attempt. Spend settles first: ambiguous
+      // provider usage that cannot be settled safely must fail closed below
+      // instead of silently requeueing unaccounted spend.
+      const spendError = await reconcileInterruptedSpend()
+        .then(() => null)
+        .catch((reconcileError: unknown) => reconcileError);
+      if (!spendError) {
+        reviewLog.line(
+          "review interrupted by worker shutdown after publication began; a fresh attempt will supersede it",
+        );
+        await db.transaction(async (tx) => {
+          await tx
+            .update(schema.reviews)
+            .set({
+              status: "stale",
+              errorMessage: "interrupted by an instance replacement; requeued",
+              finishedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.reviews.id, reviewId),
+                eq(schema.reviews.status, "running"),
+              ),
+            );
+          if (timing.lease?.receiptClaim) {
+            const client = transactionReceiptClient(tx);
+            const events = await prepareReviewObservation(client, reviewId, "interrupted", timing.lease);
+            await appendPreparedReceiptBatch(client, events);
+          }
+        });
+        throw err;
+      }
+      reviewLog.line(
+        "interrupted review spend could not be settled; failing closed",
       );
-      throw err;
     }
-    const interruptedAfterPublication = err instanceof WorkerShutdownError;
     publicationIncomplete = err instanceof CheckRunPublicationError;
-    const message = interruptedAfterPublication
-      ? "review interrupted after GitHub publication began"
-      : redactSecrets(err, sensitiveValues);
+    coverageCapacity = err instanceof ReviewCoverageCapacityError
+      ? { unreviewedHunks: err.unreviewedHunks }
+      : undefined;
+    const message = redactSecrets(err, sensitiveValues);
     reviewLog.line(`review failed: ${message}`);
     const failedRows = await db.transaction(async (tx) => {
-      const rows = await tx
-        .update(schema.reviews)
-        .set({
-          status: "failed",
-          errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
-          finishedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(schema.reviews.id, reviewId),
-            eq(schema.reviews.status, "running"),
-          ),
-        )
-        .returning({ id: schema.reviews.id });
+      const rows = await failHostedReviewAttempt(tx, {
+        reviewId,
+        errorMessage: redactAndTruncate(message, 2000, sensitiveValues),
+        envelope: failedAttemptEnvelope,
+      });
       if (rows.length === 0) return rows;
+      const receiptEvents = timing.lease?.receiptClaim
+        ? await prepareReviewObservation(transactionReceiptClient(tx), reviewId, "failed", timing.lease) : [];
       await tx.insert(schema.jobs).values({
         kind: "check-run-cleanup",
         payload: {
@@ -1970,53 +2264,48 @@ export async function runReviewJob(
           detailsUrl,
           intent: "fail",
           publicationIncomplete,
+          ...(coverageCapacity ? { coverageCapacity } : {}),
         },
         maxAttempts: 5,
       });
-      if (timing.lease?.receiptClaim) {
-        const client = transactionReceiptClient(tx);
-        const events = await prepareReviewObservation(client, reviewId, "failed", timing.lease);
-        await appendPreparedReceiptBatch(client, events);
-      }
+      await appendPreparedReceiptBatch(transactionReceiptClient(tx), receiptEvents);
       return rows;
     });
-    if (!trustedReceiptUsage && hostedUsageReservationId && cliStarted) {
-      const reservationId = hostedUsageReservationId;
-      const billingOutcome = largeReviewProxy?.billingOutcome() ?? "unused";
-      const reconcile = billingOutcome === "resumable"
-        ? Promise.resolve()
-        : billingOutcome === "ambiguous"
-          ? largeReviewProxy!.boundRunKey().then((largeReviewRunKey) => {
-              if (!largeReviewRunKey) {
-                throw new Error("ambiguous provider contact lacks a durable run");
-              }
-              return reconcileConservativeHostedReviewSpend(db, {
-                reservationId,
-                repositoryId: repository.id,
-                reviewId,
-                triggerSource: reviewValues.triggerSource,
-                largeReviewRunKey,
-              });
-            })
-          : releaseHostedReviewSpend(db, reservationId);
-      await reconcile.catch((reconcileError) => {
-        console.error(
-          `failed to reconcile hosted review usage: ${redactSecrets(reconcileError)}`,
+    await reconcileInterruptedSpend();
+    if (failedRows.length === 0) {
+      const terminal = (await db.select({ status: schema.reviews.status })
+        .from(schema.reviews).where(eq(schema.reviews.id, reviewId)).limit(1))[0];
+      if (terminal?.status === "stale") {
+        await neutralizeSupersededCheckRuns(
+          token,
+          payload.repoFullName,
+          advisoryCheckRunId ?? null,
+          gateCheckRunId ?? null,
+          "superseded by a newer review",
+          detailsUrl,
         );
-        if (billingOutcome === "ambiguous") {
-          throw new PermanentJobError(
-            "ambiguous provider usage could not be settled safely",
-          );
-        }
-      });
-    } else if (!trustedReceiptUsage) {
-      await releaseHostedReviewSpend(db, hostedUsageReservationId).catch(
-        (releaseError) => {
-          console.error(
-            `failed to release unused hosted usage reservation: ${redactSecrets(releaseError)}`,
-          );
-        },
+        reviewLog.line("forge check-runs restored to neutral after supersession");
+        return;
+      }
+    }
+    // Without a token there are no check-runs to complete (creation is the
+    // first tokened call); with one, fail them closed - unless the watchdog
+    // already claimed this review and completed them itself (0 rows above).
+    if (token && failedRows.length > 0) {
+      await failCheckRuns(
+        token,
+        payload.repoFullName,
+        advisoryCheckRunId,
+        gateCheckRunId,
+        message,
+        undefined,
+        false,
+        detailsUrl,
+        expectedFailureCheckRuns(publicationIncomplete),
+        gateEnabled,
+        coverageCapacity,
       );
+      reviewLog.line("forge check-runs updated for review failure");
     }
     // A preflight rejection becomes one durable failed review and one exact
     // terminal check pair. Retrying the review job would create duplicate
@@ -2027,7 +2316,7 @@ export async function runReviewJob(
     ) {
       return;
     }
-    throw interruptedAfterPublication ? new OperationalError(message) : err;
+    throw err;
   } finally {
     if (leasePoll) clearInterval(leasePoll);
     try {
@@ -2035,7 +2324,9 @@ export async function runReviewJob(
         reviewId, repoFullName: payload.repoFullName, token, gateEnabled,
         advisoryCheckRunId, gateCheckRunId, detailsUrl,
         expectedChecks: expectedFailureCheckRuns(publicationIncomplete),
-        hostedSpend: hostedUsageReservationId && trustedReceiptUsage ? {
+        coverageCapacity,
+        completedProxy: largeReviewProxy,
+        hostedSpend: trustedReceiptUsage ? {
           reservationId: hostedUsageReservationId,
           repositoryId: repository.id,
           reviewId,
@@ -2069,10 +2360,12 @@ async function finalizeReviewAttempt(db: Database, input: {
   orgId?: number | null;
   gateEnabled?: boolean;
   expectedChecks?: Parameters<typeof failCheckRuns>[8];
-  hostedSpend?: Parameters<typeof reconcileHostedReviewSpendFromReceipt>[1];
+  coverageCapacity?: Parameters<typeof failCheckRuns>[10];
+  completedProxy?: Pick<LargeReviewProviderProxy, "discardCompletedRun">;
+  hostedSpend?: Parameters<typeof settleFailedHostedReviewAttempt>[1];
 }): Promise<void> {
   try {
-    if (input.hostedSpend) await reconcileHostedReviewSpendFromReceipt(db, input.hostedSpend);
+    if (input.hostedSpend) await settleFailedHostedReviewAttempt(db, input.hostedSpend, input.completedProxy);
   } finally {
     if (input.advisoryCheckRunId != null || input.gateCheckRunId != null) {
       const terminal = (await db
@@ -2092,7 +2385,8 @@ async function finalizeReviewAttempt(db: Database, input: {
             await failCheckRuns(token, input.repoFullName, input.advisoryCheckRunId,
               input.gateCheckRunId, terminal.errorMessage ?? "review did not complete",
               undefined, false, input.detailsUrl, input.expectedChecks,
-              input.gateEnabled ?? await getOrganizationGateEnabled(db, input.orgId ?? null));
+              input.gateEnabled ?? await getOrganizationGateEnabled(db, input.orgId ?? null),
+              input.coverageCapacity);
           }
         }
       }
@@ -2266,7 +2560,7 @@ export async function completeHostedInferenceDisabledCheckRuns(
 
 /**
  * Complete both check-runs after an operational failure. Enforced gates fail
- * closed; advisory gates and the review check remain neutral.
+ * closed; advisory gates stand aside while the review check fails truthfully.
  */
 export async function failCheckRuns(
   token: string,
@@ -2279,9 +2573,14 @@ export async function failCheckRuns(
   detailsUrl?: string,
   expectedChecks?: ExpectedFailureCheckRuns,
   gateEnabled = true,
+  coverageCapacity?: CheckRunCleanupJobPayload["coverageCapacity"],
 ): Promise<void> {
   const details = detailsUrl ? `\n\n[Review details](${detailsUrl})` : "";
   const publicationIncomplete = expectedChecks?.publicationIncomplete === true;
+  if (coverageCapacity !== undefined &&
+      (!validCoverageCapacity(coverageCapacity) || publicationIncomplete)) {
+    throw new PermanentJobError("check-run cleanup job payload is malformed");
+  }
   if (
     publicationIncomplete &&
     ((gateCheckRunId != null && !expectedChecks?.gate) ||
@@ -2291,19 +2590,20 @@ export async function failCheckRuns(
       "publication cleanup requires the exact GitHub check-run identities",
     );
   }
-  const title = gateEnabled
-    ? publicationIncomplete
-      ? "Review publication incomplete"
-      : "Review did not complete"
-    : "Postil gate is advisory";
+  const reviewTitle = publicationIncomplete
+    ? "Review publication incomplete"
+    : coverageCapacity ? "Review coverage incomplete" : "Review did not complete";
   const summary = publicationIncomplete
     ? `Postil completed the review, but GitHub did not receive the complete result. This run is not a published review verdict.${details}`
-    : `Postil could not complete this review, so no review verdict exists.${details}`;
+    : coverageCapacity
+      ? `Postil left ${coverageCapacity.unreviewedHunks} source ${coverageCapacity.unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed within the review limit. Partial findings are retained, but this is not a complete review. Reduce the size of the change to fit the review limit.${details}`
+      : `Postil could not complete this review, so no review verdict exists.${details}`;
   const errors: unknown[] = [];
   const complete = async (
     checkRunId: number,
     expected: ExpectedCheckRunIdentity | undefined,
     conclusion: "failure" | "neutral",
+    title: string,
     checkSummary: string,
   ): Promise<void> => {
     if (!expected) {
@@ -2337,12 +2637,15 @@ export async function failCheckRuns(
     const gateSummary = gateEnabled
       ? publicationIncomplete
         ? `${summary}\n\nThe merge check remains blocked because the reviewed result was not fully published. Re-request the check.`
-        : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
+        : coverageCapacity
+          ? `${summary}\n\nThe merge check remains blocked because review coverage is incomplete.`
+          : `${summary}\n\nThe merge check remains blocked because an unreviewed head is not a passing head. Push again or re-request the check.`
       : `${summary}\n\nMerge blocking is disabled for this organization.`;
     await complete(
       gateCheckRunId,
       expectedChecks?.gate,
       gateEnabled ? "failure" : "neutral",
+      gateEnabled ? reviewTitle : "Postil gate is advisory",
       gateSummary,
     ).catch((error) => {
       errors.push(error);
@@ -2355,7 +2658,8 @@ export async function failCheckRuns(
     await complete(
       advisoryCheckRunId,
       expectedChecks?.advisory,
-      "neutral",
+      "failure",
+      reviewTitle,
       summary,
     ).catch((error) => {
       errors.push(error);
@@ -2445,6 +2749,7 @@ export async function runCheckRunCleanupJob(
         payload.detailsUrl,
         expectedChecks,
         gateEnabled,
+        payload.coverageCapacity,
       );
     };
 
@@ -2542,6 +2847,12 @@ function checkRunCleanupErrorDetails(
   return [...messages].filter(Boolean).join("; ") || "unknown GitHub failure";
 }
 
+function validCoverageCapacity(value: unknown): value is NonNullable<CheckRunCleanupJobPayload["coverageCapacity"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const count = (value as { unreviewedHunks?: unknown }).unreviewedHunks;
+  return typeof count === "number" && Number.isInteger(count) && count > 0 && count <= 0xffff_ffff;
+}
+
 export function validateCheckRunCleanupPayload(
   payload: CheckRunCleanupJobPayload,
 ): void {
@@ -2556,6 +2867,9 @@ export function validateCheckRunCleanupPayload(
     !validId(payload.advisoryCheckRunId) ||
     !validId(payload.gateCheckRunId) ||
     typeof payload.message !== "string" ||
+    (payload.coverageCapacity !== undefined &&
+      (!validCoverageCapacity(payload.coverageCapacity) ||
+        payload.intent === "neutralize" || payload.publicationIncomplete === true)) ||
     (payload.intent !== undefined &&
       payload.intent !== "fail" &&
       payload.intent !== "neutralize")

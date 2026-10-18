@@ -17,17 +17,20 @@ import {
 export type ObservabilityProcessGroup = "web" | "worker" | "monitor";
 export type OperationalFailureClass =
   | "web_request_failed"
+  | "ilert_webhook_processing_failed"
   | "worker_boot_failed"
   | "job_permanently_failed"
   | "webhook_recovery_failed"
   | "monitor_boot_failed"
   | "monitor_pass_failed"
+  | "monitor_heartbeat_delivery_failed"
   | "monitor_notification_failed";
 export type OperationalState = "worker_started" | "monitor_started";
 export type OperationalWarning = "job_retrying" | "webhook_recovery_retrying";
 
 type OperationalLogEvent =
   | "postil.web.request.failed"
+  | "postil.ilert.webhook.processing.failed"
   | "postil.worker.boot.failed"
   | "postil.job.permanently_failed"
   | "postil.job.retrying"
@@ -38,6 +41,7 @@ type OperationalLogEvent =
   | "postil.monitor.started"
   | "postil.monitor.boot.failed"
   | "postil.monitor.pass.failed"
+  | "postil.monitor.heartbeat_delivery.failed"
   | "postil.monitor.notification.failed";
 
 interface ObservabilityEnvironment {
@@ -74,6 +78,11 @@ const FAILURE_EVENTS: Record<OperationalFailureClass, OperationalEventDefinition
     severityNumber: SeverityNumber.ERROR,
     severityText: "ERROR",
   },
+  ilert_webhook_processing_failed: {
+    event: "postil.ilert.webhook.processing.failed",
+    severityNumber: SeverityNumber.ERROR,
+    severityText: "ERROR",
+  },
   worker_boot_failed: {
     event: "postil.worker.boot.failed",
     severityNumber: SeverityNumber.FATAL,
@@ -96,6 +105,11 @@ const FAILURE_EVENTS: Record<OperationalFailureClass, OperationalEventDefinition
   },
   monitor_pass_failed: {
     event: "postil.monitor.pass.failed",
+    severityNumber: SeverityNumber.ERROR,
+    severityText: "ERROR",
+  },
+  monitor_heartbeat_delivery_failed: {
+    event: "postil.monitor.heartbeat_delivery.failed",
     severityNumber: SeverityNumber.ERROR,
     severityText: "ERROR",
   },
@@ -139,6 +153,7 @@ const TYPED_MODEL_INCIDENT_CATEGORIES = new Set([
 const MODEL_INCIDENT_CATEGORIES = new Set([
   ...TYPED_MODEL_INCIDENT_CATEGORIES,
   "operational",
+  "coverageCapacity",
 ]);
 const MODEL_INCIDENT_RECOVERIES = new Set(["repair", "fallback"]);
 const MODEL_INCIDENT_SOURCES = new Set([
@@ -146,6 +161,7 @@ const MODEL_INCIDENT_SOURCES = new Set([
   "provider_sentinel",
   "model_output_sentinel",
   "operational_sentinel",
+  "coverage_receipt",
 ]);
 
 export class ServerObservability {
@@ -711,7 +727,10 @@ function isValidModelIncidentTuple(incident: {
       incident.category === "invalidOutput") ||
     (incident.source === "operational_sentinel" &&
       incident.phase === "review" &&
-      incident.category === "operational")
+      incident.category === "operational") ||
+    (incident.source === "coverage_receipt" &&
+      incident.phase === "review" &&
+      incident.category === "coverageCapacity")
   );
 }
 

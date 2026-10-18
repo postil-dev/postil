@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { and, asc, eq, gt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 
 import { schema } from "@/lib/db";
 import { getOrgMembership } from "@/lib/org-access";
@@ -46,7 +46,9 @@ export async function GET(
         id: schema.reviews.id,
         status: schema.reviews.status,
         errorMessage: schema.reviews.errorMessage,
+        envelope: schema.reviews.envelope,
         finishedAt: schema.reviews.finishedAt,
+        gateFailing: schema.reviews.gateFailing,
       })
       .from(schema.reviews)
       .innerJoin(schema.repositories, eq(schema.repositories.id, schema.reviews.repositoryId))
@@ -74,10 +76,21 @@ export async function GET(
     .where(and(eq(schema.reviewLogs.reviewId, review.id), gt(schema.reviewLogs.seq, after)))
     .orderBy(asc(schema.reviewLogs.seq))
     .limit(MAX_LINES_PER_RESPONSE);
+  const gateSync = (await access.db
+    .select({ status: schema.jobs.status })
+    .from(schema.jobs)
+    .where(and(
+      eq(schema.jobs.kind, "gate-state-sync"),
+      sql`${schema.jobs.payload}->>'reviewId' = ${String(review.id)}`,
+    ))
+    .orderBy(desc(schema.jobs.id))
+    .limit(1))[0];
 
   return NextResponse.json({
     lines,
-    status: reviewDisplayStatus(review.status, review.errorMessage),
+    status: reviewDisplayStatus(review.status, review.errorMessage, review.envelope),
     finishedAt: review.finishedAt,
+    gateFailing: review.gateFailing,
+    gateSyncStatus: gateSync?.status ?? null,
   });
 }

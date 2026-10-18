@@ -12,7 +12,12 @@ import type { ApiFormat } from "@/lib/byok-provider";
 import { isPrivateIpLiteral } from "@/lib/api-base";
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
+import { reviewCoverageReceiptSchema, type ReviewCoverageReceipt } from "@/lib/envelope";
 import { HOSTED_REVIEW_RESERVATION_TTL_MS } from "@/lib/hosted-usage-reservations";
+import {
+  providerResponseErrorDiagnostic,
+  type ProviderResponseErrorDiagnostic,
+} from "@/lib/provider-response-diagnostics";
 
 const RUN_TTL_MS = 24 * 60 * 60 * 1_000;
 const ATTEMPT_LEASE_MS = 8 * 60 * 1_000;
@@ -20,6 +25,16 @@ const MAX_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PLAN_REGISTRATION_BYTES = 16 * 1024;
 const PLAN_REGISTRATION_VERSION = 1;
+const MAX_OPENROUTER_ATTEMPTS = 8;
+const OPENROUTER_FAILURE_STATUSES = new Set([502, 503, 504, 529]);
+const SAFE_PROVIDER_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,78}[A-Za-z0-9])?$/;
+const URL_LIKE_PROVIDER_LABEL = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|www\.)/i;
+const TOKEN_LIKE_PROVIDER_LABELS = [
+  /^(?:bearer|basic)\s+/i,
+  /^(?:sk|rk|pk|key|token|secret|gh[pousr]|xox[baprs])[-_][A-Za-z0-9_-]{12,}$/i,
+  /^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$/,
+  /^[A-Fa-f0-9]{32,}$/,
+];
 
 export interface LargeReviewRunIdentity {
   repositoryId: number;
@@ -45,6 +60,44 @@ export interface StoredProviderResponse {
   body: string;
 }
 
+export interface OpenRouterProviderAttempt {
+  ordinal: number;
+  provider: string;
+  status: number;
+}
+
+export interface OpenRouterFailureInspection {
+  body: string;
+  attempts: OpenRouterProviderAttempt[];
+}
+
+export type LargeReviewProviderDiagnostic =
+  | ({
+      event: "postil.large_review.provider_failure";
+      source: "upstream";
+      review_id: number;
+      request_sha256: string;
+      upstream_status: number;
+    } & ProviderResponseErrorDiagnostic)
+  | {
+      event: "postil.large_review.provider_failure";
+      source: "upstream";
+      review_id: number;
+      request_sha256: string;
+      upstream_status: number;
+      attempt_ordinal: number;
+      provider: string;
+      attempted_status: number;
+    }
+  | {
+      event: "postil.large_review.provider_failure";
+      source: "gateway";
+      review_id: number;
+      request_sha256: string;
+      gateway_status: number;
+      request_attempt: number;
+    };
+
 export type AttemptClaim =
   | { kind: "execute"; attemptKey: string; leaseId: string }
   | { kind: "replay"; response: StoredProviderResponse }
@@ -68,7 +121,7 @@ export interface LargeReviewAttemptStore {
     response: StoredProviderResponse;
   }): Promise<void>;
   abandonAttempt(attemptKey: string, leaseId: string): Promise<void>;
-  deleteRun(runKey: string): Promise<void>;
+  deleteRun(runKey: string, context?: LargeReviewRunContext): Promise<void>;
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -177,69 +230,139 @@ export class PostgresLargeReviewAttemptStore implements LargeReviewAttemptStore 
   ): Promise<string> {
     const now = new Date();
     const runKey = largeReviewRunKey(identity);
-    if (context.expectedRunKey && context.expectedRunKey !== runKey) {
-      throw new Error("large-review plan changed across retry");
-    }
     const storedContext = {
       currentReviewId: context.currentReviewId,
       hostedReservationId: context.hostedReservationId,
     };
-    await this.db
-      .delete(schema.largeReviewRuns)
-      .where(lte(schema.largeReviewRuns.expiresAt, now));
-    await this.db
-      .insert(schema.largeReviewRuns)
-      .values({
-        runKey,
-        ...identity,
-        ...storedContext,
-        expiresAt: new Date(now.getTime() + RUN_TTL_MS),
-      })
-      .onConflictDoNothing();
-    const stored = (
-      await this.db
-        .select()
-        .from(schema.largeReviewRuns)
-        .where(eq(schema.largeReviewRuns.runKey, runKey))
-        .limit(1)
-    )[0];
-    if (
-      !stored ||
-      stored.repositoryId !== identity.repositoryId ||
-      stored.prNumber !== identity.prNumber ||
-      stored.cliVersion !== identity.cliVersion ||
-      stored.configurationSha256 !== identity.configurationSha256 ||
-      stored.providerIdentity !== identity.providerIdentity ||
-      stored.headSha !== identity.headSha ||
-      stored.baseSha !== identity.baseSha ||
-      stored.retryLineage !== identity.retryLineage ||
-      stored.planSha256 !== identity.planSha256
-    ) {
-      throw new Error("large-review run identity collision");
-    }
-    const rebound = await this.db
-      .update(schema.largeReviewRuns)
-      .set({
-        expiresAt: new Date(now.getTime() + RUN_TTL_MS),
-      })
-      .where(
-        and(
-          eq(schema.largeReviewRuns.runKey, runKey),
-          eq(schema.largeReviewRuns.currentReviewId, context.currentReviewId),
-          context.hostedReservationId === null
-            ? isNull(schema.largeReviewRuns.hostedReservationId)
-            : eq(
-                schema.largeReviewRuns.hostedReservationId,
-                context.hostedReservationId,
-              ),
-          eq(schema.largeReviewRuns.billingState, "active"),
-        ),
-      )
-      .returning({ runKey: schema.largeReviewRuns.runKey });
-    if (rebound.length !== 1) {
-      throw new Error("large-review run context ownership collision");
-    }
-    return runKey;
+    const ownsRun = (key: string) =>
+      and(
+        eq(schema.largeReviewRuns.runKey, key),
+        eq(schema.largeReviewRuns.currentReviewId, context.currentReviewId),
+        context.hostedReservationId === null
+          ? isNull(schema.largeReviewRuns.hostedReservationId)
+          : eq(
+              schema.largeReviewRuns.hostedReservationId,
+              context.hostedReservationId,
+            ),
+        eq(schema.largeReviewRuns.billingState, "active"),
+      );
+    return this.db.transaction(async (tx) => {
+      if (context.expectedRunKey && context.expectedRunKey !== runKey) {
+        // A retry replans from scratch and the planner is model-driven, so the
+        // new plan rarely hashes to the one the previous attempt registered.
+        // The attempts cached under the old key answer provider requests this
+        // plan will never make. Retire that run and bind the new plan under the
+        // reservation the retry already inherited: refusing instead spends the
+        // retry and reports an operational failure for work that can still be
+        // done. Ownership still gates the retirement, so a run held by another
+        // review or already settled conservatively is never discarded here.
+        const retired = await tx
+          .delete(schema.largeReviewRuns)
+          .where(ownsRun(context.expectedRunKey))
+          .returning({ runKey: schema.largeReviewRuns.runKey });
+        if (retired.length !== 1) {
+          throw new Error("large-review run context ownership collision");
+        }
+      }
+      await tx
+        .delete(schema.largeReviewRuns)
+        .where(lte(schema.largeReviewRuns.expiresAt, now));
+      await tx
+        .insert(schema.largeReviewRuns)
+        .values({
+          runKey,
+          ...identity,
+          ...storedContext,
+          expiresAt: new Date(now.getTime() + RUN_TTL_MS),
+        })
+        .onConflictDoNothing();
+      const stored = (
+        await tx
+          .select()
+          .from(schema.largeReviewRuns)
+          .where(eq(schema.largeReviewRuns.runKey, runKey))
+          .limit(1)
+      )[0];
+      if (
+        !stored ||
+        stored.repositoryId !== identity.repositoryId ||
+        stored.prNumber !== identity.prNumber ||
+        stored.cliVersion !== identity.cliVersion ||
+        stored.configurationSha256 !== identity.configurationSha256 ||
+        stored.providerIdentity !== identity.providerIdentity ||
+        stored.headSha !== identity.headSha ||
+        stored.baseSha !== identity.baseSha ||
+        stored.retryLineage !== identity.retryLineage ||
+        stored.planSha256 !== identity.planSha256
+      ) {
+        throw new Error("large-review run identity collision");
+      }
+      if (
+        !context.expectedRunKey &&
+        stored.currentReviewId !== context.currentReviewId &&
+        context.hostedReservationId !== null
+      ) {
+        // A failure before provider access can release its hold but leave an
+        // empty plan. A same-head retry may claim that plan with a fresh hold;
+        // provider attempts and unsettled accounting prohibit this transfer.
+        await tx.execute(sql`
+          UPDATE large_review_runs AS run
+             SET current_review_id = ${context.currentReviewId},
+                 hosted_reservation_id = ${context.hostedReservationId}
+           WHERE run.run_key = ${runKey}
+             AND run.current_review_id = ${stored.currentReviewId}
+             AND run.billing_state = 'active'
+             AND NOT EXISTS (
+               SELECT 1 FROM large_review_attempts attempt
+                WHERE attempt.run_key = run.run_key
+             )
+             AND EXISTS (
+               SELECT 1
+                 FROM reviews source
+                 JOIN reviews target ON target.id = ${context.currentReviewId}
+                 JOIN repositories repository ON repository.id = run.repository_id
+                 JOIN installations installation ON installation.id = repository.installation_id
+                 JOIN hosted_usage_reservations previous
+                   ON previous.id = run.hosted_reservation_id
+                 JOIN hosted_usage_reservations replacement
+                   ON replacement.id = ${context.hostedReservationId}
+                WHERE source.id = run.current_review_id
+                  AND source.status IN ('failed', 'stale')
+                  AND target.status = 'running'
+                  AND source.repository_id = run.repository_id
+                  AND target.repository_id = run.repository_id
+                  AND source.pr_number = run.pr_number
+                  AND target.pr_number = run.pr_number
+                  AND source.head_sha = run.head_sha
+                  AND target.head_sha = run.head_sha
+                  AND source.base_sha = run.base_sha
+                  AND target.base_sha = run.base_sha
+                  AND previous.review_id = source.id
+                  AND replacement.review_id = target.id
+                  AND previous.org_id = installation.org_id
+                  AND replacement.org_id = installation.org_id
+                  AND previous.operation = 'review'
+                  AND replacement.operation = 'review'
+                  AND previous.status = 'released'
+                  AND previous.actual_micros IS NULL
+                  AND replacement.status = 'active'
+                  AND replacement.actual_micros IS NULL
+                  AND replacement.expires_at > ${now}
+             )
+        `);
+      }
+      const rebound = await tx
+        .update(schema.largeReviewRuns)
+        .set({
+          expiresAt: new Date(now.getTime() + RUN_TTL_MS),
+        })
+        .where(ownsRun(runKey))
+        .returning({ runKey: schema.largeReviewRuns.runKey });
+      if (rebound.length !== 1) {
+        throw new Error("large-review run context ownership collision");
+      }
+      return runKey;
+    });
   }
 
   async claimAttempt(input: {
@@ -372,10 +495,27 @@ export class PostgresLargeReviewAttemptStore implements LargeReviewAttemptStore 
       );
   }
 
-  async deleteRun(runKey: string): Promise<void> {
-    await this.db
+  async deleteRun(runKey: string, context?: LargeReviewRunContext): Promise<void> {
+    const deleted = await this.db
       .delete(schema.largeReviewRuns)
-      .where(eq(schema.largeReviewRuns.runKey, runKey));
+      .where(and(
+        eq(schema.largeReviewRuns.runKey, runKey),
+        context ? eq(schema.largeReviewRuns.currentReviewId, context.currentReviewId) : undefined,
+        context
+          ? context.hostedReservationId === null
+            ? isNull(schema.largeReviewRuns.hostedReservationId)
+            : eq(schema.largeReviewRuns.hostedReservationId, context.hostedReservationId)
+          : undefined,
+      ))
+      .returning({ runKey: schema.largeReviewRuns.runKey });
+    if (context && deleted.length !== 1) {
+      const remaining = await this.db.select({ runKey: schema.largeReviewRuns.runKey })
+        .from(schema.largeReviewRuns)
+        .where(eq(schema.largeReviewRuns.runKey, runKey)).limit(1);
+      if (remaining.length > 0) {
+        throw new Error("large-review run context ownership collision");
+      }
+    }
   }
 }
 
@@ -427,6 +567,43 @@ export async function claimReusableLargeReviewReservation(
     if (!row) return { kind: "none" };
     if (row.billing_state === "conservative") {
       return { kind: "conservatively-settled" };
+    }
+    if (row.reservation_status === "reconciled") {
+      // Settlement can commit before process loss prevents journal retirement.
+      // Retire only the exact settled owner; cached output must not be replayed
+      // under the fresh reservation that the replacement review acquires.
+      await tx.execute(sql`
+        DELETE FROM large_review_runs AS run
+         WHERE run.run_key = ${row.run_key}
+           AND run.current_review_id = ${Number(row.current_review_id)}
+           AND run.hosted_reservation_id = ${row.hosted_reservation_id}
+           AND run.billing_state = 'active'
+           AND EXISTS (
+             SELECT 1
+               FROM hosted_usage_reservations reservation
+               JOIN reviews source ON source.id = reservation.review_id
+               JOIN reviews target ON target.id = ${currentReviewId}
+               JOIN repositories repository ON repository.id = run.repository_id
+               JOIN installations installation ON installation.id = repository.installation_id
+              WHERE reservation.id = run.hosted_reservation_id
+                AND reservation.status = 'reconciled'
+                AND reservation.actual_micros IS NOT NULL
+                AND reservation.operation = 'review'
+                AND reservation.org_id = installation.org_id
+                AND source.id = run.current_review_id
+                AND source.status IN ('failed', 'stale')
+                AND target.status = 'running'
+                AND source.repository_id = run.repository_id
+                AND target.repository_id = run.repository_id
+                AND source.pr_number = run.pr_number
+                AND target.pr_number = run.pr_number
+                AND source.head_sha = run.head_sha
+                AND target.head_sha = run.head_sha
+                AND source.base_sha = run.base_sha
+                AND target.base_sha = run.base_sha
+           )
+      `);
+      return { kind: "none" };
     }
     if (
       !row.hosted_reservation_id ||
@@ -513,12 +690,150 @@ function requestHeaders(headers: Headers, additionalAuthHeader?: string): Header
     "x-api-key",
     "x-title",
     "anthropic-version",
-    "x-openrouter-experimental-metadata",
   ]);
   if (additionalAuthHeader) retained.add(additionalAuthHeader.toLowerCase());
   return new Headers(
     [...headers.entries()].filter(([name]) => retained.has(name.toLowerCase())),
   );
+}
+
+export function canonicalOpenRouterRequestHeaders(
+  headers: Headers,
+  additionalAuthHeader?: string,
+): Headers {
+  const forwarded = requestHeaders(headers, additionalAuthHeader);
+  forwarded.set("x-openrouter-metadata", "enabled");
+  return forwarded;
+}
+
+function isCanonicalOpenRouterApiBase(rawBase: string): boolean {
+  try {
+    const url = new URL(rawBase);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "openrouter.ai" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.pathname.replace(/\/+$/, "") === "/api/v1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function safeProviderLabel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const label = value.trim();
+  if (
+    label.length === 0 ||
+    label.length > 80 ||
+    !SAFE_PROVIDER_LABEL.test(label) ||
+    URL_LIKE_PROVIDER_LABEL.test(label) ||
+    TOKEN_LIKE_PROVIDER_LABELS.some((pattern) => pattern.test(label))
+  ) {
+    return null;
+  }
+  return label;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+export function inspectOpenRouterFailure(input: {
+  isCanonicalOpenRouter: boolean;
+  status: number;
+  body: string;
+}): OpenRouterFailureInspection {
+  if (!input.isCanonicalOpenRouter) {
+    return { body: input.body, attempts: [] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.body);
+  } catch {
+    return { body: input.body, attempts: [] };
+  }
+  const envelope = recordValue(parsed);
+  if (!envelope) return { body: input.body, attempts: [] };
+  if (!OPENROUTER_FAILURE_STATUSES.has(input.status) && !providerResponseErrorDiagnostic(envelope)) {
+    return { body: input.body, attempts: [] };
+  }
+
+  const metadata = recordValue(envelope.openrouter_metadata);
+  const attempts: OpenRouterProviderAttempt[] = [];
+  if (Array.isArray(metadata?.attempts)) {
+    for (const [index, candidate] of metadata.attempts
+      .slice(0, MAX_OPENROUTER_ATTEMPTS)
+      .entries()) {
+      const attempt = recordValue(candidate);
+      const provider = safeProviderLabel(attempt?.provider);
+      const status = attempt?.status;
+      if (
+        provider &&
+        typeof status === "number" &&
+        Number.isInteger(status) &&
+        status >= 100 &&
+        status <= 599
+      ) {
+        attempts.push({ ordinal: index + 1, provider, status });
+      }
+    }
+  }
+
+  const sanitizedEnvelope = { ...envelope };
+  delete sanitizedEnvelope.openrouter_metadata;
+  return {
+    body: OPENROUTER_FAILURE_STATUSES.has(input.status)
+      ? JSON.stringify(sanitizedEnvelope)
+      : input.body,
+    attempts,
+  };
+}
+
+export function openRouterFailureDiagnostics(input: {
+  isCanonicalOpenRouter: boolean;
+  status: number;
+  body: string;
+  reviewId: number;
+  requestSha256: string;
+}): OpenRouterFailureInspection & { diagnostics: LargeReviewProviderDiagnostic[] } {
+  const inspection = inspectOpenRouterFailure(input);
+  let providerError: ProviderResponseErrorDiagnostic | null = null;
+  if (input.isCanonicalOpenRouter) {
+    try {
+      providerError = providerResponseErrorDiagnostic(JSON.parse(input.body));
+    } catch {
+      // Malformed bodies carry no structured error classification.
+    }
+  }
+  const diagnostics: LargeReviewProviderDiagnostic[] = providerError ? [{
+    event: "postil.large_review.provider_failure",
+    source: "upstream",
+    review_id: input.reviewId,
+    request_sha256: input.requestSha256,
+    upstream_status: input.status,
+    ...providerError,
+  }] : [];
+  return {
+    ...inspection,
+    diagnostics: [...diagnostics, ...inspection.attempts.map((attempt) => ({
+      event: "postil.large_review.provider_failure",
+      source: "upstream",
+      review_id: input.reviewId,
+      request_sha256: input.requestSha256,
+      upstream_status: input.status,
+      attempt_ordinal: attempt.ordinal,
+      provider: attempt.provider,
+      attempted_status: attempt.status,
+    } as const))],
+  };
 }
 
 function providerRequestIdentity(bytes: Uint8Array): {
@@ -548,9 +863,14 @@ function providerRequestIdentity(bytes: Uint8Array): {
 function hasReplayableAssistantContent(body: string, apiFormat: ApiFormat): boolean {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (parsed.error != null) return false;
     if (apiFormat === "openai-compatible") {
       const choices = parsed.choices;
       if (!Array.isArray(choices)) return false;
+      if (choices.some((choice) => {
+        const entry = recordValue(choice);
+        return entry && (entry.error != null || entry.finish_reason === "error");
+      })) return false;
       return choices.some((choice) => {
         if (!choice || typeof choice !== "object") return false;
         const message = (choice as Record<string, unknown>).message;
@@ -598,6 +918,7 @@ export interface LargeReviewProviderProxy {
   discardCompletedRun(): Promise<void>;
   billingOutcome(): "unused" | "resumable" | "ambiguous";
   boundRunKey(): Promise<string | null>;
+  registeredCoverageReceipt(): ReviewCoverageReceipt | null;
 }
 
 interface PinnedUpstream {
@@ -622,6 +943,7 @@ async function resolvePinnedUpstream(
   endpoint: string,
   allowPrivate: boolean,
   resolveHostname: ResolveAllAddresses = lookup,
+  addressFamily: "auto" | "ipv4" = "auto",
 ): Promise<PinnedUpstream> {
   const url = new URL(rawBase);
   if (url.username || url.password || url.hash) {
@@ -658,10 +980,16 @@ async function resolvePinnedUpstream(
   if (!allowPrivate && privateResults.some(Boolean)) {
     throw new Error("provider API hostname resolved to a non-public address");
   }
+  const connectionAddresses = addressFamily === "ipv4"
+    ? addresses.filter((entry) => entry.family === 4)
+    : addresses;
+  if (connectionAddresses.length === 0) {
+    throw new Error("provider API hostname resolved to no IPv4 addresses");
+  }
   return {
     url,
     hostname,
-    addresses,
+    addresses: connectionAddresses,
   };
 }
 
@@ -805,10 +1133,12 @@ export async function startLargeReviewProviderProxy(input: {
   apiFormat: ApiFormat;
   additionalAuthHeader?: string;
   allowPrivateUpstream?: boolean;
+  addressFamily?: "auto" | "ipv4";
   resolveHostname?: ResolveAllAddresses;
   identity: ProxyIdentitySeed;
   runContext: LargeReviewRunContext;
   store: LargeReviewAttemptStore;
+  operatorLog?: (diagnostic: LargeReviewProviderDiagnostic) => void;
 }): Promise<LargeReviewProviderProxy> {
   const token = randomUUID();
   const planToken = randomUUID();
@@ -819,6 +1149,7 @@ export async function startLargeReviewProviderProxy(input: {
     expectedEndpoint,
     input.allowPrivateUpstream ?? false,
     input.resolveHostname,
+    input.addressFamily,
   );
   let runKey: string | undefined;
   let bindPromise: Promise<void> | undefined;
@@ -826,6 +1157,16 @@ export async function startLargeReviewProviderProxy(input: {
   let cachedResponses = 0;
   let ambiguousProviderContact = false;
   const attempts = new Map<string, number>();
+  const operatorLog = input.operatorLog ?? ((diagnostic) => {
+    console.warn(JSON.stringify(diagnostic));
+  });
+  const emitDiagnostic = (diagnostic: LargeReviewProviderDiagnostic): void => {
+    try {
+      operatorLog(diagnostic);
+    } catch {
+      // Operator diagnostics must never alter provider failure handling.
+    }
+  };
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -897,24 +1238,35 @@ export async function startLargeReviewProviderProxy(input: {
         return new Response("request too large", { status: 413 });
       }
 
-      const headers = requestHeaders(request.headers, input.additionalAuthHeader);
-      if (
-        input.upstreamApiBase.replace(/\/+$/, "") ===
-        "https://openrouter.ai/api/v1"
-      ) {
-        headers.set("x-openrouter-experimental-metadata", "enabled");
-      }
-      const forward = async (): Promise<Response> => {
+      const canonicalOpenRouter = isCanonicalOpenRouterApiBase(
+        input.upstreamApiBase,
+      );
+      const headers = canonicalOpenRouter
+        ? canonicalOpenRouterRequestHeaders(
+            request.headers,
+            input.additionalAuthHeader,
+          )
+        : requestHeaders(request.headers, input.additionalAuthHeader);
+      const forward = async (): Promise<{
+        response: Response;
+        source: "upstream" | "gateway";
+      }> => {
         try {
-          return await forwardPinnedRequest({
-            upstream,
-            headers,
-            body: bytes,
-            signal: request.signal,
-          });
+          return {
+            response: await forwardPinnedRequest({
+              upstream,
+              headers,
+              body: bytes,
+              signal: request.signal,
+            }),
+            source: "upstream",
+          };
         } catch {
           ambiguousProviderContact = true;
-          return new Response("provider request failed", { status: 502 });
+          return {
+            response: new Response("provider request failed", { status: 502 }),
+            source: "gateway",
+          };
         }
       };
       if (!runKey) return new Response("provider plan is not bound", { status: 409 });
@@ -936,18 +1288,45 @@ export async function startLargeReviewProviderProxy(input: {
         });
       }
       if (claim.kind === "pending") {
+        emitDiagnostic({
+          event: "postil.large_review.provider_failure",
+          source: "gateway",
+          review_id: input.runContext.currentReviewId,
+          request_sha256: requestSha256,
+          gateway_status: 503,
+          request_attempt: attempt,
+        });
         return new Response("provider attempt is already in progress", {
           status: 503,
           headers: { "retry-after": "1" },
         });
       }
 
-      const response = await forward();
+      const forwarded = await forward();
+      const response = forwarded.response;
       const body = await response.text();
+      if (forwarded.source === "gateway") {
+        emitDiagnostic({
+          event: "postil.large_review.provider_failure",
+          source: "gateway",
+          review_id: input.runContext.currentReviewId,
+          request_sha256: requestSha256,
+          gateway_status: response.status,
+          request_attempt: attempt,
+        });
+      }
+      const inspection = openRouterFailureDiagnostics({
+        isCanonicalOpenRouter: forwarded.source === "upstream" && canonicalOpenRouter,
+        status: response.status,
+        body,
+        reviewId: input.runContext.currentReviewId,
+        requestSha256,
+      });
+      for (const diagnostic of inspection.diagnostics) emitDiagnostic(diagnostic);
       const storedResponse = {
         status: response.status,
         headers: responseHeaders(response.headers),
-        body,
+        body: inspection.body,
       };
       if (
         response.ok &&
@@ -962,6 +1341,14 @@ export async function startLargeReviewProviderProxy(input: {
           cachedResponses += 1;
         } catch {
           ambiguousProviderContact = true;
+          emitDiagnostic({
+            event: "postil.large_review.provider_failure",
+            source: "gateway",
+            review_id: input.runContext.currentReviewId,
+            request_sha256: requestSha256,
+            gateway_status: 503,
+            request_attempt: attempt,
+          });
           return new Response("provider response could not be persisted", {
             status: 503,
           });
@@ -970,7 +1357,7 @@ export async function startLargeReviewProviderProxy(input: {
         await input.store.abandonAttempt(claim.attemptKey, claim.leaseId);
         if (response.ok) ambiguousProviderContact = true;
       }
-      return new Response(body, {
+      return new Response(inspection.body, {
         status: response.status,
         headers: storedResponse.headers,
       });
@@ -988,8 +1375,15 @@ export async function startLargeReviewProviderProxy(input: {
       server.stop(true);
     },
     async discardCompletedRun() {
-      if (bindPromise) await bindPromise;
-      if (runKey) await input.store.deleteRun(runKey);
+      if (bindPromise) {
+        try {
+          await bindPromise;
+        } catch {
+          // Rejected registration never acquires a run to retire.
+          return;
+        }
+      }
+      if (runKey) await input.store.deleteRun(runKey, input.runContext);
     },
     billingOutcome() {
       if (ambiguousProviderContact) return "ambiguous";
@@ -999,6 +1393,18 @@ export async function startLargeReviewProviderProxy(input: {
     async boundRunKey() {
       if (bindPromise) await bindPromise;
       return runKey ?? null;
+    },
+    registeredCoverageReceipt() {
+      if (!registeredPlan || !runKey) return null;
+      const plan = JSON.parse(registeredPlan);
+      const receipt = reviewCoverageReceiptSchema.safeParse({
+        planSha256: plan.planSha256,
+        totalHunks: plan.directHunks + plan.semanticHunks + plan.unreviewedHunks,
+        directHunks: plan.directHunks,
+        semanticHunks: plan.semanticHunks,
+        unreviewedHunks: plan.unreviewedHunks,
+      });
+      return receipt.success ? receipt.data : null;
     },
   };
 }

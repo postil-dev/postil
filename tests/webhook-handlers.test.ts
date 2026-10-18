@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { Pool } from "pg";
+import type { Pool } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import { getSealingKey, seal } from "@/lib/crypto/seal";
+import type { PullRequestReviewContext } from "@/lib/github/checks";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   signWebhookBody,
@@ -60,7 +60,8 @@ let liveMembershipUserLogin = "admin";
 let liveMembershipOrgId = 999;
 let liveMembershipOrgLogin = "octo";
 let membershipFetchCount = 0;
-let pullRequestReviewContext = {
+let pullRequestReviewContextFetchCount = 0;
+let pullRequestReviewContext: PullRequestReviewContext = {
   open: true,
   merged: false,
   headSha: "head-sha",
@@ -68,12 +69,20 @@ let pullRequestReviewContext = {
   draft: false,
   authorGithubId: 501,
   authorLogin: "admin",
+  updatedAt: "2026-08-24T12:34:56Z",
 };
 let reviewCommentRoot = {
   id: 8800,
   body: "The nullable branch can return before this check.",
   userLogin: "postil-dev[bot]",
 };
+let reviewCommentReactions: Array<{
+  id: number;
+  content: "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
+  createdAt: Date;
+  user: { id: number; login: string; type?: string };
+}> = [];
+let reviewCommentReactionsError: unknown;
 const realAppAuth = await import("@/lib/github/app-auth");
 const realChecks = await import("@/lib/github/checks");
 mock.module("@/lib/github/app-auth", () => ({
@@ -111,8 +120,17 @@ mock.module("@/lib/github/checks", () => ({
     });
   },
   getPullRequestHeadSha: async () => pullRequestHeadSha,
-  getPullRequestReviewContext: async () => pullRequestReviewContext,
+  getPullRequestReviewContext: async () => {
+    pullRequestReviewContextFetchCount += 1;
+    return pullRequestReviewContext;
+  },
   getPullRequestReviewComment: async () => reviewCommentRoot,
+  listPullRequestReviewCommentReactions: async () => {
+    if (reviewCommentReactionsError !== undefined) {
+      throw reviewCommentReactionsError;
+    }
+    return reviewCommentReactions;
+  },
   findIssueCommentByMarker: async () => null,
   postIssueComment: async (_token: string, repoFullName: string, number: number, body: string) => {
     postedComments.push({ repoFullName, number, body });
@@ -122,7 +140,7 @@ mock.module("@/lib/github/checks", () => ({
 
 // Imported after the mocks are registered so the route picks up the stubs.
 const { POST } = await import("@/app/api/webhooks/github/route");
-const { getDb, getPool } = await import("@/lib/db");
+const { getDb, getPool, closeDb } = await import("@/lib/db");
 const { hasNewerCompletedReviewForHead } = await import("@/lib/finding-approvals");
 const {
   reconcileOperatorAlertDeliveries,
@@ -130,10 +148,16 @@ const {
 } = await import("@/lib/operator-alerts");
 const { claimJob } = await import("@/lib/queue");
 const { runClaimedJob } = await import("@/worker/runner");
+const {
+  findingFeedbackAggregates,
+  reconcileFindingFeedbackReactions,
+  scheduleFindingFeedbackReconciliationJobs,
+} = await import("@/lib/finding-feedback");
+const { scheduleFindingFeedbackDigest } = await import("@/lib/operator-alerts");
 
-async function post(event: string, body: object, deliveryId: string): Promise<Response> {
+async function accept(event: string, body: object, deliveryId: string): Promise<Response> {
   const raw = JSON.stringify(body);
-  const response = await POST(
+  return POST(
     new Request("https://postil.dev/api/webhooks/github", {
       method: "POST",
       body: raw,
@@ -145,6 +169,10 @@ async function post(event: string, body: object, deliveryId: string): Promise<Re
       },
     }),
   );
+}
+
+async function post(event: string, body: object, deliveryId: string): Promise<Response> {
+  const response = await accept(event, body, deliveryId);
   const result = (await response.clone().json()) as { queued?: boolean };
   if (result.queued) {
     const job = await claimJob(getPool(), "webhook-handler-test", ["webhook-dispatch"]);
@@ -168,37 +196,19 @@ test("rejects an oversized declared webhook before reading or authenticating it"
 });
 
 describeDb("webhook handler behaviour", () => {
+  let db: EphemeralDatabase;
   let pool: Pool;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = TEST_URL;
+    db = await createEphemeralDatabase("webhook_handlers");
+    pool = db.pool;
+    // The webhook route and worker runner reach the database through the
+    // getDb()/getPool() singleton, keyed off DATABASE_URL.
+    process.env.DATABASE_URL = db.url;
     process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.POSTIL_WEBHOOK_DRAIN_ENABLED = "0";
     process.env.POSTIL_SEALING_KEY = "cd".repeat(32);
-    pool = new Pool({ connectionString: TEST_URL, max: 4 });
-    const dir = join(import.meta.dir, "..", "drizzle");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const file of files) {
-      const sqlText = await readFile(join(dir, file), "utf8");
-      for (const statement of sqlText.split("--> statement-breakpoint")) {
-        const trimmed = statement.trim();
-        if (!trimmed) continue;
-        try {
-          await pool.query(trimmed);
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (
-            code !== "42P07" &&
-            code !== "42710" &&
-            code !== "42701" &&
-            code !== "42723"
-          ) {
-            throw err;
-          }
-        }
-      }
-    }
-  });
+  }, 30_000);
 
   beforeEach(async () => {
     process.env.POSTIL_PUBLIC_URL = "https://postil.dev";
@@ -214,6 +224,7 @@ describeDb("webhook handler behaviour", () => {
     liveMembershipOrgId = 999;
     liveMembershipOrgLogin = "octo";
     membershipFetchCount = 0;
+    pullRequestReviewContextFetchCount = 0;
     globalThis.fetch = Object.assign(
       async (input: string | URL | Request) => {
         const url =
@@ -234,12 +245,12 @@ describeDb("webhook handler behaviour", () => {
             owner: { id: 7002, login: "octo" },
           });
         }
-        if (!url.includes("/orgs/octo/memberships/admin")) {
+        if (!url.includes("/orgs/octo/memberships/")) {
           throw new Error(`unexpected GitHub request: ${url}`);
         }
         membershipFetchCount += 1;
         return new Response(
-          liveMembershipStatus === 200
+          liveMembershipStatus === 200 && url.endsWith("/admin")
             ? JSON.stringify({
                 state: liveMembershipState,
                 role: liveMembershipRole,
@@ -263,12 +274,15 @@ describeDb("webhook handler behaviour", () => {
       draft: false,
       authorGithubId: 501,
       authorLogin: "admin",
+      updatedAt: "2026-08-24T12:34:56Z",
     };
     reviewCommentRoot = {
       id: 8800,
       body: "The nullable branch can return before this check.",
       userLogin: "postil-dev[bot]",
     };
+    reviewCommentReactions = [];
+    reviewCommentReactionsError = undefined;
     delete process.env.POSTIL_RESPOND_HOURLY_CAP;
     delete process.env.POSTIL_HOSTED_INFERENCE_ENABLED;
     delete process.env.POSTIL_RELEASE_SHA;
@@ -289,8 +303,12 @@ describeDb("webhook handler behaviour", () => {
     globalThis.fetch = ORIGINAL_FETCH;
     if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.POSTIL_PUBLIC_URL;
     else process.env.POSTIL_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
-    await pool?.end();
-  });
+    // Release the getDb()/getPool() singleton's connection before dropping
+    // the database it points at, or the drop fails with "database is being
+    // accessed by other users".
+    await closeDb();
+    await db?.drop();
+  }, 30_000);
 
   async function seedOrg(): Promise<number> {
     const org = await pool.query<{ id: string }>(
@@ -334,6 +352,22 @@ describeDb("webhook handler behaviour", () => {
       [installationId, githubRepoId, fullName, privateRepository],
     );
     return Number(repo.rows[0]!.id);
+  }
+
+  async function runPendingWebhookDispatch(
+    deliveryId: string,
+    workerId: string,
+  ): Promise<void> {
+    await pool.query(
+      `UPDATE jobs
+          SET run_after = now()
+        WHERE kind = 'webhook-dispatch'
+          AND payload->>'deliveryId' = $1`,
+      [deliveryId],
+    );
+    const job = await claimJob(pool, workerId, ["webhook-dispatch"]);
+    expect(job?.kind).toBe("webhook-dispatch");
+    await runClaimedJob(job!, workerId, "web");
   }
 
   async function seedSharedSnapshot(
@@ -462,6 +496,13 @@ describeDb("webhook handler behaviour", () => {
       },
       deliveryId,
     );
+  }
+
+  function dismissalComment(
+    deliveryId: string,
+    body = "@postil dismiss kind-blocker -- false-positive: the guard is unreachable",
+  ): Promise<Response> {
+    return approvalComment(deliveryId, body);
   }
 
   test("pull_request upsert re-pins a repo transferred between installations", async () => {
@@ -597,7 +638,7 @@ describeDb("webhook handler behaviour", () => {
     expect(afterReinstall.rows[0]!.removal_alert_count).toBe(1);
   });
 
-  test("one GitHub actor receives bounded hosted trials across owners without blocking setup", async () => {
+  test("every account an actor installs receives its own hosted trial", async () => {
     const responses = await Promise.all(
       Array.from({ length: 4 }, async (_, index) => {
         const account = {
@@ -629,9 +670,9 @@ describeDb("webhook handler behaviour", () => {
     expect(grants.rows.map((row) => row.requested_mode)).toEqual([
       "hosted", "hosted", "hosted", "hosted",
     ]);
-    expect(grants.rows.map((row) => row.granted_mode).sort()).toEqual([
-      "byok", "hosted", "hosted", "hosted",
-    ].sort());
+    expect(grants.rows.map((row) => row.granted_mode)).toEqual([
+      "hosted", "hosted", "hosted", "hosted",
+    ]);
   });
 
   test("installation without a verified sender defers its trial until authenticated setup", async () => {
@@ -877,6 +918,41 @@ describeDb("webhook handler behaviour", () => {
     expect(delivered.rows[0]?.delivered_at).toBeInstanceOf(Date);
   });
 
+  test("reconciles an operator delivery from only the newest job for its event key", async () => {
+    const eventKey = "finding-feedback-digest:2026-08-17";
+    await pool.query(
+      `INSERT INTO operator_alert_deliveries
+         (event_key, event, status)
+       VALUES ($1, 'finding_feedback_digest', 'queued')`,
+      [eventKey],
+    );
+    await pool.query(
+      `INSERT INTO jobs (kind, payload, status, last_error, created_at)
+       VALUES
+         ('operator-alert', $1::jsonb, 'failed', 'old failure', '2026-08-24T00:01:00Z'),
+         ('operator-alert', $1::jsonb, 'done', NULL, '2026-08-24T00:02:00Z')`,
+      [JSON.stringify({ event: "finding_feedback_digest", eventKey })],
+    );
+
+    await reconcileOperatorAlertDeliveries(getDb());
+
+    const delivery = await pool.query<{
+      status: string;
+      last_error: string | null;
+      delivered_at: Date | null;
+    }>(
+      `SELECT status, last_error, delivered_at
+         FROM operator_alert_deliveries
+        WHERE event_key = $1`,
+      [eventKey],
+    );
+    expect(delivery.rows).toEqual([{
+      status: "delivered",
+      last_error: null,
+      delivered_at: expect.any(Date),
+    }]);
+  });
+
   test("trial setup does not enqueue email when operator alerts are not configured", async () => {
     delete process.env.POSTIL_OPERATOR_ALERT_EMAIL;
     expect((await post("installation", {
@@ -984,6 +1060,606 @@ describeDb("webhook handler behaviour", () => {
       forceFullReview: true,
       sourceDeliveryId: "delivery-edit-1",
     });
+  });
+
+  test("a newer reopened event retries until the live action converges", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 252);
+    await seedRepo(inst, 7880, "octo/reopened");
+    pullRequestReviewContext = {
+      open: false,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:55Z",
+    };
+
+    const response = await post(
+      "pull_request",
+      {
+        action: "reopened",
+        installation: { id: 252 },
+        repository: { id: 7880, full_name: "octo/reopened", private: false },
+        pull_request: {
+          number: 9,
+          head: { sha: "same-head" },
+          base: { sha: "base" },
+          updated_at: "2026-08-24T12:34:56Z",
+        },
+      },
+      "delivery-reopened-lagging",
+    );
+
+    expect(response.status).toBe(200);
+    const deferred = await pool.query<{
+      deliveryCompleted: boolean;
+      dispatchStatus: string;
+      attempts: number;
+      reviewJobs: number;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS "deliveryCompleted",
+              dispatch.status AS "dispatchStatus",
+              dispatch.attempts,
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS "reviewJobs"
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-reopened-lagging'`,
+    );
+    expect(deferred.rows[0]).toEqual({
+      deliveryCompleted: false,
+      dispatchStatus: "queued",
+      attempts: 1,
+      reviewJobs: 0,
+    });
+
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      open: true,
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+    await runPendingWebhookDispatch(
+      "delivery-reopened-lagging",
+      "webhook-reopened-retry",
+    );
+
+    const completed = await pool.query<{
+      deliveryCompleted: boolean;
+      dispatchStatus: string;
+      reviewStatus: string;
+      forceFullReview: boolean;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS "deliveryCompleted",
+              dispatch.status AS "dispatchStatus",
+              review.status AS "reviewStatus",
+              (review.payload->>'forceFullReview')::boolean AS "forceFullReview"
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+         JOIN jobs review
+           ON review.kind = 'review'
+          AND review.payload->>'sourceDeliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-reopened-lagging'`,
+    );
+    expect(completed.rows[0]).toEqual({
+      deliveryCompleted: true,
+      dispatchStatus: "done",
+      reviewStatus: "queued",
+      forceFullReview: true,
+    });
+  });
+
+  test("an older closed event preserves the newer live pull request", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 253);
+    const repoId = await seedRepo(inst, 7881, "octo/stale-close");
+    await pool.query(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, queued_at, started_at)
+       VALUES ($1, 10, 'same-head', 'base', 'running', now(), now())`,
+      [repoId],
+    );
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "closed",
+            installation: { id: 253 },
+            repository: { id: 7881, full_name: "octo/stale-close", private: false },
+            pull_request: {
+              number: 10,
+              head: { sha: "same-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:55Z",
+            },
+          },
+          "delivery-stale-close",
+        )
+      ).status,
+    ).toBe(200);
+
+    const state = await pool.query<{
+      deliveryCompleted: boolean;
+      dispatchStatus: string;
+      reviewStatus: string;
+      reviewJobs: number;
+    }>(
+      `SELECT delivery.completed_at IS NOT NULL AS "deliveryCompleted",
+              dispatch.status AS "dispatchStatus",
+              (SELECT status FROM reviews WHERE repository_id = $1) AS "reviewStatus",
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS "reviewJobs"
+         FROM webhook_deliveries delivery
+         JOIN jobs dispatch
+           ON dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = delivery.delivery_id
+        WHERE delivery.delivery_id = 'delivery-stale-close'`,
+      [repoId],
+    );
+    expect(state.rows[0]).toEqual({
+      deliveryCompleted: true,
+      dispatchStatus: "done",
+      reviewStatus: "running",
+      reviewJobs: 0,
+    });
+    expect(completedCheckRuns).toEqual([]);
+  });
+
+  test("an equal contradictory close completes as ignored after 30s and 60s retries", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 254);
+    const repoId = await seedRepo(inst, 7882, "octo/equal-state");
+    await pool.query(
+      `INSERT INTO reviews
+         (repository_id, pr_number, head_sha, base_sha, status, queued_at, started_at)
+       VALUES ($1, 11, 'same-head', 'base', 'running', now(), now())`,
+      [repoId],
+    );
+    const respond = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (kind, payload)
+       VALUES ('respond', $1::jsonb) RETURNING id`,
+      [JSON.stringify({
+        installationId: 254,
+        sourceInstallationId: inst,
+        sourceOrgId: orgId,
+        githubRepoId: 7882,
+        repoFullName: "octo/equal-state",
+        number: 11,
+        isPr: true,
+        sourceHeadSha: "same-head",
+      })],
+    );
+    await pool.query(
+      `INSERT INTO respond_deliveries
+         (job_id, repository_id, source_org_id, source_installation_id,
+          source_github_installation_id, source_github_repo_id, repo_full_name,
+          issue_number, is_pr, source_head_sha, body)
+       VALUES ($1, $2, $3, $4, 254, 7882, 'octo/equal-state', 11, true,
+               'same-head', 'queued reply')`,
+      [respond.rows[0]!.id, repoId, orgId, inst],
+    );
+    const repositoryVersion = await pool.query<{ version: string }>(
+      "SELECT xmin::text AS version FROM repositories WHERE id = $1",
+      [repoId],
+    );
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:56.100Z",
+    };
+
+    expect(
+      (
+        await accept(
+          "pull_request",
+          {
+            action: "closed",
+            installation: { id: 254 },
+            repository: { id: 7882, full_name: "octo/equal-state", private: false },
+            pull_request: {
+              number: 11,
+              head: { sha: "same-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:56.900Z",
+            },
+          },
+          "delivery-equal-state",
+        )
+      ).status,
+    ).toBe(200);
+
+    await pool.query(
+      `UPDATE jobs
+          SET created_at = now() - interval '2 hours'
+        WHERE kind = 'webhook-dispatch'
+          AND payload->>'deliveryId' = 'delivery-equal-state'`,
+    );
+    await runPendingWebhookDispatch("delivery-equal-state", "webhook-equal-first");
+
+    let state = await pool.query<{
+      status: string;
+      attempts: number;
+      completed: boolean;
+      delayMs: number;
+      lastError: string | null;
+    }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed,
+              round(extract(epoch FROM (dispatch.run_after - clock_timestamp())) * 1000)::int
+                AS "delayMs",
+              dispatch.last_error AS "lastError"
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND delivery.delivery_id = 'delivery-equal-state'`,
+    );
+    expect(state.rows[0]).toMatchObject({
+      status: "queued",
+      attempts: 1,
+      completed: false,
+      lastError: "GitHub pull request octo/equal-state#11 has not converged for closed",
+    });
+    expect(state.rows[0]!.delayMs).toBeGreaterThanOrEqual(28_000);
+    expect(state.rows[0]!.delayMs).toBeLessThanOrEqual(30_000);
+
+    await runPendingWebhookDispatch("delivery-equal-state", "webhook-equal-second");
+    state = await pool.query<{
+      status: string;
+      attempts: number;
+      completed: boolean;
+      delayMs: number;
+      lastError: string | null;
+    }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed,
+              round(extract(epoch FROM (dispatch.run_after - clock_timestamp())) * 1000)::int
+                AS "delayMs",
+              dispatch.last_error AS "lastError"
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND delivery.delivery_id = 'delivery-equal-state'`,
+    );
+    expect(state.rows[0]).toMatchObject({
+      status: "queued",
+      attempts: 2,
+      completed: false,
+      lastError: "GitHub pull request octo/equal-state#11 has not converged for closed",
+    });
+    expect(state.rows[0]!.delayMs).toBeGreaterThanOrEqual(58_000);
+    expect(state.rows[0]!.delayMs).toBeLessThanOrEqual(60_000);
+
+    await runPendingWebhookDispatch("delivery-equal-state", "webhook-equal-terminal");
+    state = await pool.query<{
+      status: string;
+      attempts: number;
+      completed: boolean;
+      delayMs: number;
+      lastError: string | null;
+    }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed,
+              round(extract(epoch FROM (dispatch.run_after - clock_timestamp())) * 1000)::int
+                AS "delayMs",
+              dispatch.last_error AS "lastError"
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND delivery.delivery_id = 'delivery-equal-state'`,
+    );
+    expect(state.rows[0]).toMatchObject({
+      status: "done",
+      attempts: 3,
+      completed: true,
+      lastError: null,
+    });
+    expect(pullRequestReviewContextFetchCount).toBe(3);
+    const sideEffects = await pool.query<{
+      repositoryVersion: string;
+      reviewStatus: string;
+      reviewFinished: boolean;
+      respondStatus: string;
+      deliveryState: string;
+      reviewJobs: number;
+    }>(
+      `SELECT
+         (SELECT xmin::text FROM repositories WHERE id = $1) AS "repositoryVersion",
+         (SELECT status FROM reviews WHERE repository_id = $1) AS "reviewStatus",
+         (SELECT finished_at IS NOT NULL FROM reviews WHERE repository_id = $1)
+           AS "reviewFinished",
+         (SELECT status FROM jobs WHERE id = $2) AS "respondStatus",
+         (SELECT state FROM respond_deliveries WHERE job_id = $2) AS "deliveryState",
+         (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS "reviewJobs"`,
+      [repoId, respond.rows[0]!.id],
+    );
+    expect(sideEffects.rows[0]).toEqual({
+      repositoryVersion: repositoryVersion.rows[0]!.version,
+      reviewStatus: "running",
+      reviewFinished: false,
+      respondStatus: "queued",
+      deliveryState: "prepared",
+      reviewJobs: 0,
+    });
+    expect(completedCheckRuns).toEqual([]);
+  });
+
+  test("a newer event timestamp does not delay an already converged event", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 255);
+    await seedRepo(inst, 7883, "octo/converged");
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "same-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "opened",
+            installation: { id: 255 },
+            repository: { id: 7883, full_name: "octo/converged", private: false },
+            pull_request: {
+              number: 12,
+              head: { sha: "same-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:57Z",
+            },
+          },
+          "delivery-converged",
+        )
+      ).status,
+    ).toBe(200);
+
+    const result = await pool.query<{ attempts: number; status: string; reviews: number }>(
+      `SELECT dispatch.attempts, dispatch.status,
+              (SELECT count(*)::int FROM jobs WHERE kind = 'review') AS reviews
+         FROM jobs dispatch
+        WHERE dispatch.kind = 'webhook-dispatch'
+          AND dispatch.payload->>'deliveryId' = 'delivery-converged'`,
+    );
+    expect(result.rows[0]).toEqual({ attempts: 1, status: "done", reviews: 1 });
+  });
+
+  test("a newer ref snapshot retries until the live refs converge", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 256);
+    await seedRepo(inst, 7884, "octo/ref-convergence");
+    pullRequestReviewContext = {
+      open: true,
+      merged: false,
+      headSha: "old-head",
+      baseSha: "base",
+      draft: false,
+      updatedAt: "2026-08-24T12:34:55Z",
+    };
+
+    expect(
+      (
+        await post(
+          "pull_request",
+          {
+            action: "synchronize",
+            installation: { id: 256 },
+            repository: { id: 7884, full_name: "octo/ref-convergence", private: false },
+            pull_request: {
+              number: 13,
+              head: { sha: "new-head" },
+              base: { sha: "base" },
+              updated_at: "2026-08-24T12:34:56Z",
+            },
+          },
+          "delivery-ref-convergence",
+        )
+      ).status,
+    ).toBe(200);
+
+    pullRequestReviewContext = {
+      ...pullRequestReviewContext,
+      headSha: "new-head",
+      updatedAt: "2026-08-24T12:34:56Z",
+    };
+    await runPendingWebhookDispatch(
+      "delivery-ref-convergence",
+      "webhook-ref-convergence",
+    );
+    const jobs = await pool.query<{ headSha: string }>(
+      `SELECT payload->>'headSha' AS "headSha"
+         FROM jobs
+        WHERE kind = 'review'`,
+    );
+    expect(jobs.rows).toEqual([{ headSha: "new-head" }]);
+  });
+
+  test("non-newer contradictory refs fail closed with bounded equal-time retries", async () => {
+    const orgId = await seedOrg();
+    const cases = [
+      {
+        name: "live-newer",
+        installationId: 258,
+        githubRepoId: 7886,
+        eventUpdatedAt: "2026-08-24T12:34:55Z",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+        expectedAttempts: 1,
+      },
+      {
+        name: "unknown",
+        installationId: 259,
+        githubRepoId: 7887,
+        eventUpdatedAt: "2026-08-24",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+        expectedAttempts: 1,
+      },
+      {
+        name: "equal",
+        installationId: 260,
+        githubRepoId: 7888,
+        eventUpdatedAt: "2026-08-24T12:34:56.900Z",
+        liveUpdatedAt: "2026-08-24T12:34:56.100Z",
+        expectedAttempts: 3,
+      },
+    ];
+
+    for (const item of cases) {
+      const installation = await seedInstallation(orgId, item.installationId);
+      await seedRepo(
+        installation,
+        item.githubRepoId,
+        `octo/ref-${item.name}`,
+      );
+      pullRequestReviewContext = {
+        open: true,
+        merged: false,
+        headSha: "live-head",
+        baseSha: "base",
+        draft: false,
+        updatedAt: item.liveUpdatedAt,
+      };
+      const deliveryId = `delivery-ref-${item.name}`;
+      expect(
+        (
+          await post(
+            "pull_request",
+            {
+              action: "synchronize",
+              installation: { id: item.installationId },
+              repository: {
+                id: item.githubRepoId,
+                full_name: `octo/ref-${item.name}`,
+                private: false,
+              },
+              pull_request: {
+                number: 15,
+                head: { sha: "event-head" },
+                base: { sha: "base" },
+                updated_at: item.eventUpdatedAt,
+              },
+            },
+            deliveryId,
+          )
+        ).status,
+      ).toBe(200);
+
+      if (item.name === "equal") {
+        await runPendingWebhookDispatch(deliveryId, "webhook-ref-equal-second");
+        await runPendingWebhookDispatch(deliveryId, "webhook-ref-equal-terminal");
+      }
+
+      const state = await pool.query<{
+        status: string;
+        attempts: number;
+        completed: boolean;
+      }>(
+        `SELECT dispatch.status, dispatch.attempts,
+                delivery.completed_at IS NOT NULL AS completed
+           FROM jobs dispatch
+           JOIN webhook_deliveries delivery
+             ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+          WHERE dispatch.kind = 'webhook-dispatch'
+            AND delivery.delivery_id = $1`,
+        [deliveryId],
+      );
+      expect(state.rows[0]).toEqual({
+        status: "done",
+        attempts: item.expectedAttempts,
+        completed: true,
+      });
+    }
+
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'review'")).rowCount).toBe(
+      0,
+    );
+  });
+
+  test("unknown timestamp ordering keeps contradictory events ignored", async () => {
+    const cases = [
+      {
+        deliveryId: "delivery-missing-event-time",
+        eventUpdatedAt: undefined,
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+      },
+      {
+        deliveryId: "delivery-malformed-event-time",
+        eventUpdatedAt: "not-a-timestamp",
+        liveUpdatedAt: "2026-08-24T12:34:56Z",
+      },
+      {
+        deliveryId: "delivery-missing-live-time",
+        eventUpdatedAt: "2026-08-24T12:34:56Z",
+        liveUpdatedAt: undefined,
+      },
+    ];
+
+    for (const item of cases) {
+      pullRequestReviewContext = {
+        open: false,
+        merged: false,
+        headSha: "same-head",
+        baseSha: "base",
+        draft: false,
+        ...(item.liveUpdatedAt ? { updatedAt: item.liveUpdatedAt } : {}),
+      };
+      expect(
+        (
+          await post(
+            "pull_request",
+            {
+              action: "reopened",
+              installation: { id: 257 },
+              repository: { id: 7885, full_name: "octo/unknown-time", private: false },
+              pull_request: {
+                number: 14,
+                head: { sha: "same-head" },
+                base: { sha: "base" },
+                ...(item.eventUpdatedAt === undefined
+                  ? {}
+                  : { updated_at: item.eventUpdatedAt }),
+              },
+            },
+            item.deliveryId,
+          )
+        ).status,
+      ).toBe(200);
+    }
+
+    const states = await pool.query<{ status: string; attempts: number; completed: boolean }>(
+      `SELECT dispatch.status, dispatch.attempts,
+              delivery.completed_at IS NOT NULL AS completed
+         FROM jobs dispatch
+         JOIN webhook_deliveries delivery
+           ON delivery.delivery_id = dispatch.payload->>'deliveryId'
+        WHERE dispatch.kind = 'webhook-dispatch'
+        ORDER BY delivery.delivery_id`,
+    );
+    expect(states.rows).toEqual([
+      { status: "done", attempts: 1, completed: true },
+      { status: "done", attempts: 1, completed: true },
+      { status: "done", attempts: 1, completed: true },
+    ]);
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'review'")).rowCount).toBe(0);
   });
 
   for (const action of ["opened", "synchronize"] as const) {
@@ -1259,10 +1935,10 @@ describeDb("webhook handler behaviour", () => {
     );
     expect(res.status).toBe(200);
 
-    // The gate (failure) and advisory (neutral) check-runs were both completed
-    // before the repo row (and its cascaded review) was deleted.
+    // Both the gate and review check-runs failed before the repo row and its
+    // cascaded review were deleted.
     expect(completedCheckRuns).toHaveLength(2);
-    expect(completedCheckRuns.map((c) => c.conclusion).sort()).toEqual(["failure", "neutral"]);
+    expect(completedCheckRuns.map((c) => c.conclusion).sort()).toEqual(["failure", "failure"]);
     expect(completedCheckRuns.every((c) => c.repoFullName === "octo/gone")).toBe(true);
     expect(
       completedCheckRuns.every((c) =>
@@ -1397,6 +2073,139 @@ describeDb("webhook handler behaviour", () => {
     expect(replies[0]).toContain("Approval recorded by @admin");
     expect(replies[0]).toContain("gate update is queued");
     expect(replies[0]).toContain("head-sha");
+    expect(pullRequestReviewContextFetchCount).toBe(0);
+  });
+
+  test("dismissal records its audit tag, flags author self-dismissal, and clears severity blocking", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId, approvalEnvelope({
+      findings: [{
+        id: "kind-blocker", path: "src/app.ts", line: 10, severity: "error", kind: "risk",
+        confidence: 0.9, title: "Incorrect finding", body: "The branch is unreachable.",
+      }],
+      counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      scorerModel: "scorer/webhook",
+    }));
+    await pool.query("UPDATE reviews SET author_github_id = 501 WHERE id = $1", [reviewId]);
+
+    expect((await dismissalComment("dismissal-success")).status).toBe(200);
+    const dismissal = await pool.query<{
+      verb: string;
+      reason_tag: string;
+      author_self_dismissal: boolean;
+      finding_model: string;
+      finding_scorer_model: string;
+    }>("SELECT verb, reason_tag, author_self_dismissal, finding_model, finding_scorer_model FROM finding_approvals WHERE review_id = $1", [reviewId]);
+    expect(dismissal.rows).toEqual([{
+      verb: "dismiss", reason_tag: "false-positive", author_self_dismissal: true,
+      finding_model: "deepseek/deepseek-v4-pro",
+      finding_scorer_model: "scorer/webhook",
+    }]);
+    expect((await pool.query<{ gate_failing: boolean }>("SELECT gate_failing FROM reviews WHERE id = $1", [reviewId])).rows[0]!.gate_failing).toBe(false);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "The pull request author dismissed this finding.",
+    );
+  });
+
+  test("dismissal infers a finding id only from its finding-comment reply", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const reviewId = await seedCompletedApprovalReview(repoId);
+    await pool.query(
+      `INSERT INTO finding_publications (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+       VALUES ($1, 'kind-blocker', false, 'inline', 'inline', '8800')`,
+      [reviewId],
+    );
+
+    expect((await post("pull_request_review_comment", {
+      action: "created",
+      installation: { id: 700 },
+      repository: { id: 7000, full_name: "octo/approvals", private: false },
+      sender: { id: 501, login: "admin", type: "User" },
+      comment: {
+        id: 8801, in_reply_to_id: 8800, body: "@postil dismiss -- out-of-scope: this policy does not apply",
+        user: { id: 501, login: "admin", type: "User" }, author_association: "MEMBER",
+      },
+      pull_request: { number: 9 },
+    }, "dismissal-reply-inference")).status).toBe(200);
+    expect((await pool.query<{ finding_id: string; reason_tag: string }>(
+      "SELECT finding_id, reason_tag FROM finding_approvals WHERE review_id = $1", [reviewId],
+    )).rows).toEqual([{ finding_id: "kind-blocker", reason_tag: "out-of-scope" }]);
+  });
+
+  test("dismissal rejects a same-pull-request review that is queued or running", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    await seedCompletedApprovalReview(repoId);
+    await pool.query(
+      "INSERT INTO reviews (repository_id, pr_number, head_sha, base_sha, status) VALUES ($1, 9, 'next-head', 'base-sha', 'queued')",
+      [repoId],
+    );
+
+    expect((await dismissalComment("dismissal-race")).status).toBe(200);
+    expect((await pool.query<{ c: number }>("SELECT count(*)::int AS c FROM finding_approvals")).rows[0]!.c).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain("review is in progress");
+  });
+
+  test("approval command accepts the truncated finding id shown in gate summaries", async () => {
+    const fullId = "a1b2c3d4e5f6".padEnd(64, "0");
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const envelope = approvalEnvelope();
+    (envelope.findings as Array<{ id: string }>)[0]!.id = fullId;
+    const reviewId = await seedCompletedApprovalReview(repoId, envelope);
+
+    const res = await approvalComment(
+      "approval-prefix",
+      `@postil approve ${fullId.slice(0, 12)} -- reviewed`,
+    );
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ finding_id: string }>(
+      "SELECT finding_id FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows).toEqual([{ finding_id: fullId }]);
+    const replies = await queuedWebhookCommentBodies();
+    expect(replies[0]).toContain(`Approval recorded by @admin for finding ${fullId}`);
+  });
+
+  test("approval command rejects a finding id prefix matching several findings", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 700);
+    const repoId = await seedRepo(inst, 7000, "octo/approvals");
+    await seedUser(501, "admin", orgId, "admin");
+    const envelope = approvalEnvelope();
+    const template = envelope.findings[0]!;
+    envelope.findings = [
+      { ...template, id: "a1b2c3d4e5f6".padEnd(64, "0") },
+      { ...template, id: "a1b2c3d4e5f6".padEnd(64, "1"), line: 20 },
+    ];
+    const reviewId = await seedCompletedApprovalReview(repoId, envelope);
+
+    const res = await approvalComment(
+      "approval-prefix-ambiguous",
+      "@postil approve a1b2c3d4e5f6 -- reviewed",
+    );
+
+    expect(res.status).toBe(200);
+    const approvals = await pool.query<{ c: number }>(
+      "SELECT count(*)::int AS c FROM finding_approvals WHERE review_id = $1",
+      [reviewId],
+    );
+    expect(approvals.rows[0]!.c).toBe(0);
+    expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
+      "matches 2 blocking findings",
+    );
   });
 
   test("approval command verifies and records a live admin who has never signed in", async () => {
@@ -1528,14 +2337,17 @@ describeDb("webhook handler behaviour", () => {
     ]);
   });
 
-  test("exact PR review mentions enqueue the structured reviewer", async () => {
+  test.each([
+    ["plain", "@postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict."],
+    ["marked", "🤖 @postil-dev rerun the review for the current head. The previous hosted run ended without a review verdict."],
+  ])("exact %s PR review mentions enqueue the structured reviewer", async (_label, body) => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     await seedRepo(inst, 7000, "octo/approvals");
 
     const res = await approvalComment(
       "mention-review-current-head",
-      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      body,
     );
 
     expect(res.status).toBe(200);
@@ -1583,7 +2395,7 @@ describeDb("webhook handler behaviour", () => {
 
     const duplicate = await approvalComment(
       "mention-review-current-head",
-      "@postil rerun the review for the current head. The previous hosted run ended without a review verdict.",
+      body,
     );
     expect(duplicate.status).toBe(200);
     const reactionCount = await pool.query<{ count: number }>(
@@ -1786,6 +2598,635 @@ describeDb("webhook handler behaviour", () => {
     expect(jobs.rows[0]!.count).toBe(0);
   });
 
+  async function seedPublishedFinding(
+    repoId: number,
+    findingId = "feedback-finding",
+    envelope: Record<string, unknown> = approvalEnvelope(),
+  ): Promise<number> {
+    const reviewId = await seedCompletedApprovalReview(repoId, envelope);
+    const publication = await pool.query<{ id: string }>(
+      `INSERT INTO finding_publications
+         (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+       VALUES ($1, $2, true, 'inline', 'inline', '8800')
+       RETURNING id`,
+      [reviewId, findingId],
+    );
+    return Number(publication.rows[0]!.id);
+  }
+
+  function feedbackReply(
+    deliveryId: string,
+    commentId: number,
+    body: string,
+    overrides: Record<string, unknown> = {},
+  ): Promise<Response> {
+    return post(
+      "pull_request_review_comment",
+      {
+        action: "created",
+        installation: { id: 710 },
+        repository: { id: 7010, full_name: "octo/finding-feedback", private: false },
+        sender: { id: 510, login: "reviewer", type: "User" },
+        comment: {
+          id: commentId,
+          in_reply_to_id: 8800,
+          body,
+          created_at: "2026-08-24T12:34:56Z",
+          user: { id: 510, login: "reviewer", type: "User" },
+          author_association: "MEMBER",
+        },
+        pull_request: {
+          number: 9,
+          user: { id: 511, login: "pull-request-author", type: "User" },
+        },
+        ...overrides,
+      },
+      deliveryId,
+    );
+  }
+
+  test("persists eligible finding feedback without changing approvals or the gate", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+
+    expect((await feedbackReply("finding-feedback-wrong", 9101, "This finding is wrong.")).status)
+      .toBe(200);
+    expect((await feedbackReply("finding-feedback-risk", 9102, "We accept this risk.")).status)
+      .toBe(200);
+    expect((await feedbackReply("finding-feedback-scope", 9103, "This is outside the scope of this pull request.")).status)
+      .toBe(200);
+    expect((await feedbackReply("finding-feedback-author", 9104, "This is unhelpful.", {
+      sender: { id: 511, login: "pull-request-author", type: "User" },
+      comment: {
+        id: 9104,
+        in_reply_to_id: 8800,
+        body: "This is unhelpful.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 511, login: "pull-request-author", type: "User" },
+        author_association: "NONE",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("finding-feedback-first-time-author", 9105, "This is still unhelpful.", {
+      sender: { id: 511, login: "pull-request-author", type: "User" },
+      comment: {
+        id: 9105,
+        in_reply_to_id: 8800,
+        body: "This is still unhelpful.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 511, login: "pull-request-author", type: "User" },
+        author_association: "FIRST_TIME_CONTRIBUTOR",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("finding-feedback-replay", 9101, "This finding is wrong.")).status)
+      .toBe(200);
+
+    const feedback = await pool.query<{
+      finding_publication_id: string;
+      source: string;
+      source_github_comment_id: string | null;
+      actor_github_id: string;
+      actor_login_snapshot: string;
+      pr_author_github_id: string;
+      pr_author_login_snapshot: string;
+      actor_is_pr_author: boolean;
+      body: string | null;
+      observed_at: Date;
+      source_delivery_id: string | null;
+      suggested_reason_tag: string | null;
+    }>(`
+      SELECT finding_publication_id, source, source_github_comment_id,
+             actor_github_id, actor_login_snapshot,
+             pr_author_github_id, pr_author_login_snapshot, actor_is_pr_author,
+             body, observed_at, source_delivery_id, suggested_reason_tag
+        FROM finding_feedback
+       ORDER BY source_github_comment_id
+    `);
+    expect(feedback.rows).toEqual([
+      {
+        finding_publication_id: String(publicationId),
+        source: "reply",
+        source_github_comment_id: "9101",
+        actor_github_id: "510",
+        actor_login_snapshot: "reviewer",
+        pr_author_github_id: "511",
+        pr_author_login_snapshot: "pull-request-author",
+        actor_is_pr_author: false,
+        body: "This finding is wrong.",
+        observed_at: new Date("2026-08-24T12:34:56Z"),
+        source_delivery_id: "finding-feedback-wrong",
+        suggested_reason_tag: "false-positive",
+      },
+      expect.objectContaining({
+        source_github_comment_id: "9102",
+        suggested_reason_tag: "accepted-risk",
+      }),
+      expect.objectContaining({
+        source_github_comment_id: "9103",
+        suggested_reason_tag: "out-of-scope",
+      }),
+      expect.objectContaining({
+        source_github_comment_id: "9104",
+        actor_is_pr_author: true,
+        suggested_reason_tag: null,
+      }),
+      expect.objectContaining({
+        source_github_comment_id: "9105",
+        actor_is_pr_author: true,
+        suggested_reason_tag: null,
+      }),
+    ]);
+
+    const state = await pool.query<{ gate_failing: boolean; approval_count: number }>(`
+      SELECT review.gate_failing,
+             (SELECT count(*)::int FROM finding_approvals WHERE review_id = review.id) AS approval_count
+        FROM reviews review
+       WHERE review.id = (
+         SELECT review_id FROM finding_publications WHERE id = $1
+       )
+    `, [publicationId]);
+    expect(state.rows).toEqual([{ gate_failing: true, approval_count: 0 }]);
+  });
+
+  test("keeps operational-sentinel feedback separate from gate decisions", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(
+      repoId,
+      "operational-feedback",
+      approvalEnvelope({
+        findings: [{
+          id: "operational-feedback",
+          path: ".postil/operational",
+          line: 1,
+          severity: "error",
+          kind: "uncertainty",
+          confidence: 1,
+          title: "Model provider unavailable",
+          body: "Provider returned an invalid response.",
+        }],
+        counts: { info: 0, warn: 0, error: 1, suppressed: 0, ungrounded: 0 },
+      }),
+    );
+
+    expect((await feedbackReply("operational-feedback", 9104, "This is a false positive.")).status)
+      .toBe(200);
+
+    const state = await pool.query<{ feedback_count: number; approval_count: number; gate_failing: boolean }>(`
+      SELECT
+        (SELECT count(*)::int FROM finding_feedback WHERE finding_publication_id = $1) AS feedback_count,
+        (SELECT count(*)::int FROM finding_approvals WHERE review_id = publication.review_id) AS approval_count,
+        review.gate_failing
+      FROM finding_publications publication
+      JOIN reviews review ON review.id = publication.review_id
+      WHERE publication.id = $1
+    `, [publicationId]);
+    expect(state.rows).toEqual([{ feedback_count: 1, approval_count: 0, gate_failing: true }]);
+  });
+
+  test("reconciles eligible thumbs reactions without changing finding lifecycle or gate state", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 511, author_login = 'pull-request-author' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    reviewCommentReactions = [
+      {
+        id: 9301,
+        content: "+1",
+        createdAt: new Date("2026-08-24T12:34:56Z"),
+        user: { id: 511, login: "pull-request-author", type: "User" },
+      },
+      {
+        id: 9302,
+        content: "-1",
+        createdAt: new Date("2026-08-24T12:35:56Z"),
+        user: { id: 501, login: "admin", type: "User" },
+      },
+      {
+        id: 9303,
+        content: "eyes",
+        createdAt: new Date("2026-08-24T12:36:56Z"),
+        user: { id: 512, login: "visitor", type: "User" },
+      },
+      {
+        id: 9304,
+        content: "rocket",
+        createdAt: new Date("2026-08-24T12:37:56Z"),
+        user: { id: 513, login: "automation[bot]", type: "Bot" },
+      },
+      {
+        id: 9305,
+        content: "heart",
+        createdAt: new Date("2026-08-24T12:38:56Z"),
+        user: { id: 511, login: "pull-request-author", type: "User" },
+      },
+    ];
+
+    await expect(reconcileFindingFeedbackReactions(getDb(), publicationId)).resolves.toEqual({
+      captured: 2,
+    });
+    await expect(reconcileFindingFeedbackReactions(getDb(), publicationId)).resolves.toEqual({
+      captured: 0,
+    });
+    liveMembershipRole = "member";
+    reviewCommentReactions = [{
+      id: 9306,
+      content: "-1",
+      createdAt: new Date("2026-08-24T12:39:56Z"),
+      user: { id: 501, login: "admin", type: "User" },
+    }];
+    await expect(reconcileFindingFeedbackReactions(getDb(), publicationId)).resolves.toEqual({
+      captured: 0,
+    });
+
+    const feedback = await pool.query<{ source_github_reaction_id: string; reaction_content: string; actor_is_pr_author: boolean }>(
+      `SELECT source_github_reaction_id, reaction_content, actor_is_pr_author
+         FROM finding_feedback WHERE source = 'reaction' ORDER BY source_github_reaction_id`,
+    );
+    expect(feedback.rows).toEqual([
+      { source_github_reaction_id: "9301", reaction_content: "+1", actor_is_pr_author: true },
+      { source_github_reaction_id: "9302", reaction_content: "-1", actor_is_pr_author: false },
+    ]);
+    const control = await pool.query<{ gate_failing: boolean; current_state: string; approvals: number }>(`
+      SELECT review.gate_failing, publication.current_state,
+             (SELECT count(*)::int FROM finding_approvals WHERE review_id = review.id) AS approvals
+        FROM finding_publications publication
+        JOIN reviews review ON review.id = publication.review_id
+       WHERE publication.id = $1`, [publicationId]);
+    expect(control.rows).toEqual([{ gate_failing: true, current_state: "inline", approvals: 0 }]);
+  });
+
+  test("completes feedback reconciliation for a bot-authored pull request", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 4242, author_login = 'dependabot[bot]' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    reviewCommentReactions = [];
+
+    await expect(
+      reconcileFindingFeedbackReactions(getDb(), publicationId),
+    ).resolves.toEqual({ captured: 0 });
+
+    const state = await pool.query<{
+      last_successful_at: Date | null;
+      last_error: string | null;
+    }>(
+      `SELECT last_successful_at, last_error
+         FROM finding_feedback_reconciliations
+        WHERE finding_publication_id = $1`,
+      [publicationId],
+    );
+    expect(state.rows[0]?.last_successful_at).toBeInstanceOf(Date);
+    expect(state.rows[0]?.last_error).toBeNull();
+  });
+
+  test("bounds drive-by actor verification without blocking the author or watermark", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 511, author_login = 'pull-request-author' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    reviewCommentReactions = [
+      ...Array.from({ length: 25 }, (_, index) => ({
+        id: 94_000 + index,
+        content: "+1" as const,
+        createdAt: new Date("2026-08-24T12:34:56Z"),
+        user: { id: 10_000 + index, login: `admin-${index}`, type: "User" },
+      })),
+      {
+        id: 94_100,
+        content: "-1",
+        createdAt: new Date("2026-08-24T12:35:56Z"),
+        user: { id: 511, login: "pull-request-author", type: "User" },
+      },
+    ];
+    globalThis.fetch = Object.assign(
+      async (input: string | URL | Request) => {
+        const url = new URL(
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+        );
+        const login = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+        const index = Number(login.replace("admin-", ""));
+        return Response.json({
+          state: "active",
+          role: "admin",
+          user: { id: 10_000 + index, login },
+          organization: { id: 999, login: "octo" },
+        });
+      },
+      { preconnect: ORIGINAL_FETCH.preconnect },
+    ) as typeof fetch;
+
+    await expect(
+      reconcileFindingFeedbackReactions(getDb(), publicationId),
+    ).resolves.toEqual({ captured: 25 });
+
+    const state = await pool.query<{
+      reaction_count: number;
+      author_count: number;
+      last_successful_at: Date | null;
+      last_error: string | null;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM finding_feedback
+           WHERE finding_publication_id = $1 AND source = 'reaction') AS reaction_count,
+         (SELECT count(*)::int FROM finding_feedback
+           WHERE finding_publication_id = $1 AND actor_is_pr_author) AS author_count,
+         last_successful_at, last_error
+       FROM finding_feedback_reconciliations
+       WHERE finding_publication_id = $1`,
+      [publicationId],
+    );
+    expect(state.rows).toEqual([{
+      reaction_count: 25,
+      author_count: 1,
+      last_successful_at: expect.any(Date),
+      last_error: null,
+    }]);
+  });
+
+  test("treats a deleted published comment as a successful bounded observation", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 511, author_login = 'pull-request-author' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    reviewCommentReactionsError = new realChecks.GitHubHttpError(404, "missing");
+    const now = new Date("2026-08-25T12:00:00Z");
+
+    await expect(
+      reconcileFindingFeedbackReactions(getDb(), publicationId, now),
+    ).resolves.toEqual({ captured: 0 });
+
+    const state = await pool.query<{
+      last_successful_at: Date | null;
+      last_error: string | null;
+      next_reconcile_at: Date;
+    }>(
+      `SELECT last_successful_at, last_error, next_reconcile_at
+         FROM finding_feedback_reconciliations
+        WHERE finding_publication_id = $1`,
+      [publicationId],
+    );
+    expect(state.rows).toEqual([{
+      last_successful_at: now,
+      last_error: null,
+      next_reconcile_at: new Date("2026-09-24T12:00:00Z"),
+    }]);
+  });
+
+  test("backs off consecutive reaction failures and resets after success", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 511, author_login = 'pull-request-author' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    reviewCommentReactionsError = new realChecks.GitHubHttpError(
+      503,
+      "unavailable",
+    );
+    const firstAttempt = new Date("2026-08-25T12:00:00Z");
+    await expect(
+      reconcileFindingFeedbackReactions(getDb(), publicationId, firstAttempt),
+    ).rejects.toThrow("unavailable");
+    const secondAttempt = new Date("2026-08-25T12:05:00Z");
+    await expect(
+      reconcileFindingFeedbackReactions(getDb(), publicationId, secondAttempt),
+    ).rejects.toThrow("unavailable");
+
+    let state = await pool.query<{
+      attempt_count: number;
+      next_reconcile_at: Date;
+      last_error: string | null;
+    }>(
+      `SELECT attempt_count, next_reconcile_at, last_error
+         FROM finding_feedback_reconciliations
+        WHERE finding_publication_id = $1`,
+      [publicationId],
+    );
+    expect(state.rows).toEqual([{
+      attempt_count: 2,
+      next_reconcile_at: new Date("2026-08-25T12:15:00Z"),
+      last_error: expect.stringContaining("unavailable"),
+    }]);
+
+    reviewCommentReactionsError = undefined;
+    reviewCommentReactions = [];
+    await expect(
+      reconcileFindingFeedbackReactions(
+        getDb(),
+        publicationId,
+        new Date("2026-08-25T12:15:00Z"),
+      ),
+    ).resolves.toEqual({ captured: 0 });
+    state = await pool.query<{
+      attempt_count: number;
+      next_reconcile_at: Date;
+      last_error: string | null;
+    }>(
+      `SELECT attempt_count, next_reconcile_at, last_error
+         FROM finding_feedback_reconciliations
+        WHERE finding_publication_id = $1`,
+      [publicationId],
+    );
+    expect(state.rows[0]).toMatchObject({ attempt_count: 0, last_error: null });
+  });
+
+  test("honors a failed reconciliation retry deadline before cutoff catchup", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    const now = new Date("2026-08-25T12:00:00Z");
+    await pool.query(
+      `INSERT INTO finding_feedback_reconciliations
+         (finding_publication_id, next_reconcile_at, last_error)
+       VALUES ($1, $2, 'temporary GitHub failure')`,
+      [publicationId, new Date("2026-08-25T13:00:00Z")],
+    );
+
+    expect(await scheduleFindingFeedbackReconciliationJobs(pool, now, now)).toBe(0);
+    await pool.query(
+      "UPDATE finding_feedback_reconciliations SET next_reconcile_at = $2 WHERE finding_publication_id = $1",
+      [publicationId, now],
+    );
+    expect(await scheduleFindingFeedbackReconciliationJobs(pool, now, now)).toBe(1);
+  });
+
+  test("bounds watchdog feedback scheduling and queues one privacy-safe weekly digest", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    const publicationId = await seedPublishedFinding(repoId);
+    await pool.query(
+      "UPDATE reviews SET author_github_id = 511, author_login = 'pull-request-author' WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)",
+      [publicationId],
+    );
+    await pool.query(`
+      INSERT INTO finding_publications
+        (review_id, finding_id, stable_identity, initial_state, current_state, github_comment_id)
+      SELECT review_id, 'feedback-' || value, true, 'inline', 'inline', (8800 + value)::text
+        FROM finding_publications, generate_series(1, 205) value
+       WHERE id = $1`, [publicationId]);
+    const now = new Date("2026-08-24T12:00:00Z");
+    expect(await scheduleFindingFeedbackReconciliationJobs(pool, now)).toBe(200);
+    expect(await scheduleFindingFeedbackReconciliationJobs(pool, now)).toBe(6);
+
+    await pool.query(
+      `INSERT INTO finding_feedback
+        (finding_publication_id, source, source_github_comment_id, source_github_reaction_id,
+         reaction_content, body, actor_github_id, actor_login_snapshot,
+         pr_author_github_id, pr_author_login_snapshot, actor_is_pr_author,
+         observed_at, source_delivery_id, created_at)
+       VALUES ($1, 'reaction', 8800, 9901, '+1', NULL, 511, 'pull-request-author',
+               511, 'pull-request-author', true, '2026-08-20T12:00:00Z', NULL,
+               '2026-08-20T12:00:01Z')`,
+      [publicationId],
+    );
+    await pool.query(
+      `UPDATE reviews
+          SET envelope = jsonb_set(envelope, '{modelUsed}', to_jsonb($2::text))
+        WHERE id = (SELECT review_id FROM finding_publications WHERE id = $1)`,
+      [publicationId, "m".repeat(600)],
+    );
+    await pool.query(
+      `INSERT INTO finding_feedback
+        (finding_publication_id, source, source_github_comment_id, source_github_reaction_id,
+         reaction_content, body, actor_github_id, actor_login_snapshot,
+         pr_author_github_id, pr_author_login_snapshot, actor_is_pr_author,
+         observed_at, source_delivery_id, created_at)
+       VALUES ($1, 'reaction', 8800, 9902, '-1', NULL, 511, 'pull-request-author',
+               511, 'pull-request-author', true, '2026-08-01T12:00:00Z', NULL,
+               '2026-08-20T12:00:02Z')`,
+      [publicationId],
+    );
+    const aggregatePage = await findingFeedbackAggregates(
+      getDb(), new Date("2026-08-17T00:00:00Z"), new Date("2026-08-24T00:00:00Z"), 1,
+    );
+    expect(aggregatePage).toEqual({
+      aggregates: [expect.objectContaining({
+        source: "reaction",
+        model: "m".repeat(500),
+        count: 1,
+      })],
+      truncated: true,
+    });
+    process.env.POSTIL_OPERATOR_ALERT_EMAIL = "operator@example.test";
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("pending");
+    await pool.query(
+      `UPDATE finding_feedback_reconciliations
+          SET last_successful_at = $1, last_error = NULL`,
+      [now],
+    );
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("queued");
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("empty");
+    await pool.query(`
+      UPDATE operator_alert_deliveries
+         SET status = 'failed', last_error = 'temporary fixture failure'
+       WHERE event = 'finding_feedback_digest'
+    `);
+    expect(await scheduleFindingFeedbackDigest(getDb(), now)).toBe("queued");
+    const digest = await pool.query<{ event: string; payload: unknown }>(`
+      SELECT delivery.event, job.payload FROM operator_alert_deliveries delivery
+      JOIN jobs job ON job.kind = 'operator-alert'
+       AND job.payload->>'eventKey' = delivery.event_key
+      WHERE delivery.event LIKE 'finding_feedback_digest'`,
+    );
+    expect(digest.rows).toHaveLength(2);
+    expect(JSON.stringify(digest.rows[0]!.payload)).not.toContain("pull-request-author");
+    expect(JSON.stringify(digest.rows[0]!.payload)).not.toContain("This finding");
+  });
+
+  test("records historical private-repository feedback without inference entitlement", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 711);
+    const repoId = await seedRepo(inst, 7011, "octo/private-feedback", true);
+    const publicationId = await seedPublishedFinding(repoId);
+
+    expect((await feedbackReply("private-finding-feedback", 9150, "This is unhelpful.", {
+      installation: { id: 711 },
+      repository: {
+        id: 7011,
+        full_name: "octo/private-feedback",
+        private: true,
+      },
+    })).status).toBe(200);
+
+    const feedback = await pool.query<{ finding_publication_id: string; body: string }>(
+      `SELECT finding_publication_id, body
+         FROM finding_feedback
+        WHERE source_github_comment_id = '9150'`,
+    );
+    expect(feedback.rows).toEqual([{
+      finding_publication_id: String(publicationId),
+      body: "This is unhelpful.",
+    }]);
+    expect((await pool.query("SELECT 1 FROM jobs WHERE kind = 'respond'")).rowCount).toBe(0);
+  });
+
+  test("does not capture commands, questions, gratitude, unrelated roots, or ineligible replies", async () => {
+    const orgId = await seedOrg();
+    const inst = await seedInstallation(orgId, 710);
+    const repoId = await seedRepo(inst, 7010, "octo/finding-feedback");
+    await seedPublishedFinding(repoId);
+
+    expect((await feedbackReply("feedback-question", 9201, "Why is this finding here?")).status).toBe(200);
+    expect((await feedbackReply("feedback-gratitude", 9202, "Thanks again!")).status).toBe(200);
+    expect((await feedbackReply("feedback-command", 9203, "@postil review current head")).status).toBe(200);
+
+    reviewCommentRoot = { ...reviewCommentRoot, userLogin: "another-reviewer" };
+    expect((await feedbackReply("feedback-unrelated", 9204, "This finding is wrong.")).status).toBe(200);
+    reviewCommentRoot = { ...reviewCommentRoot, userLogin: "postil-dev[bot]" };
+
+    expect((await feedbackReply("feedback-unauthorized", 9205, "This finding is wrong.", {
+      comment: {
+        id: 9205,
+        in_reply_to_id: 8800,
+        body: "This finding is wrong.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 510, login: "reviewer", type: "User" },
+        author_association: "NONE",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("feedback-first-time-unauthorized", 9207, "This finding is wrong.", {
+      comment: {
+        id: 9207,
+        in_reply_to_id: 8800,
+        body: "This finding is wrong.",
+        created_at: "2026-08-24T12:34:56Z",
+        user: { id: 510, login: "reviewer", type: "User" },
+        author_association: "FIRST_TIME_CONTRIBUTOR",
+      },
+    })).status).toBe(200);
+    expect((await feedbackReply("feedback-bot", 9206, "This finding is wrong.", {
+      sender: { id: 510, login: "reviewer[bot]", type: "Bot" },
+    })).status).toBe(200);
+
+    const feedback = await pool.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM finding_feedback",
+    );
+    expect(feedback.rows[0]!.count).toBe(0);
+  });
+
   test("does not acknowledge an exact command from an unauthorized commenter", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 703);
@@ -1932,7 +3373,7 @@ describeDb("webhook handler behaviour", () => {
     expect(approvals.rows[0]!.c).toBe(0);
   });
 
-  test("approval command revokes a cached actor who left the organization", async () => {
+  test("approval command rejects a departed actor without rewriting cached membership", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
@@ -1956,11 +3397,11 @@ describeDb("webhook handler behaviour", () => {
           [orgId],
         )
       ).rows[0]!.c,
-    ).toBe(0);
+    ).toBe(1);
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain("could not verify");
   });
 
-  test("approval command applies a live admin demotion before authorizing", async () => {
+  test("approval command rejects a demoted admin without rewriting cached membership", async () => {
     const orgId = await seedOrg();
     const inst = await seedInstallation(orgId, 700);
     const repoId = await seedRepo(inst, 7000, "octo/approvals");
@@ -1977,7 +3418,7 @@ describeDb("webhook handler behaviour", () => {
           [orgId],
         )
       ).rows[0]!.role,
-    ).toBe("member");
+    ).toBe("admin");
     expect((await queuedWebhookCommentBodies()).at(-1)).toContain(
       "requires an organization admin",
     );

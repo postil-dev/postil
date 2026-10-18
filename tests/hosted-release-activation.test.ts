@@ -278,16 +278,20 @@ describeDb("managed hosted inference release activation", () => {
 
   test("a verified successor release adopts work parked by an unactivated release", async () => {
     await deactivateHostedInferenceRelease(pool, releaseE);
-    const job = await pool.query<{ id: string }>(
+    const job = await pool.query<{ id: string; status: string; locked_by: string | null }>(
       `INSERT INTO jobs
          (kind, payload, status, attempts, locked_at, locked_by)
        VALUES (
          'review',
-         '{"repoFullName":"successor/repo","prNumber":1,"headSha":"head"}'::jsonb,
+         '{"githubRepoId":76001,"repoFullName":"successor/repo","prNumber":1,"headSha":"head"}'::jsonb,
          'running', 1, now(), 'release-e-worker'
        )
-       RETURNING id`,
+       RETURNING id, status, locked_by`,
     );
+    expect(job.rows[0]).toMatchObject({
+      status: "running",
+      locked_by: "release-e-worker",
+    });
     expect(await deferHostedReviewForRelease(
       pool,
       { id: Number(job.rows[0]!.id), lockedBy: "release-e-worker" },

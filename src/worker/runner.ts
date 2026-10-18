@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 
 import { getDb, getPool } from "@/lib/db";
-import { optionalEnv, requireEnv } from "@/lib/env";
+import { optionalEnv, readPositiveIntEnv, requireEnv } from "@/lib/env";
 import {
   recordCustomerNotificationEmailFailure,
   runCustomerNotificationEmailJob,
@@ -13,7 +13,10 @@ import {
   continueClaimedJob,
   completeWebhookDelivery,
   completeJob,
+  externalSideEffectLeaseActive,
   failJob,
+  FEEDBACK_REVIEW_JOB_KIND,
+  isBoundedJobRetryError,
   isPermanentJobError,
   loadWebhookDelivery,
   requeueJobsOwnedBy,
@@ -22,6 +25,8 @@ import {
   type ClaimedJob,
   type GateEnforcementSweepJobPayload,
   type GithubReactionJobPayload,
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  type HostedProviderKeyLifecycleJobPayload,
   type RespondDeliveryJobPayload,
   type RespondFailureCommentJobPayload,
   type RespondJobPayload,
@@ -31,9 +36,14 @@ import {
   type WebhookDispatchJobPayload,
 } from "@/lib/queue";
 import { redactSecrets } from "@/lib/redact";
+import { reconcileFindingFeedbackReactions } from "@/lib/finding-feedback";
+import { reconcileReviewFeedback, REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND, type ReviewFeedbackJobPayload } from "@/lib/review-feedback";
 import {
+  deferHostedProviderKeyLifecycleForRelease,
   deferHostedReviewForRelease,
   HostedInferenceReleaseDarkError,
+  PublicationLifecycleReleaseDarkError,
+  withPublicationLifecycleReleaseActive,
 } from "@/lib/release-job-rollout";
 import {
   reportOperationalFailure,
@@ -55,8 +65,9 @@ import {
   runBillingContactVerificationJob,
   type BillingContactVerificationJobPayload,
 } from "./billing-contact-verification";
-import { isPermanentFailure } from "./failure-classifier";
+import { isForgeTargetGoneError, isPermanentFailure } from "./failure-classifier";
 import { runGithubReactionJob } from "./github-reaction";
+import { runHostedProviderKeyLifecycleJob } from "./hosted-provider-key-lifecycle";
 import { runGateStateSyncJob } from "./gate-state-sync";
 import { runGateEnforcementSweepJob } from "./gate-enforcement-sweep";
 import {
@@ -94,6 +105,7 @@ let backgroundDrainRequested = false;
 export const WEB_PROCESSABLE_JOB_KINDS = [
   "webhook-dispatch",
   "review",
+  FEEDBACK_REVIEW_JOB_KIND,
   "respond",
   "respond-delivery",
   "billing-contact-verification",
@@ -105,11 +117,14 @@ export const WEB_PROCESSABLE_JOB_KINDS = [
   "respond-failure-comment",
   "webhook-comment",
   "github-reaction",
+  "finding-feedback-reconciliation",
+  REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND,
 ] as const;
 
 export const PROCESSABLE_JOB_KINDS = [
   ...WEB_PROCESSABLE_JOB_KINDS,
   "gate-enforcement-sweep",
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
 ] as const;
 
 interface JobContinuation {
@@ -133,14 +148,29 @@ async function handleJob(
       if (!delivery) break;
       const { dispatchWebhookDelivery } =
         await import("@/lib/github/webhook-handler");
-      await dispatchWebhookDelivery(delivery.event, delivery.payload, {
-        deliveryId: delivery.deliveryId,
-        triggerFollowupDrain: processGroup === "web",
-      });
+      try {
+        await dispatchWebhookDelivery(delivery.event, delivery.payload, {
+          deliveryId: delivery.deliveryId,
+          triggerFollowupDrain: processGroup === "web",
+          attempt: job.attempts,
+        });
+      } catch (error) {
+        // A single 404 can be an installation-token propagation blip right
+        // after install, so the first attempt always retries; a repeat 404
+        // after backoff means the webhook's subject no longer exists on the
+        // forge (or access to it was revoked), and no retry or GitHub
+        // redelivery can ever dispatch it. Reaching a terminal state keeps
+        // the pending-age monitor scoped to deliveries that can complete.
+        if (!isForgeTargetGoneError(error) || job.attempts <= 1) throw error;
+        console.warn(
+          `[worker] webhook delivery ${delivery.deliveryId} target is gone; completing without dispatch: ${redactSecrets(error)}`,
+        );
+      }
       await completeWebhookDelivery(getPool(), delivery.deliveryId);
       break;
     }
     case "review":
+    case FEEDBACK_REVIEW_JOB_KIND:
       await runReviewJob(
         job.payload as ReviewJobPayload,
         {
@@ -190,7 +220,15 @@ async function handleJob(
       );
       break;
     case "gate-state-sync":
-      await runGateStateSyncJob(job.payload as GateStateSyncJobPayload);
+      await withPublicationLifecycleReleaseActive(
+        getPool(),
+        async (db, client) => {
+          if (!(await externalSideEffectLeaseActive(client, job))) return;
+          await runGateStateSyncJob(job.payload as GateStateSyncJobPayload, {
+            db,
+          });
+        },
+      );
       break;
     case "gate-enforcement-sweep":
       return runGateEnforcementSweepJob(
@@ -220,6 +258,25 @@ async function handleJob(
         job,
       );
       break;
+    case "finding-feedback-reconciliation": {
+      const findingPublicationId = job.payload.findingPublicationId;
+      if (
+        typeof findingPublicationId !== "number" ||
+        !Number.isSafeInteger(findingPublicationId) ||
+        findingPublicationId <= 0
+      ) {
+        throw new Error("finding feedback reconciliation job payload is malformed");
+      }
+      await reconcileFindingFeedbackReactions(getDb(), findingPublicationId);
+      break;
+    }
+    case REVIEW_FEEDBACK_RECONCILIATION_JOB_KIND:
+      await reconcileReviewFeedback(job.payload as ReviewFeedbackJobPayload);
+      break;
+    case HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND:
+      return runHostedProviderKeyLifecycleJob(
+        job.payload as HostedProviderKeyLifecycleJobPayload,
+      );
     default:
       throw new Error(`unknown job kind: ${job.kind}`);
   }
@@ -253,12 +310,12 @@ export async function runClaimedJob(
   } catch (err) {
     if (err instanceof WorkerInterruptionRehearsalError) throw err;
     const message = redactSecrets(err);
-    if (err instanceof WorkerShutdownError && job.kind === "review") {
+    if (err instanceof WorkerShutdownError && ["review", FEEDBACK_REVIEW_JOB_KIND].includes(job.kind)) {
       const requeued = await requeueJobsOwnedBy(
         getPool(),
         job.lockedBy,
         "worker shutdown interrupted the claim",
-        ["review"],
+        ["review", FEEDBACK_REVIEW_JOB_KIND],
         [job.id],
         [job],
       );
@@ -267,7 +324,7 @@ export async function runClaimedJob(
       );
       return;
     }
-    if (err instanceof HostedInferenceReleaseDarkError && job.kind === "review") {
+    if (err instanceof HostedInferenceReleaseDarkError && ["review", FEEDBACK_REVIEW_JOB_KIND].includes(job.kind)) {
       const outcome = await deferHostedReviewForRelease(
         getPool(),
         job,
@@ -275,6 +332,20 @@ export async function runClaimedJob(
       );
       console.warn(
         `[${label}] review job ${job.id} ${outcome} across managed release activation`,
+      );
+      return;
+    }
+    if (
+      err instanceof HostedInferenceReleaseDarkError &&
+      job.kind === HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND
+    ) {
+      const outcome = await deferHostedProviderKeyLifecycleForRelease(
+        getPool(),
+        job,
+        err.releaseSha,
+      );
+      console.warn(
+        `[${label}] hosted provider key lifecycle job ${job.id} ${outcome} across managed release activation`,
       );
       return;
     }
@@ -288,15 +359,25 @@ export async function runClaimedJob(
       job.kind === "webhook-dispatch" &&
       message.includes("webhook dispatch job payload is malformed");
     const invalidWebhookDelivery = err instanceof WebhookDeliveryStateError;
+    const boundedWebhookRetry =
+      job.kind === "webhook-dispatch" && isBoundedJobRetryError(err);
     const malformedWebhookComment =
       job.kind === "webhook-comment" &&
       message.includes("webhook comment job payload malformed");
     const malformedGithubReaction =
       job.kind === "github-reaction" &&
       message.includes("github reaction job payload is malformed");
+    const malformedFindingFeedbackReconciliation =
+      job.kind === "finding-feedback-reconciliation" &&
+      message.includes("finding feedback reconciliation job payload is malformed");
     const malformedCheckRunCleanup =
       job.kind === "check-run-cleanup" &&
       message.includes("check-run cleanup job payload is malformed");
+    const malformedHostedProviderKeyLifecycle =
+      job.kind === HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND &&
+      message.includes(
+        "hosted provider key lifecycle job payload is malformed",
+      );
     const permanent =
       isPermanentJobError(err) ||
       malformedGateSync ||
@@ -305,7 +386,9 @@ export async function runClaimedJob(
       invalidWebhookDelivery ||
       malformedWebhookComment ||
       malformedGithubReaction ||
+      malformedFindingFeedbackReconciliation ||
       malformedCheckRunCleanup ||
+      malformedHostedProviderKeyLifecycle ||
       (job.kind !== "gate-state-sync" &&
         job.kind !== "gate-enforcement-sweep" &&
         job.kind !== "webhook-dispatch" &&
@@ -316,12 +399,23 @@ export async function runClaimedJob(
       (job.kind === "gate-state-sync" && !malformedGateSync) ||
       (job.kind === "webhook-dispatch" &&
         !malformedWebhookDispatch &&
-        !invalidWebhookDelivery) ||
+        !invalidWebhookDelivery &&
+        !boundedWebhookRetry) ||
       (job.kind === "webhook-comment" && !malformedWebhookComment) ||
       (job.kind === "github-reaction" && !malformedGithubReaction) ||
-      err instanceof ReviewPublicationReconciliationError;
+      err instanceof ReviewPublicationReconciliationError ||
+      err instanceof PublicationLifecycleReleaseDarkError;
     const outcome = reconcileIndefinitely
-      ? await retryJobIndefinitely(getPool(), job, message)
+      ? await retryJobIndefinitely(
+          getPool(),
+          job,
+          message,
+          err instanceof ReviewPublicationReconciliationError
+            ? { startedAt: err.reconciliationStartedAt }
+            : err instanceof PublicationLifecycleReleaseDarkError
+              ? { startedAt: job.lockedAt }
+              : undefined,
+        )
       : await failJob(getPool(), job, message, {
           permanent,
           ...(job.kind === "respond"
@@ -364,7 +458,7 @@ export async function runClaimedJob(
     console.error(
       `[${label}] job ${job.id} ${outcome}${permanent ? " (permanent)" : ""}: ${message}`,
     );
-    if (outcome === "failed") {
+    if (outcome === "failed" || outcome === "exhausted") {
       reportOperationalFailure(processGroup, "job_permanently_failed", err);
     } else if (outcome === "retried") {
       reportOperationalWarning(processGroup, "job_retrying");
@@ -445,13 +539,7 @@ async function runCoalescedQueueDrains(label: string): Promise<void> {
   }
 }
 
-export function readPositiveIntEnv(name: string, fallback: number): number {
-  const raw = optionalEnv(name);
-  if (!raw) return fallback;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    console.warn(`${name} must be a positive integer; using ${fallback}`);
-    return fallback;
-  }
-  return parsed;
-}
+// Re-exported so existing importers (`@/worker/runner`, `./runner`) keep
+// working; `@/lib/queue` also needs this helper for its own env-overridable
+// budget and cannot import it from here without a static import cycle.
+export { readPositiveIntEnv };

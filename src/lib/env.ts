@@ -62,6 +62,14 @@ const ENV_SPECS: EnvVarSpec[] = [
     scope: ["web"],
   },
   {
+    name: "POSTIL_ILERT_WEBHOOK_SECRET",
+    purpose:
+      "Optional random password authenticating iLert outbound alert webhooks",
+    example: "openssl rand -hex 32",
+    scope: ["web"],
+    optional: true,
+  },
+  {
     name: "GITHUB_OAUTH_CLIENT_ID",
     purpose: "OAuth app client id for dashboard login",
     example: "Iv1.0123456789abcdef",
@@ -134,6 +142,13 @@ const ENV_SPECS: EnvVarSpec[] = [
     purpose:
       "Explicit opt-in for a self-hosted model endpoint on a private network",
     example: "1",
+    scope: ["worker"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_PROVIDER_ADDRESS_FAMILY",
+    purpose: "Provider connection address family: auto or ipv4",
+    example: "auto",
     scope: ["worker"],
     optional: true,
   },
@@ -325,11 +340,35 @@ const ENV_SPECS: EnvVarSpec[] = [
     optional: true,
   },
   {
+    name: "POSTIL_PUBLICATION_RECONCILIATION_BUDGET_MS",
+    purpose:
+      "Wall-clock budget for indefinite reconciliation (e.g. a staged review awaiting forge check-run confirmation) before the job fails permanently",
+    example: "3600000",
+    scope: ["web", "worker"],
+    optional: true,
+  },
+  {
     name: "POSTIL_RESPOND_HOURLY_CAP",
     purpose:
       "Maximum @postil respond jobs enqueued per installation per rolling hour before further mentions are skipped",
     example: "30",
     scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "POSTIL_CLI_GATEWAY_HOURLY_CAP",
+    purpose:
+      "Maximum CLI gateway chat completions admitted per organization per rolling hour",
+    example: "60",
+    scope: ["web"],
+    optional: true,
+  },
+  {
+    name: "WORKER_PER_ORG_CONCURRENCY",
+    purpose:
+      "Maximum review and respond jobs one organization may run at once; 0 removes the limit",
+    example: "2",
+    scope: ["web", "worker"],
     optional: true,
   },
   {
@@ -402,7 +441,7 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "ILERT_INTEGRATION_KEY",
     purpose:
-      "ilert alert-source integration key that receives monitoring alerts; without it monitoring alerts are logged only",
+      "ilert alert-source integration key that receives monitoring alerts; without it alert delivery fails closed and remains retryable",
     example: "il1agst...",
     scope: ["monitor"],
     optional: true,
@@ -418,9 +457,9 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "OPENROUTER_MANAGEMENT_API_KEY",
     purpose:
-      "Read-only polling of OpenRouter account credit and per-key cap metadata",
+      "OpenRouter account monitoring and managed hosted-key lifecycle operations",
     example: "OpenRouter management key; it cannot run inference",
-    scope: ["monitor"],
+    scope: ["monitor", "worker"],
     optional: true,
   },
   {
@@ -469,7 +508,7 @@ const ENV_SPECS: EnvVarSpec[] = [
   {
     name: "POSTIL_OPERATOR_GITHUB_IDS",
     purpose:
-      "Comma-separated GitHub numeric user ids allowed to open the cross-organization operator dashboard",
+      "Comma-separated GitHub numeric user ids allowed to open cross-organization operator surfaces and the alert stream",
     example: "1234567,2345678",
     scope: ["web"],
     optional: true,
@@ -639,6 +678,7 @@ export function validateEnv(processKind: ProcessKind): void {
   }
   validateOperationalTelemetryEnv(processKind);
   validateOperatorAlertEnv(processKind);
+  validateIlertWebhookEnv(processKind);
   if (processKind !== "monitor") validatePaddleEnv(processKind);
 }
 
@@ -719,6 +759,23 @@ function validateOperatorAlertEnv(processKind: ProcessKind): void {
     );
   }
   validateConfiguredPublicOrigin(processKind);
+}
+
+function validateIlertWebhookEnv(processKind: ProcessKind): void {
+  if (processKind !== "web") return;
+  const secret = process.env.POSTIL_ILERT_WEBHOOK_SECRET;
+  if (secret === undefined || secret === "") return;
+  const byteLength = Buffer.byteLength(secret, "utf8");
+  if (
+    !/^[\x21-\x7e]+$/u.test(secret) ||
+    new Set(secret).size < 4 ||
+    byteLength < 32 ||
+    byteLength > 512
+  ) {
+    throw new Error(
+      "Postil web cannot start: POSTIL_ILERT_WEBHOOK_SECRET must contain 32 to 512 random printable ASCII bytes.",
+    );
+  }
 }
 
 function validateConfiguredPublicOrigin(processKind: ProcessKind): void {
@@ -845,6 +902,33 @@ export function optionalEnv(
   const value = process.env[name];
   if (value && value.trim() !== "") return value;
   return fallback;
+}
+
+/** Read a positive integer env var, falling back (with a warning) on an unset or invalid value. */
+export function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = optionalEnv(name);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    console.warn(`${name} must be a positive integer; using ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+/**
+ * Read a non-negative integer env var, falling back (with a warning) on an unset or
+ * invalid value. Zero is a meaningful setting for the limits that use this helper.
+ */
+export function readNonNegativeIntEnv(name: string, fallback: number): number {
+  const raw = optionalEnv(name);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.warn(`${name} must be a non-negative integer; using ${fallback}`);
+    return fallback;
+  }
+  return parsed;
 }
 
 /**

@@ -969,6 +969,95 @@ describe.skipIf(!port)("production receipt ownership APIs on PostgreSQL", () => 
     }
   });
 
+  test("staging and finalization take the decision scope before their claim row", async () => {
+    for (const operation of ["stage", "finalize"] as const) {
+      const c = await start();
+      const review = (await insertReviewForClaim(database, values(), c))!;
+      const input = stageInput(c, review.id);
+      if (operation === "finalize") await stageReviewCompletionCandidate(database, input, null);
+      const control = await pool.connect();
+      let pending: Promise<unknown> | undefined;
+      try {
+        await control.query("BEGIN");
+        const pid = (await control.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+        const [repo] = await rows("SELECT github_repo_id::text FROM repositories WHERE id=$1", [repository]);
+        await control.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`postil:review-pr:${repo.github_repo_id}\u001f1`]);
+        pending = operation === "stage"
+          ? stageReviewCompletionCandidate(database, input, null)
+          : finalizeStagedReviewCompletionWithGateMode(database, {
+              reviewId: review.id, reviewClaim: c, usage: [], usageAccountingComplete: true,
+            }, null);
+        let blocked = false;
+        for (let tries = 0; tries < 100 && !blocked; tries++) {
+          blocked = (await rows(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+            WHERE $1::int=ANY(pg_blocking_pids(pid))) AS blocked`, [pid]))[0].blocked;
+          if (!blocked) await Bun.sleep(10);
+        }
+        expect(blocked).toBe(true);
+        expect((await control.query("SELECT id FROM jobs WHERE id=$1 FOR UPDATE NOWAIT", [c.id])).rows).toHaveLength(1);
+      } finally {
+        await control.query("ROLLBACK");
+        control.release();
+        await pending;
+      }
+      expect(await completeJob(pool, c)).toBe("done");
+    }
+  });
+
+  test("completion waits for feedback control before locking its claim and closes once", async () => {
+    const c = await start();
+    const control = await pool.connect();
+    let completion: Promise<string> | undefined;
+    try {
+      await control.query("BEGIN");
+      const pid = (await control.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      await control.query("SELECT id FROM review_feedback_control WHERE id=1 FOR UPDATE");
+      completion = completeJob(pool, c);
+      let blocked = false;
+      for (let tries = 0; tries < 100 && !blocked; tries++) {
+        blocked = (await rows(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+          WHERE $1::int=ANY(pg_blocking_pids(pid))) AS blocked`, [pid]))[0].blocked;
+        if (!blocked) await Bun.sleep(10);
+      }
+      expect(blocked).toBe(true);
+      expect((await control.query("SELECT id FROM jobs WHERE id=$1 FOR UPDATE NOWAIT", [c.id])).rows).toHaveLength(1);
+      await control.query("COMMIT");
+      expect((await Promise.all([completion, completeJob(pool, c)])).sort()).toEqual(["done", "lost"]);
+      expect(await rows("SELECT outcome FROM job_attempt_receipts WHERE claim_receipt_id=$1 AND event_kind='queue_closed'", [c.receiptClaim!.receiptId]))
+        .toEqual([{ outcome: "succeeded" }]);
+    } finally {
+      await control.query("ROLLBACK");
+      control.release();
+      await completion?.catch(() => undefined);
+    }
+  });
+
+  test("receipt rejection rolls back coalesced completion and retries without duplicate work", async () => {
+    const pending = { repoFullName: `fixture/${randomUUID()}`, githubRepoId: Date.now(), prNumber: 1,
+      headSha: randomBytes(20).toString("hex"), baseSha: randomBytes(20).toString("hex") };
+    const c = await start({ _postilCoalescedReviewPayload: pending });
+    await rows(`CREATE FUNCTION fixture_reject_completion() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.event_kind='queue_closed' THEN RAISE EXCEPTION 'fixture closure rejection'; END IF;
+      RETURN NEW; END $$`);
+    await rows("CREATE TRIGGER fixture_reject_completion BEFORE INSERT ON job_attempt_receipts FOR EACH ROW EXECUTE FUNCTION fixture_reject_completion()");
+    try {
+      let failure: unknown;
+      try { await completeJob(pool, c); } catch (error) { failure = error; }
+      expect(String(failure)).toContain("fixture closure rejection");
+      expect(await rows("SELECT status,active_claim_receipt_id::text FROM jobs WHERE id=$1", [c.id]))
+        .toEqual([{ status: "running", active_claim_receipt_id: c.receiptClaim!.receiptId }]);
+      expect(await rows("SELECT id FROM jobs WHERE payload=$1::jsonb", [JSON.stringify(pending)])).toHaveLength(0);
+    } finally {
+      await rows("DROP TRIGGER fixture_reject_completion ON job_attempt_receipts");
+      await rows("DROP FUNCTION fixture_reject_completion()");
+    }
+    expect(await completeJob(pool, c)).toBe("coalesced");
+    expect(await completeJob(pool, c)).toBe("lost");
+    expect(await rows("SELECT id FROM jobs WHERE payload=$1::jsonb", [JSON.stringify(pending)])).toHaveLength(1);
+    expect(await rows("SELECT outcome FROM job_attempt_receipts WHERE claim_receipt_id=$1 AND event_kind='queue_closed'", [c.receiptClaim!.receiptId]))
+      .toEqual([{ outcome: "coalesced" }]);
+  });
+
   test("existing unavailable-review path atomically binds its finite failure observation", async () => {
     const a = await start();
     const r = await claimPausedHostedReview(database, { ...values(), authorGithubId: null, authorLogin: null,

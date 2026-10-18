@@ -12,7 +12,7 @@ import {
   type Envelope,
 } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
-import { lockReviewApprovalState } from "@/lib/finding-approvals";
+import { lockReviewDecisionScopeById } from "@/lib/finding-approvals";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { reconcileHostedReviewSpendFromReceipt } from "@/lib/hosted-usage-reservations";
 import {
@@ -34,6 +34,7 @@ interface ReviewCompletionAccountingInput {
   }>;
   hostedUsageReservationId?: string | null;
   usageAccountingComplete: boolean;
+  queueGateStateSync?: boolean;
 }
 
 export interface ReviewCompletionInput extends ReviewCompletionAccountingInput {
@@ -155,14 +156,16 @@ async function persistReviewCompletionAccounting(
     }
   }
   if (persistedUsageRows.length > 0) await db.insert(schema.usageEvents).values(persistedUsageRows);
-  await db.insert(schema.jobs).values({
-    kind: "gate-state-sync",
-    payload: {
-      reviewId: input.reviewId,
-      reviewPublicId: review.publicId,
-    },
-    maxAttempts: 5,
-  });
+  if (input.queueGateStateSync !== false) {
+    await db.insert(schema.jobs).values({
+      kind: "gate-state-sync",
+      payload: {
+        reviewId: input.reviewId,
+        reviewPublicId: review.publicId,
+      },
+      maxAttempts: 5,
+    });
+  }
 }
 
 /**
@@ -177,6 +180,7 @@ export async function stageReviewCompletionCandidate(
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult & { staged: boolean; claimOwned?: boolean | null }> {
   return db.transaction(async (tx) => {
+    await lockReviewDecisionScopeById(tx, input.reviewId);
     const client = transactionReceiptClient(tx);
     const lease = input.reviewClaim;
     if (lease?.receiptClaim && input.reviewJobId !== undefined
@@ -204,7 +208,6 @@ export async function stageReviewCompletionCandidate(
         throw new Error("staged review evidence changed");
       }
     }
-    await lockReviewApprovalState(tx, input.reviewId);
     const gateTruth = requireEnvelopeGateTruth(
       input.envelope,
       input.gateFailing,
@@ -306,6 +309,7 @@ export async function finalizeStagedReviewCompletionWithGateMode(
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
+    await lockReviewDecisionScopeById(tx, input.reviewId);
     const client = transactionReceiptClient(tx);
     let qualified = false;
     if (input.reviewClaim?.receiptClaim && !(await lockReceiptClaim(client, input.reviewClaim))?.owned) {
@@ -324,7 +328,6 @@ export async function finalizeStagedReviewCompletionWithGateMode(
         qualified = true;
       }
     }
-    await lockReviewApprovalState(tx, input.reviewId);
     const gateEnabled =
       orgId === null ? false : await lockOrganizationGateMode(tx, orgId);
     const staged = (
@@ -384,6 +387,43 @@ export async function finalizeStagedReviewCompletionWithGateMode(
   });
 }
 
+/** Record successful forge lifecycle reconciliation and queue its gate atomically. */
+export async function completeReviewPublicationLifecycle(
+  db: Database,
+  input: { reviewId: number; reviewPublicId: string },
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await lockReviewDecisionScopeById(tx, input.reviewId);
+    const rows = await tx
+      .update(schema.reviews)
+      .set({
+        publicationLifecycleReconciledAt:
+          sql`COALESCE(${schema.reviews.publicationLifecycleReconciledAt}, now())`,
+      })
+      .where(
+        and(
+          eq(schema.reviews.id, input.reviewId),
+          eq(schema.reviews.publicId, input.reviewPublicId),
+          eq(schema.reviews.status, "completed"),
+        ),
+      )
+      .returning({ id: schema.reviews.id });
+    if (rows.length !== 1) {
+      throw new Error("completed review is unavailable for publication lifecycle reconciliation");
+    }
+    // The gate-job trigger takes the shared lifecycle release lock for this
+    // insert and parks it at infinity when deactivation owns the boundary.
+    await tx.insert(schema.jobs).values({
+      kind: "gate-state-sync",
+      payload: {
+        reviewId: input.reviewId,
+        reviewPublicId: input.reviewPublicId,
+      },
+      maxAttempts: 5,
+    });
+  });
+}
+
 /** Persist the terminal review, effective gate state, and accounting atomically. */
 export async function persistReviewCompletionWithGateMode(
   db: Database,
@@ -391,7 +431,7 @@ export async function persistReviewCompletionWithGateMode(
   orgId: number | null,
 ): Promise<ReviewCompletionWithGateModeResult> {
   return db.transaction(async (tx) => {
-    await lockReviewApprovalState(tx, input.reviewId);
+    await lockReviewDecisionScopeById(tx, input.reviewId);
     const gateTruth = requireEnvelopeGateTruth(
       input.envelope,
       input.gateFailing,

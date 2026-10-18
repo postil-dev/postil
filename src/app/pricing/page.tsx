@@ -9,12 +9,12 @@ import {
 
 export const metadata: Metadata = {
   title: "Pricing",
-  description: `30-day hosted trials cover up to three organizations per installing GitHub identity. Public repositories are free with BYOK. Private plans start at $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author each month after the trial.`,
+  description: `Every organization starts with a 30-day hosted trial. Public repositories are free with BYOK. Private plans start at $${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} per active author each month after the trial.`,
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Postil pricing",
     description:
-      "30-day hosted trials cover up to three organizations per installing GitHub identity. Pay only for active private-repository authors after the trial.",
+      "Every organization starts with a 30-day hosted trial. Pay only for active private-repository authors after the trial.",
     url: "https://postil.dev/pricing",
     images: ["/opengraph-image"],
   },
@@ -47,9 +47,9 @@ export default function PricingPage() {
         Private code, priced by active authors.
       </h1>
       <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-        30-day hosted trials cover up to three organizations per installing GitHub
-        identity. No card or provider setup. Private plans count only authors
-        whose pull requests Postil reviews. Repositories are not billed.
+        Every organization starts with a 30-day hosted trial. No card or provider
+        setup. Private plans count only authors whose pull requests Postil
+        reviews. Repositories are not billed.
       </p>
 
       <section
@@ -82,7 +82,7 @@ export default function PricingPage() {
             <li>30 days free, no card</li>
             <li>Your provider, models, and credentials</li>
             <li>Provider usage billed directly to you</li>
-            <li>Review volume is not a billing unit</li>
+            <li>Unlimited reviews</li>
           </ul>
           <Link href="/install" className="btn-secondary mt-8 text-center">
             Install with BYOK
@@ -97,10 +97,9 @@ export default function PricingPage() {
           <ActiveAuthorUnit id="hosted-active-author" />
           <ul className="mt-6 flex-1 space-y-2.5 text-sm text-ink-soft">
             <li>30 days free, no card</li>
-            <li>Up to 3 organization trials per GitHub identity</li>
-            <li>BYOK remains available after that</li>
-            <li>Postil operates model access</li>
-            <li>Review volume is not a billing unit</li>
+            <li>No API key needed, we supply the model</li>
+            <li>Unlimited reviews</li>
+            <li>Switch to BYOK at any time</li>
           </ul>
           <Link href="/install" className="btn-primary mt-8 text-center">
             Start 30-day trial
@@ -122,6 +121,31 @@ export default function PricingPage() {
           >
             Self-host guide
           </Link>
+        </div>
+      </section>
+
+      <section id="compare" className="mt-14 scroll-mt-6" aria-labelledby="compare-pricing-heading">
+        <h2 id="compare-pricing-heading" className="serif-display text-3xl">Compare review costs</h2>
+        <p className="mt-3 max-w-3xl text-sm text-ink-soft">
+          Seat fees, credit packs, and usage charges measure different things. These USD
+          list prices show the billing unit and the charges to include in a team budget.
+          Plan features and review limits differ; each vendor link opens its pricing terms.
+        </p>
+        {/* Vendor pricing sources verified 2026-09-05. */}
+        <div className="mt-6 overflow-x-auto rounded-card border border-stone" tabIndex={0} role="region" aria-label="Review pricing comparison">
+          <table className="w-full min-w-[620px] text-left text-sm">
+            <thead className="bg-paper">
+              <tr><th scope="col" className="p-4">Plan</th><th scope="col" className="p-4">Base price</th><th scope="col" className="p-4">Usage to account for</th></tr>
+            </thead>
+            <tbody className="divide-y divide-stone">
+              <tr><th scope="row" className="p-4 font-medium">Postil BYOK</th><td className="p-4">${BYOK_ACTIVE_AUTHOR_MONTHLY_USD} / active author / month</td><td className="p-4">Model provider usage billed separately.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium">Postil Hosted</th><td className="p-4">${HOSTED_ACTIVE_AUTHOR_MONTHLY_USD} / active author / month</td><td className="p-4">Hosted inference included, subject to <Link href="/terms#billing-and-fair-use" className="text-rust underline">fair use</Link>.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://www.coderabbit.ai/pricing" className="text-rust underline">CodeRabbit Essentials</a></th><td className="p-4">$30 / developer / month</td><td className="p-4">$24 monthly equivalent with annual billing. Optional usage beyond included limits costs $0.25 per reviewed file.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://www.greptile.com/pricing" className="text-rust underline">Greptile Pro</a></th><td className="p-4">$30 / seat / month</td><td className="p-4">50 credits per seat; $1 per additional credit. A standard review uses 1 credit, a TREX review 3.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://www.qodo.ai/pricing/" className="text-rust underline">Qodo Pro Team</a></th><td className="p-4">From $30 / month</td><td className="p-4">2,500-credit team pack, advertised as about 18 reviews. Actual consumption depends on the review.</td></tr>
+              <tr><th scope="row" className="p-4 font-medium"><a href="https://docs.macroscope.com/pricing" className="text-rust underline">Macroscope Balanced</a></th><td className="p-4">$0.05 / KB of reviewed diff</td><td className="p-4">10 KB minimum per review ($0.50). Detection mode changes the rate; other features have separate usage charges.</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
 

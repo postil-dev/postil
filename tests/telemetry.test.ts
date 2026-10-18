@@ -1,3 +1,6 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -7,6 +10,8 @@ import {
   sanitizedPublicUrl,
   sanitizedReferrer,
 } from "@/lib/telemetry";
+
+const SESSION_ID = "5d57d1aa-dd90-4d77-a21d-a8d3a25e6417";
 
 describe("public telemetry sanitization", () => {
   test("allows exact public marketing, docs, and comparison paths", () => {
@@ -78,6 +83,21 @@ describe("public telemetry sanitization", () => {
       $utm_source: "Docs Launch",
       $utm_medium: "x".repeat(65),
       $utm_campaign: "release<script>",
+      $raw_user_agent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/139.0.0.0",
+      $screen_width: 2560,
+      $screen_height: 1440,
+      $viewport_width: 1280,
+      $viewport_height: 720,
+      $timezone: "Atlantic/Reykjavik",
+      $timezone_offset: 0,
+      $browser_language: "en-GB",
+      $browser_language_prefix: "en",
+      $initialization_time: 1787001374,
+      $is_identified: false,
+      $config_defaults: "2026-05-30",
+      $lib_custom_api_host: "https://postil.dev/relay",
+      $sdk_debug_retry_queue_size: 0,
+      $lib_rate_limit_remaining_tokens: 99,
       unexpected: "private payload",
     };
 
@@ -87,6 +107,7 @@ describe("public telemetry sanitization", () => {
         properties,
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(true);
     expect(properties).toEqual({
@@ -94,6 +115,8 @@ describe("public telemetry sanitization", () => {
       distinct_id: "$posthog_cookieless",
       $cookieless_mode: true,
       $process_person_profile: false,
+      $session_id: SESSION_ID,
+      $raw_user_agent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/139.0.0.0",
       $current_url: "https://postil.dev/docs",
       $host: "postil.dev",
       $pathname: "/docs",
@@ -102,13 +125,313 @@ describe("public telemetry sanitization", () => {
     });
   });
 
+  test("preserves the validated Web Analytics context properties", () => {
+    const properties: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $pathname: "/docs",
+      $lib: "web",
+      $lib_version: "1.396.2",
+      $insert_id: "jpzmsl07yq9r5sk8",
+      $time: 1_787_001_374.548,
+      $pageview_id: "0198f0f3-6a52-7f4b-9c31-1b2c3d4e5f60",
+      $referring_domain: "news.ycombinator.com",
+      $device_type: "Desktop",
+      $browser: "Chrome",
+      $browser_version: 139,
+      $os: "Linux",
+      $os_version: "10.15.7",
+      $prev_pageview_pathname: "/pricing",
+    };
+
+    expect(
+      sanitizePostHogEventProperties(
+        "$pageview",
+        properties,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      ),
+    ).toBe(true);
+    expect(properties).toEqual({
+      $session_id: SESSION_ID,
+      $current_url: "https://postil.dev/docs",
+      $host: "postil.dev",
+      $pathname: "/docs",
+      $lib: "web",
+      $lib_version: "1.396.2",
+      $insert_id: "jpzmsl07yq9r5sk8",
+      $time: 1_787_001_374.548,
+      $pageview_id: "0198f0f3-6a52-7f4b-9c31-1b2c3d4e5f60",
+      $referring_domain: "news.ycombinator.com",
+      $device_type: "Desktop",
+      $browser: "Chrome",
+      $browser_version: 139,
+      $os: "Linux",
+      $os_version: "10.15.7",
+      $prev_pageview_pathname: "/pricing",
+    });
+  });
+
+  test("keeps direct traffic labelled without inventing a referrer", () => {
+    const properties: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $referrer: "$direct",
+      $referring_domain: "$direct",
+    };
+    expect(
+      sanitizePostHogEventProperties(
+        "$pageview",
+        properties,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      ),
+    ).toBe(true);
+    expect(properties.$referring_domain).toBe("$direct");
+    expect(properties.$referrer).toBeUndefined();
+  });
+
+  test("preserves a string browser version without coercing it", () => {
+    const properties: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $browser_version: "139.0.1",
+    };
+    sanitizePostHogEventProperties(
+      "$pageview",
+      properties,
+      "https://postil.dev",
+      "phc_test",
+      SESSION_ID,
+    );
+    expect(properties.$browser_version).toBe("139.0.1");
+  });
+
+  test("holds the operating system version to a version shape", () => {
+    const properties: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $os_version: "10.15.7",
+    };
+    sanitizePostHogEventProperties(
+      "$pageview",
+      properties,
+      "https://postil.dev",
+      "phc_test",
+      SESSION_ID,
+    );
+    expect(properties.$os_version).toBe("10.15.7");
+
+    // A label shape carries build strings and distribution names, which narrow
+    // a visitor far past the coarse device class the privacy notice describes.
+    const labelled: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $os_version: "Ubuntu_22.04",
+    };
+    sanitizePostHogEventProperties(
+      "$pageview",
+      labelled,
+      "https://postil.dev",
+      "phc_test",
+      SESSION_ID,
+    );
+    expect(labelled.$os_version).toBeUndefined();
+  });
+
+  test("drops hostile context values instead of forwarding them", () => {
+    const properties: Record<string, unknown> = {
+      $current_url: "https://postil.dev/docs",
+      $lib: "python",
+      $lib_version: "1.396.2-beta",
+      $insert_id: "x".repeat(65),
+      $time: -1,
+      $pageview_id: "not-a-uuid",
+      $referring_domain: "evil.com/path?q=1",
+      $device_type: "Watch",
+      $browser: "<script>",
+      $browser_version: "139.0.1.2.3",
+      $os: "Linux; rv:109.0",
+      $os_version: "10.15.7 (Build 19H2026 for user@example.com)",
+      $prev_pageview_pathname: "/orgs/acme-corp",
+    };
+
+    expect(
+      sanitizePostHogEventProperties(
+        "$pageview",
+        properties,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      ),
+    ).toBe(true);
+    expect(properties).toEqual({
+      $session_id: SESSION_ID,
+      $current_url: "https://postil.dev/docs",
+      $host: "postil.dev",
+      $pathname: "/docs",
+    });
+  });
+
+  test("rejects referring domains carrying anything but a hostname", () => {
+    for (const referringDomain of [
+      "evil.com/path?q=1",
+      "evil.com:8080",
+      "https://evil.com",
+      "evil com",
+      "-evil.com",
+      `${"a".repeat(254)}.com`,
+      "$referrer",
+    ]) {
+      const properties: Record<string, unknown> = {
+        $current_url: "https://postil.dev/docs",
+        $referring_domain: referringDomain,
+      };
+      sanitizePostHogEventProperties(
+        "$pageview",
+        properties,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      );
+      expect(properties.$referring_domain).toBeUndefined();
+    }
+  });
+
+  test("applies the context allowlist to pageleave and Web Vitals events", () => {
+    const context = {
+      $lib: "web",
+      $lib_version: "1.396.2",
+      $device_type: "Mobile",
+      $browser: "Chrome",
+      $browser_version: 139,
+      $os: "Linux",
+      $raw_user_agent: "Mozilla/5.0 (X11; Linux x86_64)",
+      $prev_pageview_pathname: "/orgs/acme-corp",
+    };
+
+    const pageleave: Record<string, unknown> = {
+      $current_url: "https://postil.dev/pricing",
+      ...context,
+    };
+    expect(
+      sanitizePostHogEventProperties(
+        "$pageleave",
+        pageleave,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      ),
+    ).toBe(true);
+
+    const vitals: Record<string, unknown> = {
+      $current_url: "https://postil.dev/pricing",
+      $web_vitals_LCP_event: {
+        name: "LCP",
+        value: 1500,
+        $current_url: "https://postil.dev/pricing",
+      },
+      ...context,
+    };
+    expect(
+      sanitizePostHogEventProperties(
+        "$web_vitals",
+        vitals,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      ),
+    ).toBe(true);
+
+    for (const sanitized of [pageleave, vitals]) {
+      expect(sanitized.$lib).toBe("web");
+      expect(sanitized.$lib_version).toBe("1.396.2");
+      expect(sanitized.$device_type).toBe("Mobile");
+      expect(sanitized.$browser).toBe("Chrome");
+      expect(sanitized.$browser_version).toBe(139);
+      expect(sanitized.$os).toBe("Linux");
+      expect(sanitized.$raw_user_agent).toBe("Mozilla/5.0 (X11; Linux x86_64)");
+      expect(sanitized.$prev_pageview_pathname).toBeUndefined();
+    }
+  });
+
+  test("reports the user agent cookieless identity hashing requires", () => {
+    // Cookieless events without $raw_user_agent are discarded on arrival, so
+    // every browser event type has to carry it or none of them are recorded.
+    const userAgent =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+    for (const event of ["$pageview", "$pageleave"] as const) {
+      const properties: Record<string, unknown> = {
+        $current_url: "https://postil.dev/pricing",
+        $raw_user_agent: userAgent,
+      };
+      expect(
+        sanitizePostHogEventProperties(
+          event,
+          properties,
+          "https://postil.dev",
+          "phc_test",
+          SESSION_ID,
+        ),
+      ).toBe(true);
+      expect(properties.$raw_user_agent).toBe(userAgent);
+    }
+
+    const vitals: Record<string, unknown> = {
+      $current_url: "https://postil.dev/pricing",
+      $raw_user_agent: userAgent,
+      $web_vitals_CLS_event: {
+        name: "CLS",
+        value: 0.02,
+        $current_url: "https://postil.dev/pricing",
+      },
+    };
+    expect(
+      sanitizePostHogEventProperties(
+        "$web_vitals",
+        vitals,
+        "https://postil.dev",
+        "phc_test",
+        SESSION_ID,
+      ),
+    ).toBe(true);
+    expect(vitals.$raw_user_agent).toBe(userAgent);
+  });
+
+  test("rejects user agents outside the expected shape", () => {
+    for (const value of [
+      "",
+      "x".repeat(1_025),
+      "Mozilla/5.0\nX-Injected: header",
+      "Mozilla/5.0\t(X11; Linux x86_64)",
+      "Mozilla/5.0 (X11; Linux x86_64) é",
+      42,
+      { toString: () => "Mozilla/5.0" },
+    ]) {
+      const properties: Record<string, unknown> = {
+        $current_url: "https://postil.dev/pricing",
+        $raw_user_agent: value,
+      };
+      expect(
+        sanitizePostHogEventProperties(
+          "$pageview",
+          properties,
+          "https://postil.dev",
+          "phc_test",
+          SESSION_ID,
+        ),
+      ).toBe(true);
+      expect(properties.$raw_user_agent).toBeUndefined();
+    }
+  });
+
   test("retains bounded pageleave engagement only", () => {
     const properties: Record<string, unknown> = {
       $current_url: "https://postil.dev/pricing?secret=drop",
       $pathname: "/pricing",
       $prev_pageview_duration: 500,
       $prev_pageview_max_scroll_percentage: 74,
+      $prev_pageview_max_content_percentage: 62,
+      $prev_pageview_max_content: 1840,
       $prev_pageview_last_scroll_percentage: 101,
+      $prev_pageview_last_content_percentage: 101,
       $prev_pageview_max_scroll: Number.POSITIVE_INFINITY,
       arbitrary: "drop",
     };
@@ -119,14 +442,18 @@ describe("public telemetry sanitization", () => {
         properties,
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(true);
     expect(properties).toEqual({
+      $session_id: SESSION_ID,
       $current_url: "https://postil.dev/pricing",
       $host: "postil.dev",
       $pathname: "/pricing",
       $prev_pageview_duration: 500,
       $prev_pageview_max_scroll_percentage: 74,
+      $prev_pageview_max_content_percentage: 62,
+      $prev_pageview_max_content: 1840,
     });
   });
 
@@ -146,9 +473,11 @@ describe("public telemetry sanitization", () => {
         properties,
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(true);
     expect(properties).toEqual({
+      $session_id: SESSION_ID,
       $current_url: "https://postil.dev/pricing",
       $host: "postil.dev",
       $pathname: "/pricing",
@@ -171,7 +500,59 @@ describe("public telemetry sanitization", () => {
         },
         "https://postil.dev",
         "phc_test",
+        SESSION_ID,
       ),
     ).toBe(false);
   });
 });
+
+describe("public telemetry path coverage", () => {
+  test("every public route in the app tree is capturable", () => {
+    const routes = staticAppRoutes();
+    // Guard the enumeration itself: a broken walk would pass this test vacuously.
+    expect(routes).toContain("/");
+    expect(routes).toContain("/docs/forges/github");
+    expect(routes.filter((route) => route.includes("["))).toEqual([]);
+
+    const uncovered = routes.filter(
+      (route) => !NON_PUBLIC_ROUTE.test(route) && !isPublicTelemetryPath(route),
+    );
+    const report =
+      uncovered.length === 0
+        ? ""
+        : `Add to PUBLIC_EXACT_PATHS in src/lib/telemetry.ts:\n${uncovered
+            .map((route) => `  "${route}",`)
+            .join("\n")}`;
+    expect(report).toBe("");
+  });
+});
+
+/**
+ * Routes that are not public marketing surface, so they are exempt from the
+ * allowlist this test enforces. Wider than the middleware's protected set on
+ * purpose: `/login` and `/verify` are reachable without a session but are still
+ * not pages whose paths should travel to an analytics processor.
+ */
+const NON_PUBLIC_ROUTE = /^\/(?:orgs\/|operator|login|reports|verify|cli\/)/;
+
+/** Every non-dynamic route the app renders, as the browser requests it. */
+function staticAppRoutes(): string[] {
+  return pageDirectories("src/app")
+    .flatMap((directory) => {
+      const segments = directory
+        .split("/")
+        .slice(2)
+        .filter((segment) => !/^\(.*\)$/.test(segment));
+      if (segments.some((segment) => segment.includes("["))) return [];
+      return [`/${segments.join("/")}`];
+    })
+    .sort();
+}
+
+function pageDirectories(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) return pageDirectories(path);
+    return entry.isFile() && entry.name === "page.tsx" ? [root] : [];
+  });
+}

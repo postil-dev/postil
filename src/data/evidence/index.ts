@@ -1,6 +1,5 @@
-// Public example data only: real, verifiable reviews from Postil's public
-// repositories. This file is deliberately separate from the private 126-PR
-// evaluation dataset and must not import, summarize, or expose that dataset.
+// Public example data only: verifiable reviews from public repositories.
+// Do not import, summarize, or expose nonpublic source material.
 // Finding titles and bodies are copied byte-for-byte from check-run annotations.
 // Review and gate titles and summaries are copied byte-for-byte from their
 // check-runs. A single trailing newline is removed when present. Each card links

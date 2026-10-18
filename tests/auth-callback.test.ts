@@ -203,6 +203,7 @@ describe("GET /api/auth/callback", () => {
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://postil.dev/reports");
     expect(response.headers.get("set-cookie")).toContain("postil_session=signed-session");
+    expect(response.headers.get("set-cookie")).toContain("Max-Age=604800");
     expect(requestedUrls).toEqual([
       "https://github.com/login/oauth/access_token",
       "https://api.github.com/user",
@@ -242,15 +243,61 @@ describe("GET /api/auth/callback", () => {
 
     const response = await GET(
       callbackRequest(
-        "postil_oauth_return_to=%2Forgs%2Fpostil-dev%2Fsettings%3Ftab%3Dbilling",
+        "postil_oauth_return_to=%2Forgs%2Fexample-org%2Fruns%2F11111111-2222-4333-8444-555555555555%3Ftab%3Dfindings",
       ),
     );
 
     expect(response.headers.get("location")).toBe(
-      "https://postil.dev/orgs/postil-dev/settings?tab=billing",
+      "https://postil.dev/orgs/example-org/runs/11111111-2222-4333-8444-555555555555?tab=findings",
     );
     expect(response.headers.get("set-cookie")).toContain(
       "postil_oauth_return_to=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    );
+  });
+
+  test("prioritizes a safe return target over an installation setup destination", async () => {
+    setupOrgSlug = "setup-org";
+    githubResponses = [
+      jsonResponse({ access_token: "user-access-token" }),
+      githubUserResponse(),
+      jsonResponse([]),
+    ];
+
+    const response = await GET(
+      callbackRequest(
+        "postil_oauth_return_to=%2Forgs%2Fexample-org%2Fruns%2F11111111-2222-4333-8444-555555555555%3Ftab%3Dfindings; postil_setup_installation=146332124",
+      ),
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/orgs/example-org/runs/11111111-2222-4333-8444-555555555555?tab=findings",
+    );
+    expect(setupDestinationCalls).toEqual([]);
+  });
+
+  test("preserves a safe return target when OAuth needs to be retried", async () => {
+    githubResponses = [new Response("unavailable", { status: 503 })];
+
+    const response = await GET(
+      callbackRequest(
+        "postil_oauth_return_to=%2Forgs%2Fexample-org%2Fruns%2F11111111-2222-4333-8444-555555555555%3Ftab%3Dfindings",
+      ),
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/login?error=token_exchange&next=%2Forgs%2Fexample-org%2Fruns%2F11111111-2222-4333-8444-555555555555%3Ftab%3Dfindings",
+    );
+  });
+
+  test("treats a malformed return cookie as absent", async () => {
+    githubResponses = [new Response("unavailable", { status: 503 })];
+
+    const response = await GET(
+      callbackRequest("postil_oauth_return_to=%E0%A4%A"),
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "https://postil.dev/login?error=token_exchange",
     );
   });
 

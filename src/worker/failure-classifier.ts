@@ -109,3 +109,15 @@ export function isPermanentFailure(message: string): boolean {
   if (TRANSIENT_SIGNATURES.some((re) => re.test(message))) return false;
   return PERMANENT_SIGNATURES.some((re) => re.test(message));
 }
+
+/**
+ * The forge answered 404 or 410 for the resource a job operates on: the
+ * target repository, pull request, or comment was deleted, or the
+ * installation lost access to it. Neither a retry nor a GitHub redelivery can
+ * dispatch work against a resource the app can no longer see.
+ */
+export function isForgeTargetGoneError(error: unknown): boolean {
+  if (!(error instanceof Error) || error.name !== "GitHubHttpError") return false;
+  const status = Reflect.get(error, "status");
+  return status === 404 || status === 410;
+}

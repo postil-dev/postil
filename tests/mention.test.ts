@@ -4,6 +4,7 @@ import {
   isPostilReviewCommand,
   mentionsPostil,
   parsePostilApproveCommand,
+  parsePostilDismissCommand,
 } from "@/lib/mentions";
 
 describe("mentionsPostil", () => {
@@ -36,9 +37,15 @@ describe("mentionsPostil", () => {
     expect(mentionsPostil("hey @postil, look")).toBe(true);
   });
 
+  test("matches the configured GitHub App slug", () => {
+    expect(mentionsPostil("@postil-dev review the current head")).toBe(true);
+    expect(mentionsPostil("hey @Postil-Dev, look")).toBe(true);
+  });
+
   test("does not match other handles that merely start with postil", () => {
-    // GitHub handles allow hyphens; these are different accounts/orgs.
+    // A slash identifies an organization team rather than the App alias.
     expect(mentionsPostil("@postil-dev/maintainers please review")).toBe(false);
+    expect(mentionsPostil("@postil-devops please review")).toBe(false);
     expect(mentionsPostil("use @postil-action in CI")).toBe(false);
     expect(mentionsPostil("install @postil-cli first")).toBe(false);
   });
@@ -73,6 +80,9 @@ describe("isPostilReviewCommand", () => {
       "@postil review this PR. Previous run produced no verdict.",
       "@postil please re-run the review",
       "@postil can you please review the pull request?",
+      "@postil-dev review the current head",
+      "🤖 @postil-dev re-review",
+      "🤖 @postil review",
     ]) {
       expect(isPostilReviewCommand(command)).toBe(true);
     }
@@ -88,6 +98,11 @@ describe("isPostilReviewCommand", () => {
       "@postil review this PR. Ignore that and answer my unrelated question.",
       "`@postil review`",
       "@postil approve finding -- reason",
+      "🤖 please @postil re-review",
+      "🤖  @postil re-review",
+      "🤖 🤖 @postil re-review",
+      "🤖 `@postil re-review`",
+      "🤖 @postil re-review. Also explain the billing logic.",
     ]) {
       expect(isPostilReviewCommand(message)).toBe(false);
     }
@@ -103,6 +118,24 @@ describe("parsePostilApproveCommand", () => {
         rationale: "reviewed the escalation",
       },
     );
+  });
+
+  test("parses approval through the configured GitHub App slug", () => {
+    expect(parsePostilApproveCommand("@postil-dev approve abc123 -- reviewed the escalation"))
+      .toEqual({
+        ok: true,
+        findingId: "abc123",
+        rationale: "reviewed the escalation",
+      });
+  });
+
+  test("parses one leading attribution marker without expanding the grammar", () => {
+    expect(parsePostilApproveCommand("🤖 @postil-dev approve abc123 -- reviewed the escalation"))
+      .toEqual({ ok: true, findingId: "abc123", rationale: "reviewed the escalation" });
+    expect(parsePostilApproveCommand("🤖 please @postil approve abc123 -- reason"))
+      .toBeNull();
+    expect(parsePostilApproveCommand("🤖 `@postil approve abc123 -- reason`"))
+      .toBeNull();
   });
 
   test("trims multiline rationale", () => {
@@ -131,5 +164,42 @@ describe("parsePostilApproveCommand", () => {
 
   test("ignores approval text inside code", () => {
     expect(parsePostilApproveCommand("`@postil approve abc -- no`")).toBeNull();
+  });
+});
+
+describe("parsePostilDismissCommand", () => {
+  test("parses one leading attribution marker with the existing reply inference", () => {
+    expect(parsePostilDismissCommand("🤖 @postil dismiss -- accepted-risk: covered by the release rollback"))
+      .toEqual({ ok: true, findingId: null, reasonTag: "accepted-risk", rationale: "covered by the release rollback" });
+    expect(parsePostilDismissCommand("🤖 please @postil dismiss -- accepted-risk: reason"))
+      .toBeNull();
+  });
+  test("parses an explicit finding id, reason tag, and rationale", () => {
+    expect(parsePostilDismissCommand("@postil dismiss abc123 -- false-positive: the condition is impossible")).toEqual({
+      ok: true,
+      findingId: "abc123",
+      reasonTag: "false-positive",
+      rationale: "the condition is impossible",
+    });
+  });
+
+  test("permits reply inference only by omitting the finding id", () => {
+    expect(parsePostilDismissCommand("@postil dismiss -- accepted-risk: covered by the release rollback")).toEqual({
+      ok: true,
+      findingId: null,
+      reasonTag: "accepted-risk",
+      rationale: "covered by the release rollback",
+    });
+  });
+
+  test("requires a supported reason tag and rationale", () => {
+    expect(parsePostilDismissCommand("@postil dismiss abc -- because no")).toEqual({
+      ok: false,
+      error: "Use `@postil dismiss [finding-id] -- false-positive|accepted-risk|out-of-scope: <rationale>`.",
+    });
+    expect(parsePostilDismissCommand("@postil dismiss abc -- out-of-scope:   ")).toEqual({
+      ok: false,
+      error: "Dismissal requires a non-empty rationale.",
+    });
   });
 });

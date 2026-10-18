@@ -3,8 +3,12 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { observeGitHubReviewThreads } from "@/lib/github/publication-threads";
 import {
+  observeGitHubReviewThreads,
+  resolveGitHubReviewThreads,
+} from "@/lib/github/publication-threads";
+import {
+  parsePublicationReceipt,
   readPublicationReceipt,
   validateReceiptAgainstEnvelope,
 } from "@/lib/publication-receipt";
@@ -65,6 +69,65 @@ async function receiptFile(value: unknown): Promise<string> {
 }
 
 describe("publication receipt contract", () => {
+  test("validates the persisted wire contract in memory", () => {
+    expect(parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:in-memory",
+      findings: [{
+        findingId: "carried-id",
+        initialOutcome: "carried",
+        commentId: "8000",
+      }],
+    })).toEqual({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:in-memory",
+      findings: [{
+        findingId: "carried-id",
+        stableIdentity: true,
+        initialOutcome: "carried",
+        inlineRejected: false,
+        commentId: "8000",
+      }],
+    });
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:unknown-field",
+      findings: [],
+      untrusted: true,
+    })).toThrow("publication receipt is invalid");
+  });
+
+  test("uses signed int64 decimal identities across the receipt wire contract", () => {
+    expect(parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:int64",
+      reviewId: "9223372036854775807",
+      findings: [{
+        findingId: "int64-comment",
+        initialOutcome: "inline",
+        commentId: "9223372036854775807",
+      }],
+    }).reviewId).toBe("9223372036854775807");
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:too-large",
+      reviewId: "9223372036854775808",
+      findings: [],
+    })).toThrow("publication receipt is invalid");
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "reviewComments",
+      receiptId: "github-review-v2:malformed",
+      reviewId: "not-a-decimal",
+      findings: [],
+    })).toThrow("publication receipt is invalid");
+  });
+
   test("accepts one inline and one summary-only finding with forge identities", async () => {
     const receipt = await readPublicationReceipt(
       await receiptFile({
@@ -92,6 +155,139 @@ describe("publication receipt contract", () => {
       "inline",
       "summaryOnly",
     ]);
+  });
+
+  test("accepts a version 2 check-annotation receipt without review comment identities", async () => {
+    const receipt = await readPublicationReceipt(
+      await receiptFile({
+        version: 2,
+        channel: "checkAnnotations",
+        receiptId: "github-review-v2:123456",
+        findings: [
+          {
+            findingId: "annotation-id",
+            stableIdentity: true,
+            initialOutcome: "checkAnnotation",
+          },
+          {
+            findingId: "summary-id",
+            stableIdentity: true,
+            initialOutcome: "summaryOnly",
+          },
+        ],
+      }),
+    );
+    validateReceiptAgainstEnvelope(receipt, envelope(["annotation-id", "summary-id"]));
+    expect(receipt.channel).toBe("checkAnnotations");
+    expect(receipt.reviewId).toBeUndefined();
+    expect(receipt.findings.map((entry) => entry.initialOutcome)).toEqual([
+      "checkAnnotation",
+      "summaryOnly",
+    ]);
+  });
+
+  test("rejects a carried comment identity on the check-annotation channel", () => {
+    expect(() => parsePublicationReceipt({
+      version: 2,
+      channel: "checkAnnotations",
+      receiptId: "github-review-v2:carried-comment",
+      findings: [{
+        findingId: "carried-id",
+        initialOutcome: "carried",
+        commentId: "8008",
+      }],
+    })).toThrow("publication receipt is invalid");
+  });
+
+  test("accepts a version 2 file-level review comment with its GitHub identity", async () => {
+    const receipt = await readPublicationReceipt(
+      await receiptFile({
+        version: 2,
+        channel: "reviewComments",
+        receiptId: "github-review-v2:file-comment",
+        reviewId: "9005",
+        findings: [
+          {
+            findingId: "file-comment-id",
+            stableIdentity: true,
+            initialOutcome: "fileComment",
+            commentId: "8005",
+          },
+        ],
+      }),
+    );
+    validateReceiptAgainstEnvelope(receipt, envelope(["file-comment-id"]));
+    expect(receipt.findings[0]).toMatchObject({
+      initialOutcome: "fileComment",
+      commentId: "8005",
+    });
+  });
+
+  test.each([
+    {
+      channel: "reviewComments",
+      finding: { findingId: "missing-comment", initialOutcome: "fileComment" },
+    },
+    {
+      channel: "checkAnnotations",
+      finding: {
+        findingId: "wrong-channel",
+        initialOutcome: "fileComment",
+        commentId: "8006",
+      },
+    },
+  ])(
+    "rejects an invalid file-level review comment receipt",
+    async ({ channel, finding }) => {
+      await expect(
+        readPublicationReceipt(
+          await receiptFile({
+            version: 2,
+            channel,
+            receiptId: "github-review-v2:invalid-file-comment",
+            findings: [finding],
+          }),
+        ),
+      ).rejects.toThrow("publication receipt is invalid");
+    },
+  );
+
+  test("rejects file-level comments in a version 1 receipt", async () => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 1,
+          receiptId: "github-review-v1:file-comment",
+          findings: [
+            {
+              findingId: "version-one-file-comment",
+              initialOutcome: "fileComment",
+              commentId: "8007",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("publication receipt is invalid");
+  });
+
+  test("rejects publication outcomes that contradict the version 2 channel", async () => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 2,
+          channel: "checkAnnotations",
+          receiptId: "github-review-v2:invalid",
+          reviewId: "9004",
+          findings: [
+            {
+              findingId: "inline-id",
+              initialOutcome: "inline",
+              commentId: "8004",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("publication receipt is invalid");
   });
 
   test.each([".postil/provider", ".postil/model-output"])(
@@ -199,6 +395,45 @@ describe("publication receipt contract", () => {
     expect(receipt.findings[0]?.commentId).toBe("8003");
   });
 
+  test("accepts a carried finding naming the comment an earlier review left", async () => {
+    const receipt = await readPublicationReceipt(
+      await receiptFile({
+        version: 1,
+        receiptId: "github-review-v1:carried",
+        reviewId: "9004",
+        findings: [
+          {
+            findingId: "carried-id",
+            initialOutcome: "carried",
+            commentId: "8005",
+          },
+        ],
+      }),
+    );
+    // The lifecycle pass observes threads by this identity, so a carried
+    // finding without it leaves its live thread unobserved.
+    expect(receipt.findings[0]?.commentId).toBe("8005");
+  });
+
+  test("rejects a comment identity on a finding that was never published", async () => {
+    await expect(
+      readPublicationReceipt(
+        await receiptFile({
+          version: 1,
+          receiptId: "github-review-v1:unpublished",
+          reviewId: "9005",
+          findings: [
+            {
+              findingId: "summary-id",
+              initialOutcome: "summaryOnly",
+              commentId: "8006",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toThrow("only a published finding can carry a comment identity");
+  });
+
   test("rejects public receipt permissions and cross-envelope identities", async () => {
     const path = await receiptFile({
       version: 1,
@@ -229,6 +464,7 @@ describe("GitHub publication thread observations", () => {
                       id: "thread-11",
                       isResolved: true,
                       isOutdated: false,
+                      viewerCanResolve: false,
                       comments: {
                         nodes: [{ databaseId: 11 }, { databaseId: 91 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -238,6 +474,7 @@ describe("GitHub publication thread observations", () => {
                       id: "thread-12",
                       isResolved: false,
                       isOutdated: true,
+                      viewerCanResolve: false,
                       comments: {
                         nodes: [{ databaseId: 12 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -247,6 +484,7 @@ describe("GitHub publication thread observations", () => {
                       id: "thread-13",
                       isResolved: false,
                       isOutdated: false,
+                      viewerCanResolve: true,
                       comments: {
                         nodes: [{ databaseId: 13 }, { databaseId: 92 }],
                         pageInfo: { hasNextPage: false, endCursor: null },
@@ -265,9 +503,24 @@ describe("GitHub publication thread observations", () => {
     expect(
       await observeGitHubReviewThreads("token", "owner/repo", 4, ["11", "12", "13", "14"]),
     ).toEqual([
-      { githubCommentId: "11", state: "resolved" },
-      { githubCommentId: "12", state: "outdated" },
-      { githubCommentId: "13", state: "inline" },
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-11",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
+      {
+        githubCommentId: "12",
+        githubThreadId: "thread-12",
+        state: "outdated",
+        viewerCanResolve: false,
+      },
+      {
+        githubCommentId: "13",
+        githubThreadId: "thread-13",
+        state: "inline",
+        viewerCanResolve: true,
+      },
       { githubCommentId: "14", state: "deleted" },
     ]);
   });
@@ -287,6 +540,7 @@ describe("GitHub publication thread observations", () => {
                     id: "thread-paged",
                     isResolved: true,
                     isOutdated: false,
+                    viewerCanResolve: false,
                     comments: {
                       nodes: [{ databaseId: 91 }],
                       pageInfo: { hasNextPage: true, endCursor: "comment-page-2" },
@@ -312,12 +566,137 @@ describe("GitHub publication thread observations", () => {
     }) as unknown as typeof fetch;
 
     expect(await observeGitHubReviewThreads("token", "owner/repo", 4, ["11"])).toEqual([
-      { githubCommentId: "11", state: "resolved" },
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-paged",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[1]?.variables).toEqual({
       threadId: "thread-paged",
       commentsCursor: "comment-page-2",
     });
+  });
+
+  test("resolves only Postil-owned threads whose durable finding state is terminal", async () => {
+    const requestedThreadIds: string[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as {
+        variables?: { threadId?: string };
+      };
+      const threadId = request.variables?.threadId;
+      if (!threadId) throw new Error("test mutation omitted thread identity");
+      requestedThreadIds.push(threadId);
+      return new Response(JSON.stringify({
+        data: {
+          resolveReviewThread: {
+            thread: { id: threadId, isResolved: true },
+          },
+        },
+      }));
+    }) as unknown as typeof fetch;
+
+    const observations = [
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-11",
+        state: "outdated",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "12",
+        githubThreadId: "thread-12",
+        state: "inline",
+        viewerCanResolve: false,
+      },
+      {
+        githubCommentId: "13",
+        githubThreadId: "thread-13",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
+      { githubCommentId: "14", state: "deleted" },
+      {
+        githubCommentId: "15",
+        githubThreadId: "thread-15",
+        state: "outdated",
+        viewerCanResolve: false,
+      },
+    ] as const;
+
+    const reconciled = await resolveGitHubReviewThreads(
+      "token",
+      observations.slice(0, -1),
+      ["11", "13", "14"],
+    );
+
+    expect(requestedThreadIds).toEqual(["thread-11"]);
+    expect(reconciled).toEqual([
+      {
+        githubCommentId: "11",
+        githubThreadId: "thread-11",
+        state: "resolved",
+        viewerCanResolve: true,
+      },
+      {
+        githubCommentId: "12",
+        githubThreadId: "thread-12",
+        state: "inline",
+        viewerCanResolve: false,
+      },
+      {
+        githubCommentId: "13",
+        githubThreadId: "thread-13",
+        state: "resolved",
+        viewerCanResolve: false,
+      },
+      { githubCommentId: "14", state: "deleted" },
+    ]);
+    requestedThreadIds.length = 0;
+    const mixed = [observations[4], ...observations.slice(0, -1)];
+    const mixedResult = await resolveGitHubReviewThreads(
+      "token",
+      mixed,
+      ["15", "11", "13", "14"],
+    );
+    expect(requestedThreadIds).toEqual(["thread-11"]);
+    expect(mixedResult).toEqual([observations[4], ...reconciled]);
+
+    requestedThreadIds.length = 0;
+    expect(await resolveGitHubReviewThreads("token", [observations[4]], ["15"]))
+      .toEqual([observations[4]]);
+    expect(requestedThreadIds).toEqual([]);
+  });
+
+  test.each(["inline", "outdated"] as const)(
+    "fails closed when a terminal %s thread has unknown resolution capability",
+    async (state) => {
+      await expect(
+        resolveGitHubReviewThreads(
+          "token",
+          [{ githubCommentId: "17", githubThreadId: "thread-17", state }],
+          ["17"],
+        ),
+      ).rejects.toThrow("GitHub review thread resolution capability is unknown");
+    },
+  );
+
+  test("fails closed when GitHub cannot resolve a still-active terminal thread", async () => {
+    await expect(
+      resolveGitHubReviewThreads(
+        "token",
+        [
+          {
+            githubCommentId: "16",
+            githubThreadId: "thread-16",
+            state: "inline",
+            viewerCanResolve: false,
+          },
+        ],
+        ["16"],
+      ),
+    ).rejects.toThrow("cannot resolve an active Postil review thread");
   });
 });

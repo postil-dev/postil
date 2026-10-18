@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { formatMs, ReviewStatusBadge } from "@/components/review-status";
+import { formatMs, GateBadge, ReviewStatusBadge } from "@/components/review-status";
 import type { ReviewDisplayStatus } from "@/lib/review-outcome";
 
 const LOG_PAGE_SIZE = 500;
@@ -25,6 +25,8 @@ interface LogResponse {
   lines: LogLine[];
   status: ReviewDisplayStatus;
   finishedAt: string | null;
+  gateFailing: boolean | null;
+  gateSyncStatus: string | null;
 }
 
 interface LiveRunState {
@@ -34,6 +36,8 @@ interface LiveRunState {
   startedAt: string | null;
   finishedAt: string | null;
   recordedDurationMs: number | null;
+  gateFailing: boolean | null;
+  gateSyncStatus: string | null;
 }
 
 const LiveRunContext = createContext<LiveRunState | null>(null);
@@ -51,6 +55,8 @@ function isLogResponse(value: unknown): value is LogResponse {
     Array.isArray(candidate.lines) &&
     isReviewStatus(candidate.status) &&
     (candidate.finishedAt === null || typeof candidate.finishedAt === "string")
+    && (candidate.gateFailing === null || typeof candidate.gateFailing === "boolean")
+    && (candidate.gateSyncStatus === null || typeof candidate.gateSyncStatus === "string")
   );
 }
 
@@ -66,6 +72,8 @@ export function LiveRunProvider({
   startedAt,
   initialFinishedAt,
   recordedDurationMs,
+  initialGateFailing,
+  initialGateSyncStatus,
   children,
 }: {
   slug: string;
@@ -75,11 +83,15 @@ export function LiveRunProvider({
   startedAt: string | null;
   initialFinishedAt: string | null;
   recordedDurationMs: number | null;
+  initialGateFailing: boolean | null;
+  initialGateSyncStatus: string | null;
   children: ReactNode;
 }) {
   const [status, setStatus] = useState(initialStatus);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [finishedAt, setFinishedAt] = useState(initialFinishedAt);
+  const [gateFailing, setGateFailing] = useState(initialGateFailing);
+  const [gateSyncStatus, setGateSyncStatus] = useState(initialGateSyncStatus);
   const latestSeq = useRef(0);
 
   useEffect(() => {
@@ -112,14 +124,18 @@ export function LiveRunProvider({
         }
         setStatus(body.status);
         setFinishedAt(body.finishedAt);
+        setGateFailing(body.gateFailing);
+        setGateSyncStatus(body.gateSyncStatus);
         if (body.lines.length === LOG_PAGE_SIZE) {
           timer = setTimeout(poll, 0);
-        } else if (isActive(body.status)) {
+        } else if (isActive(body.status) || ["queued", "running"].includes(body.gateSyncStatus ?? "")) {
           timer = setTimeout(poll, 2_000);
         }
       } catch (error) {
         if (stopped || (error instanceof DOMException && error.name === "AbortError")) return;
-        if (isActive(status)) timer = setTimeout(poll, 2_000);
+        if (isActive(status) || ["queued", "running"].includes(gateSyncStatus ?? "")) {
+          timer = setTimeout(poll, 2_000);
+        }
       }
     }
 
@@ -129,11 +145,11 @@ export function LiveRunProvider({
       if (timer) clearTimeout(timer);
       request?.abort();
     };
-  }, [publicId, slug, status]);
+  }, [gateSyncStatus, publicId, slug, status]);
 
   const value = useMemo(
-    () => ({ status, lines, queuedAt, startedAt, finishedAt, recordedDurationMs }),
-    [status, lines, queuedAt, startedAt, finishedAt, recordedDurationMs],
+    () => ({ status, lines, queuedAt, startedAt, finishedAt, recordedDurationMs, gateFailing, gateSyncStatus }),
+    [status, lines, queuedAt, startedAt, finishedAt, recordedDurationMs, gateFailing, gateSyncStatus],
   );
 
   return <LiveRunContext.Provider value={value}>{children}</LiveRunContext.Provider>;
@@ -145,9 +161,23 @@ function useLiveRun(): LiveRunState {
   return state;
 }
 
-export function LiveReviewStatus({ gateFailing }: { gateFailing: boolean | null }) {
-  const { status } = useLiveRun();
+export function LiveReviewStatus() {
+  const { status, gateFailing } = useLiveRun();
   return <ReviewStatusBadge status={status} gateFailing={gateFailing} />;
+}
+
+export function LiveGateStatus() {
+  const { status, gateFailing, gateSyncStatus } = useLiveRun();
+  return (
+    <span role="status" aria-live="polite" aria-atomic="true">
+      <GateBadge
+        status={status}
+        gateFailing={gateFailing}
+        syncing={gateSyncStatus === "queued" || gateSyncStatus === "running"}
+        syncFailed={gateSyncStatus === "failed"}
+      />
+    </span>
+  );
 }
 
 export function LiveDuration() {

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 
 import { OrganizationSwitcher } from "@/components/organization-switcher";
 import { PrivateBillingNotice } from "@/components/private-billing-notice";
@@ -10,7 +10,10 @@ import { ReviewTimeDistribution } from "@/components/review-time-distribution";
 import { getPool, schema } from "@/lib/db";
 import { hostedInferenceAvailable } from "@/lib/env";
 import { requireOrgMembership } from "@/lib/org-access";
-import { getOrgReviewRows } from "@/lib/org-reviews";
+import {
+  getOrgReviewRows,
+  shippedPublicationStateSql,
+} from "@/lib/org-reviews";
 import { getRepoHealthRows } from "@/lib/repo-health";
 import {
   canProcessPrivateRepository,
@@ -18,6 +21,8 @@ import {
 } from "@/lib/private-repository-entitlement";
 import { toggleRepository } from "./actions";
 import {
+  AddRepositoriesLinks,
+  RemovedRepositoriesNotice,
   RepoHealthBanner,
   SuspendedInstallationsNotice,
 } from "./repo-health-banner";
@@ -31,6 +36,9 @@ export const dynamic = "force-dynamic";
 
 const BUCKET_LABELS = ["0–20%", "20–40%", "40–60%", "60–80%", "80–100%"] as const;
 
+/** How long a repository dropped from the installation stays called out. */
+const REMOVED_REPOSITORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
+
 export default async function OrgDashboardPage({
   params,
 }: {
@@ -41,14 +49,18 @@ export default async function OrgDashboardPage({
   const isAdmin = membership.role === "admin";
   const now = new Date();
 
-  const suspendedInstallations = await db
+  const installations = await db
     .select({
       githubInstallationId: schema.installations.githubInstallationId,
       accountLogin: schema.installations.accountLogin,
       accountType: schema.installations.accountType,
+      suspended: schema.installations.suspended,
     })
     .from(schema.installations)
-    .where(and(eq(schema.installations.orgId, org.id), eq(schema.installations.suspended, true)));
+    .where(eq(schema.installations.orgId, org.id))
+    .orderBy(schema.installations.accountLogin);
+  const suspendedInstallations = installations.filter((installation) => installation.suspended);
+  const activeInstallations = installations.filter((installation) => !installation.suspended);
 
   const repoHealthRows = await getRepoHealthRows(db, org.id);
   const healthRepositoryIds = repoHealthRows.map((row) => row.repositoryId);
@@ -120,7 +132,7 @@ export default async function OrgDashboardPage({
           SELECT 1 FROM finding_publications publication
           WHERE publication.review_id = ${schema.reviews.id}
             AND publication.finding_id = finding ->> 'id'
-            AND publication.initial_state IN ('inline', 'summaryOnly', 'carried', 'inlineRejected')
+            AND ${shippedPublicationStateSql(sql.raw("publication.initial_state"))}
         )
       )`,
       durationMs: sql<number | null>`(${schema.reviews.envelope} ->> 'durationMs')::int`,
@@ -193,7 +205,7 @@ export default async function OrgDashboardPage({
             INNER JOIN installations published_installation ON published_installation.id = published_repository.installation_id
             WHERE published_installation.org_id = ${org.id}
               AND published_review.status = 'completed'
-              AND publication.initial_state IN ('inline', 'summaryOnly', 'carried', 'inlineRejected')
+              AND ${shippedPublicationStateSql(sql.raw("publication.initial_state"))}
           ), 0)::int
         `,
       })
@@ -217,6 +229,7 @@ export default async function OrgDashboardPage({
   const repos = await db
     .select({
       id: schema.repositories.id,
+      githubRepoId: schema.repositories.githubRepoId,
       fullName: schema.repositories.fullName,
       private: schema.repositories.private,
       enabled: schema.repositories.enabled,
@@ -228,6 +241,43 @@ export default async function OrgDashboardPage({
     )
     .where(eq(schema.installations.orgId, org.id))
     .orderBy(schema.repositories.fullName);
+
+  // GitHub's repository picker replaces the whole selection when it is saved,
+  // so a second save from a stale page silently drops a repository that was
+  // just added. Postil then stops receiving that repository's events entirely
+  // and cannot report the gap from the pull request side, so the removal is
+  // surfaced here against the repositories the installation still covers.
+  const trackedGithubRepoIds = new Set(repos.map((repo) => repo.githubRepoId));
+  const recentlyRemovedRepos = (
+    await db
+      .selectDistinctOn([schema.repositoryEnablementEvents.githubRepoId], {
+        githubRepoId: schema.repositoryEnablementEvents.githubRepoId,
+        fullName: schema.repositoryEnablementEvents.repositoryFullName,
+        occurredAt: schema.repositoryEnablementEvents.occurredAt,
+        action: schema.repositoryEnablementEvents.action,
+      })
+      .from(schema.repositoryEnablementEvents)
+      .where(
+        and(
+          eq(schema.repositoryEnablementEvents.orgId, org.id),
+          inArray(schema.repositoryEnablementEvents.source, [
+            "github_installation",
+            "github_uninstall",
+          ]),
+          gt(
+            schema.repositoryEnablementEvents.occurredAt,
+            new Date(now.getTime() - REMOVED_REPOSITORY_WINDOW_MS),
+          ),
+        ),
+      )
+      .orderBy(
+        schema.repositoryEnablementEvents.githubRepoId,
+        desc(schema.repositoryEnablementEvents.occurredAt),
+        desc(schema.repositoryEnablementEvents.id),
+      )
+  ).filter(
+    (event) => event.action === "disable" && !trackedGithubRepoIds.has(event.githubRepoId),
+  );
   const rawPrivateAccess =
     isAdmin && repos.some((repo) => repo.private && repo.enabled)
       ? await canProcessPrivateRepository(db, {
@@ -477,12 +527,22 @@ export default async function OrgDashboardPage({
       <div className="mt-10 grid gap-8 lg:grid-cols-2">
         {/* Repositories */}
         <div>
-          <p className="eyebrow">Repositories</p>
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="eyebrow">Repositories</p>
+            <AddRepositoriesLinks installations={activeInstallations} isAdmin={isAdmin} />
+          </div>
+          <RemovedRepositoriesNotice repositories={recentlyRemovedRepos} now={now} />
           <div className="card mt-3 divide-y divide-stone/60">
             {repos.map((repo) => (
               <div key={repo.id} className="flex items-center justify-between px-4 py-3">
                 <div>
-                  <p className="font-mono text-sm">{repo.fullName}</p>
+                  <a
+                    href={`https://github.com/${repo.fullName}`}
+                    className="font-mono text-sm hover:underline"
+                    rel="noopener noreferrer"
+                  >
+                    {repo.fullName}
+                  </a>
                   <p className="font-mono text-[11px] text-charcoal/70">
                     {repo.private ? "private" : "public"}
                   </p>
@@ -518,7 +578,9 @@ export default async function OrgDashboardPage({
             ))}
             {repos.length === 0 && (
               <p className="px-4 py-8 text-center text-sm text-charcoal/70">
-                No repositories. Install the GitHub App on this organization.
+                {activeInstallations.length > 0
+                  ? "No repositories yet. Choose the repositories this installation covers on GitHub."
+                  : "No repositories. Install the GitHub App on this organization."}
               </p>
             )}
           </div>

@@ -6,6 +6,10 @@ import {
   gateCheckConclusionForEnvelope,
   hasLegacyCombinedModelUsage,
   ingestEnvelope,
+  isReviewCoverageCapacityFailure,
+  reviewCoverageReceiptSchema,
+  reviewAdmissionSchema,
+  suppressionReasonSchema,
   type Envelope,
 } from "@/lib/envelope";
 
@@ -68,6 +72,10 @@ describe("envelope ingestion", () => {
       selectedBatches: 4,
       totalBatches: 12,
       plannerFallback: false,
+      receipt: {
+        planSha256: "c".repeat(64), totalHunks: 12,
+        directHunks: 4, semanticHunks: 2, unreviewedHunks: 6,
+      },
     };
     const reviewAdmission = {
       providerAttempts: 8,
@@ -132,6 +140,32 @@ describe("envelope ingestion", () => {
       JSON.stringify(validEnvelope({ suppressedFindings: [suppressedFinding] })),
     );
     expect(ingested.envelope.suppressedFindings).toEqual([suppressedFinding]);
+  });
+
+  test("accepts every suppression reason the CLI emits, and one it does not", () => {
+    // A suppression reason is a caption on a finding that was already withheld.
+    // Constraining it to a known set fails the whole review the first time the
+    // CLI grows a rule, so an unrecognized value is kept rather than rejected.
+    const reasons = [
+      ...suppressionReasonSchema.options,
+      "aReasonAddedAfterThisRelease",
+    ] as const;
+    const suppressedFindings = reasons.map((reason, index) => ({
+      finding: {
+        path: "ansible/playbooks/backup.yml",
+        line: 981 + index,
+        severity: "error" as const,
+        kind: "risk" as const,
+        confidence: 0.6,
+        title: "Password task drops no_log",
+        body: "The cited line holds an unrelated task.",
+      },
+      reason,
+    }));
+    const ingested = ingestEnvelope(
+      JSON.stringify(validEnvelope({ suppressedFindings })),
+    );
+    expect(ingested.envelope.suppressedFindings).toEqual(suppressedFindings);
   });
 
   test("preserves exact model incidents and enforces recovery consistency", () => {
@@ -443,6 +477,108 @@ describe("envelope ingestion", () => {
   });
 });
 
+describe("deterministic coverage capacity", () => {
+  const receipt = {
+    planSha256: "c".repeat(64), totalHunks: 12,
+    directHunks: 4, semanticHunks: 2, unreviewedHunks: 6,
+  };
+  function capacityEnvelope(unreviewedHunks = 6): Envelope {
+    return validEnvelope({
+      usageAccountingComplete: true,
+      findings: [...validEnvelope().findings, {
+        path: ".postil/model-output", line: 1, severity: "error", kind: "uncertainty",
+        confidence: 1, title: "Large review coverage is incomplete",
+        body: `Deterministic large-review coverage left ${unreviewedHunks} normalized ${unreviewedHunks === 1 ? "hunk" : "hunks"} unreviewed within the hard request limit. Findings from completed requests remain available, but this result cannot be trusted as a pass.`,
+      }],
+      counts: { info: 0, warn: 0, error: 2, suppressed: 0, ungrounded: 0 },
+      reviewCoverage: { mode: "bounded", selectedBatches: 2, totalBatches: 8,
+        plannerFallback: false, receipt: { ...receipt, totalHunks: 6 + unreviewedHunks, unreviewedHunks } },
+    });
+  }
+
+  test.each([1, 6])("preserves partial findings and a failing gate with %s unreviewed hunks", (count) => {
+    const ingested = ingestEnvelope(JSON.stringify(capacityEnvelope(count)));
+    const registered = ingested.envelope.reviewCoverage!.receipt!;
+    expect(isReviewCoverageCapacityFailure(ingested.envelope, registered)).toBe(true);
+    expect(ingested.envelope.findings[0]).toEqual(validEnvelope().findings[0]);
+    expect(ingested.gateFailing).toBe(true);
+    expect(gateCheckConclusionForEnvelope(ingested.envelope, new Set(), true)).toBe("failure");
+    expect(classifyOperationalModelIncidents(ingested.envelope, registered)).toEqual([
+      { phase: "review", category: "coverageCapacity", recovered: false, source: "coverage_receipt" },
+    ]);
+  });
+
+  test.each([
+    { totalHunks: 11 }, { directHunks: -1 }, { semanticHunks: 0.5 },
+    { unreviewedHunks: 0x1_0000_0000 }, { planSha256: "invalid" },
+  ])("rejects invalid coverage receipt %j", (invalid) => {
+    const value = capacityEnvelope();
+    value.reviewCoverage!.receipt = { ...receipt, ...invalid };
+    expect(() => ingestEnvelope(JSON.stringify(value))).toThrow();
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+  });
+
+  test("does not infer capacity from absent or contradictory evidence", () => {
+    const value = capacityEnvelope();
+    expect(isReviewCoverageCapacityFailure(value, null)).toBe(false);
+    expect(isReviewCoverageCapacityFailure(value, { ...receipt, planSha256: "d".repeat(64) })).toBe(false);
+    expect(isReviewCoverageCapacityFailure(value, { ...receipt, directHunks: 5, semanticHunks: 1 })).toBe(false);
+    delete value.reviewCoverage!.receipt;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    expect(classifyOperationalModelIncidents(value, receipt)[0]?.category).toBe("invalidOutput");
+    const zero = capacityEnvelope(0);
+    expect(isReviewCoverageCapacityFailure(zero, zero.reviewCoverage!.receipt!)).toBe(false);
+    value.findings = validEnvelope().findings;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+  });
+
+  test("requires the exact CLI sentinel rather than model prose", () => {
+    for (const alteration of [
+      { path: "src/review.ts" }, { title: "Review coverage is incomplete" },
+      { body: capacityEnvelope(1).findings[1]!.body }, { line: 2 }, { endLine: 2 },
+      { confidence: 0.9 }, { kind: "risk" as const }, { severity: "warn" as const },
+    ]) {
+      const value = capacityEnvelope();
+      Object.assign(value.findings[1]!, alteration);
+      expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    }
+  });
+
+  test("capacity evidence does not hide another failure or a passing verdict", () => {
+    for (const incident of ["providerError", "invalidOutput", "timeout", "deadline"] as const) {
+      const value = capacityEnvelope();
+      value.modelIncidents = [{ phase: "review", category: incident, recovered: false }];
+      expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    }
+    const value = capacityEnvelope();
+    value.scorerError = "Scoring failed";
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    delete value.scorerError;
+    value.findings.push({ ...value.findings[1]!, path: ".postil/provider" });
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    value.findings.pop();
+    value.gate.failing = false;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    expect(reviewCoverageReceiptSchema.safeParse(receipt).success).toBe(true);
+  });
+
+  test("unaccounted usage and invalid batch counts cannot be classified as capacity", () => {
+    for (const complete of [undefined, false]) {
+      const value = capacityEnvelope();
+      value.usageAccountingComplete = complete;
+      expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+      expect(classifyOperationalModelIncidents(value, receipt)[0]?.category).toBe("invalidOutput");
+    }
+    const value = capacityEnvelope();
+    value.reviewCoverage!.selectedBatches = value.reviewCoverage!.totalBatches + 1;
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+    expect(() => ingestEnvelope(JSON.stringify(value))).toThrow();
+    value.reviewCoverage!.selectedBatches = 2;
+    Object.assign(value.reviewCoverage!, { mode: "unknown" });
+    expect(isReviewCoverageCapacityFailure(value, receipt)).toBe(false);
+  });
+});
+
 describe("effective gate recomputation", () => {
   test("does not let a declared pass suppress an admitted blocker", () => {
     const env = validEnvelope({
@@ -653,6 +789,34 @@ describe("effective gate recomputation", () => {
     expect(state.blockers[0]?.severityBlocking).toBe(true);
   });
 
+  test("dismissal clears both severity and kind blocking for only its finding", () => {
+    const env = validEnvelope({
+      findings: [
+        { id: "dismissed", ...validEnvelope().findings[0]!, kind: "humanEscalation" },
+        { id: "remaining", ...validEnvelope().findings[0]! },
+      ],
+      gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
+    });
+    const state = computeEffectiveGate(env, new Set(), new Set(["dismissed"]));
+    expect(state.failing).toBe(true);
+    expect(state.blockers.map((blocker) => blocker.findingId)).toEqual(["remaining"]);
+    expect(
+      gateCheckConclusionForEnvelope(
+        env,
+        new Set(),
+        true,
+        new Set(["dismissed", "remaining"]),
+      ),
+    ).toBe("success");
+  });
+
+  test("operational sentinels remain blocking even when their id is dismissed", () => {
+    const env = validEnvelope({
+      findings: [{ id: "sentinel", ...validEnvelope().findings[0]!, path: ".postil/operational" }],
+    });
+    expect(computeEffectiveGate(env, new Set(), new Set(["sentinel"])).failing).toBe(true);
+  });
+
   test("all blockers must clear before the effective gate passes", () => {
     const env = validEnvelope({
       gate: { failOn: "error", failing: true, blockOnKinds: ["humanEscalation"] },
@@ -684,5 +848,29 @@ describe("effective gate recomputation", () => {
     const state = computeEffectiveGate(env, new Set(["kind-only"]));
     expect(state.failing).toBe(true);
     expect(state.blockers.map((blocker) => blocker.findingId)).toEqual(["severity-only"]);
+  });
+});
+
+describe("review admission bounds", () => {
+  test("accepts the worst-case plan the CLI is willing to run", () => {
+    const parsed = reviewAdmissionSchema.safeParse({
+      providerAttempts: 84,
+      serializedInputBytes: 9_684_902,
+      outputTokens: 472_640,
+      // The shipped hosted profile projects about this much; a bound at the
+      // per-review spend limit rejected every hosted review.
+      projectedCostMicros: 15_638_530,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  test("still rejects a projection beyond the admission ceiling", () => {
+    const parsed = reviewAdmissionSchema.safeParse({
+      providerAttempts: 84,
+      serializedInputBytes: 9_684_902,
+      outputTokens: 472_640,
+      projectedCostMicros: 25_000_001,
+    });
+    expect(parsed.success).toBe(false);
   });
 });

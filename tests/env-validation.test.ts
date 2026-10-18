@@ -13,6 +13,7 @@ const MANAGED_ENV = [
   "GITHUB_OAUTH_CLIENT_ID",
   "GITHUB_OAUTH_CLIENT_SECRET",
   "GITHUB_WEBHOOK_SECRET",
+  "POSTIL_ILERT_WEBHOOK_SECRET",
   "NODE_ENV",
   "POSTIL_PUBLIC_URL",
   "POSTIL_SEALING_KEY",
@@ -120,64 +121,25 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).toContain(
       "jq -ce -f scripts/verify-managed-fleet.jq",
     );
-    expect(deployWorkflow).toContain(
-      'flyctl ssh console --app postil-web --command "bun run hosted:verify-provider"',
-    );
-    expect(deployWorkflow.indexOf("bun run hosted:verify-provider")).toBeLessThan(
-      deployWorkflow.indexOf("bun run jobs:activate-release"),
-    );
+    expect(deployWorkflow).toContain('"bun run jobs:activate-release"');
+    expect(deployWorkflow).toContain("Verify compatible source fleet");
+    expect(deployWorkflow).toContain("Roll back an incomplete managed replacement");
+    expect(deployWorkflow).not.toContain("--skip-release-command");
     expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
     expect(deployWorkflow).toMatch(
       /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,
     );
     expect(deployWorkflow).toContain(
-      "always() && steps.deploy.outcome != 'skipped'",
+      "always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outputs.attempted == 'true'",
     );
-    expect(deployWorkflow).toContain("restart_failed=0");
-    expect(deployWorkflow).toContain("restart_failed=1");
-    expect(deployWorkflow.indexOf('if [ "${restart_failed}" -ne 0 ]')).toBeGreaterThan(
-      deployWorkflow.indexOf("restart_failed=1"),
-    );
+    expect(deployWorkflow).not.toContain("flyctl machine start");
     expect(deployWorkflow).not.toContain("flyctl logs");
     expect(deployWorkflow).not.toContain("Collect failed rollout diagnostics");
-    expect(deployWorkflow).toContain(
-      "fly_secrets=$(flyctl secrets list --json)",
-    );
-    expect(deployWorkflow).not.toContain("done < <(flyctl secrets list --json");
-    expect(deployWorkflow).toContain(
-      "POSTIL_HOSTED_INFERENCE_ENABLED|POSTIL_PROVISIONAL_HOSTED_ROSTER|REVIEW_MODEL|REVIEW_MODEL_CASCADE",
-    );
-    expect(deployWorkflow).toContain(
-      "The provisional hosted roster requires postil-cli v0.7.0 or newer.",
-    );
-    expect(deployWorkflow).toContain(
-      'flyctl secrets unset --stage "${runtime_override_secrets[@]}"',
-    );
-    expect(deployWorkflow).toContain("monitor_secret_names=(");
-    expect(deployWorkflow).toContain("OPENROUTER_MANAGEMENT_API_KEY");
-    expect(deployWorkflow).toContain("POSTIL_OPENROUTER_DEVELOPMENT_KEY_NAME");
-    expect(deployWorkflow).toContain("POSTIL_OPENROUTER_PRODUCTION_KEY_NAME");
-    expect(deployWorkflow).toContain("POSTIL_OPENROUTER_EMERGENCY_KEY_NAME");
-    expect(deployWorkflow).toContain('if [[ -n "${value}" ]]; then');
-    expect(deployWorkflow).not.toContain(
-      'Infisical did not provide ${name}',
-    );
-    const monitorSecretBlock = deployWorkflow.slice(
-      deployWorkflow.indexOf("monitor_secret_names=("),
-      deployWorkflow.indexOf("paddle_secret_names=("),
-    );
-    expect(monitorSecretBlock).toContain('if [[ -n "${value}" ]]; then');
-    expect(monitorSecretBlock).not.toContain("exit 1");
-    const failedSecretList = Bun.spawnSync(
-      [
-        "bash",
-        "-c",
-        "set -euo pipefail; flyctl() { return 37; }; fly_secrets=$(flyctl secrets list --json); printf continued",
-      ],
-      { stderr: "pipe", stdout: "pipe" },
-    );
-    expect(failedSecretList.exitCode).toBe(37);
-    expect(failedSecretList.stdout.toString()).toBe("");
+    expect(deployWorkflow).toContain("Verify runtime secret contract");
+    expect(deployWorkflow).toContain("flyctl secrets list --app postil-web --json");
+    expect(deployWorkflow).not.toContain("flyctl secrets unset");
+    expect(deployWorkflow.match(/flyctl secrets import --stage --app postil-web/g)).toHaveLength(1);
+    expect(deployWorkflow).not.toMatch(/flyctl secrets import(?! --stage --app postil-web)/);
 
     const validFleet = [
       managedMachine("web", "1", "1"),
@@ -236,6 +198,36 @@ describe("worker startup environment validation", () => {
         managedMachine("web", "0", "1"),
       ]).exitCode,
     ).not.toBe(0);
+  });
+
+  test("typechecks deploy source before the remote image build", async () => {
+    const root = join(import.meta.dir, "..");
+    const [deployWorkflow, dockerfile, nextConfig] = await Promise.all([
+      readFile(join(root, ".github/workflows/deploy.yml"), "utf8"),
+      readFile(join(root, "Dockerfile"), "utf8"),
+      readFile(join(root, "next.config.ts"), "utf8"),
+    ]);
+
+    const typecheck = deployWorkflow.indexOf("- name: Verify deploy source types");
+    const secrets = deployWorkflow.indexOf("- name: Verify runtime secret contract");
+    const deploy = deployWorkflow.indexOf("- name: Deploy managed fleet");
+    expect(typecheck).toBeGreaterThan(-1);
+    expect(deployWorkflow.slice(typecheck, secrets)).toContain(
+      "bun install --frozen-lockfile",
+    );
+    expect(deployWorkflow.slice(typecheck, secrets)).toContain("bunx tsc --noEmit");
+    expect(typecheck).toBeLessThan(secrets);
+    expect(secrets).toBeLessThan(deploy);
+    expect(dockerfile).toContain("ARG POSTIL_DEPLOY_SOURCE_TYPECHECKED=0");
+    expect(dockerfile).toContain(
+      "POSTIL_DEPLOY_SOURCE_TYPECHECKED=${POSTIL_DEPLOY_SOURCE_TYPECHECKED}",
+    );
+    expect(deployWorkflow).toContain(
+      "--build-arg POSTIL_DEPLOY_SOURCE_TYPECHECKED=1",
+    );
+    expect(nextConfig).toContain(
+      'ignoreBuildErrors: process.env.POSTIL_DEPLOY_SOURCE_TYPECHECKED === "1"',
+    );
   });
 });
 
@@ -423,6 +415,21 @@ describe("web startup environment validation", () => {
 
     process.env.POSTIL_OPERATOR_ALERT_EMAIL = "invalid";
     expect(() => validateEnv("web")).toThrow(/must be a valid email address/);
+  });
+
+  test("accepts only a strong optional iLert webhook password", () => {
+    configureRequiredWebEnvironment();
+    delete process.env.POSTIL_ILERT_WEBHOOK_SECRET;
+    expect(() => validateEnv("web")).not.toThrow();
+
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = "short";
+    expect(() => validateEnv("web")).toThrow(/32 to 512 random printable ASCII bytes/);
+
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = "0123456789abcdef".repeat(2);
+    expect(() => validateEnv("web")).not.toThrow();
+
+    process.env.POSTIL_ILERT_WEBHOOK_SECRET = "a".repeat(513);
+    expect(() => validateEnv("web")).toThrow(/32 to 512 random printable ASCII bytes/);
   });
 
   test("validates operator alert dashboard links in the worker", () => {

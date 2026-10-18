@@ -38,13 +38,14 @@ describe("login page session contract", () => {
     expect(markup).not.toContain("Dashboard");
   });
 
-  test("redirects an authenticated request before rendering anonymous content", async () => {
+  test("redirects an authenticated request to a safe return target", async () => {
     sessionUser = { id: 7, login: "octocat" };
+    const returnTo = "/orgs/example-org/runs/11111111-2222-4333-8444-555555555555?tab=findings";
 
     await expect(
-      LoginPage({ searchParams: Promise.resolve({ next: "/reports?status=failed" }) }),
+      LoginPage({ searchParams: Promise.resolve({ next: returnTo }) }),
     ).rejects.toBeInstanceOf(RedirectSignal);
-    expect(redirectCalls).toEqual(["/reports"]);
+    expect(redirectCalls).toEqual([returnTo]);
   });
 
   test("ignores an unsafe return target for both page links and authenticated redirects", async () => {
@@ -56,6 +57,21 @@ describe("login page session contract", () => {
     sessionUser = { id: 7, login: "octocat" };
     await expect(
       LoginPage({ searchParams: Promise.resolve({ next: "//evil.example" }) }),
+    ).rejects.toBeInstanceOf(RedirectSignal);
+    expect(redirectCalls).toEqual(["/reports"]);
+  });
+
+  test("rejects repeated return targets", async () => {
+    const page = await LoginPage({
+      searchParams: Promise.resolve({ next: ["/reports", "/operator"] }),
+    });
+    expect(renderToStaticMarkup(page)).toContain('href="/api/auth/login"');
+
+    sessionUser = { id: 7, login: "octocat" };
+    await expect(
+      LoginPage({
+        searchParams: Promise.resolve({ next: ["/reports", "/operator"] }),
+      }),
     ).rejects.toBeInstanceOf(RedirectSignal);
     expect(redirectCalls).toEqual(["/reports"]);
   });

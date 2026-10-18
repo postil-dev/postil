@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { optionalEnv } from "@/lib/env";
 import { bearerMatches } from "@/lib/metrics-auth";
+import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +27,11 @@ interface DatabaseMetrics {
   databaseSizeBytes: number;
   activeSessions: number;
   privateMonitorHeartbeatAgeSeconds: number;
+  privateMonitorCollectionAgeSeconds: number;
+  privateMonitorHeartbeatDeliveryAgeSeconds: number;
+  privateMonitorConsecutiveFailedPasses: number;
+  privateMonitorRunningPassAgeSeconds: number;
+  ilertAlertLastReceivedAgeSeconds: number;
   queueDepth: number;
   usersTotal: number;
   organizationCounts: Array<{ status: string; count: number }>;
@@ -65,6 +71,11 @@ interface DatabaseMetrics {
     tokens: number;
   }>;
   reviewIncidents30m: Map<string, number>;
+  monitorCheckFailures24h: Array<{
+    key: string;
+    recovered: boolean;
+    count: number;
+  }>;
 }
 
 /** Prometheus text exposition, protected by a bearer token. */
@@ -100,12 +111,33 @@ export async function GET(request: Request): Promise<NextResponse> {
       "# HELP postil_sessions_active Sessions that have not expired.",
       "# TYPE postil_sessions_active gauge",
       `postil_sessions_active ${dbMetrics.activeSessions}`,
-      "# HELP postil_private_monitor_heartbeat_age_seconds Age of the private monitor heartbeat, or 2147483647 when no heartbeat exists.",
+      "# HELP postil_private_monitor_heartbeat_age_seconds Age of the private monitor process heartbeat, or 2147483647 when no heartbeat exists.",
       "# TYPE postil_private_monitor_heartbeat_age_seconds gauge",
       `postil_private_monitor_heartbeat_age_seconds ${dbMetrics.privateMonitorHeartbeatAgeSeconds}`,
-      "# HELP postil_private_monitor_heartbeat_fresh Whether the private monitor heartbeat is less than 15 minutes old.",
+      "# HELP postil_private_monitor_heartbeat_fresh Whether the private monitor process heartbeat is less than 15 minutes old.",
       "# TYPE postil_private_monitor_heartbeat_fresh gauge",
       `postil_private_monitor_heartbeat_fresh ${dbMetrics.privateMonitorHeartbeatAgeSeconds < 900 ? 1 : 0}`,
+      "# HELP postil_private_monitor_collection_age_seconds Age of the latest completed private monitoring pass, or 2147483647 when no pass completed.",
+      "# TYPE postil_private_monitor_collection_age_seconds gauge",
+      `postil_private_monitor_collection_age_seconds ${dbMetrics.privateMonitorCollectionAgeSeconds}`,
+      "# HELP postil_private_monitor_collection_fresh Whether a private monitoring pass completed less than 15 minutes ago.",
+      "# TYPE postil_private_monitor_collection_fresh gauge",
+      `postil_private_monitor_collection_fresh ${dbMetrics.privateMonitorCollectionAgeSeconds < 900 ? 1 : 0}`,
+      "# HELP postil_monitor_heartbeat_delivery_age_seconds Age of the latest successful external dead-man heartbeat delivery, or 2147483647 when none succeeded.",
+      "# TYPE postil_monitor_heartbeat_delivery_age_seconds gauge",
+      `postil_monitor_heartbeat_delivery_age_seconds ${dbMetrics.privateMonitorHeartbeatDeliveryAgeSeconds}`,
+      "# HELP postil_monitor_heartbeat_delivery_fresh Whether an external dead-man heartbeat was delivered less than 15 minutes ago.",
+      "# TYPE postil_monitor_heartbeat_delivery_fresh gauge",
+      `postil_monitor_heartbeat_delivery_fresh ${dbMetrics.privateMonitorHeartbeatDeliveryAgeSeconds < 900 ? 1 : 0}`,
+      "# HELP postil_private_monitor_consecutive_failed_passes Private monitoring passes failed since the latest completed pass.",
+      "# TYPE postil_private_monitor_consecutive_failed_passes gauge",
+      `postil_private_monitor_consecutive_failed_passes ${dbMetrics.privateMonitorConsecutiveFailedPasses}`,
+      "# HELP postil_private_monitor_running_pass_age_seconds Age of the currently running private monitoring pass, or zero when no pass is running.",
+      "# TYPE postil_private_monitor_running_pass_age_seconds gauge",
+      `postil_private_monitor_running_pass_age_seconds ${dbMetrics.privateMonitorRunningPassAgeSeconds}`,
+      "# HELP postil_ilert_alert_last_received_age_seconds Age of the latest accepted iLert alert event, or 2147483647 when none was received.",
+      "# TYPE postil_ilert_alert_last_received_age_seconds gauge",
+      `postil_ilert_alert_last_received_age_seconds ${dbMetrics.ilertAlertLastReceivedAgeSeconds}`,
       "# HELP postil_installations_current GitHub App installations by state.",
       "# TYPE postil_installations_current gauge",
       ...INSTALLATION_STATES.map(
@@ -266,6 +298,14 @@ export async function GET(request: Request): Promise<NextResponse> {
             dbMetrics.reviewIncidents30m.get(category) ?? 0
           }`,
       ),
+      "# HELP postil_private_monitor_check_failures_24h Failed private monitor check attempts in the last 24 hours; recovered attempts succeeded on retry within the same pass.",
+      "# TYPE postil_private_monitor_check_failures_24h gauge",
+      ...dbMetrics.monitorCheckFailures24h.map(
+        (row) =>
+          `postil_private_monitor_check_failures_24h{key="${escapeLabelValue(
+            row.key,
+          )}",recovered="${row.recovered ? "true" : "false"}"} ${row.count}`,
+      ),
     );
   }
 
@@ -307,11 +347,17 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     oldestRunningReview,
     usageByModel,
     reviewIncidents30m,
+    monitorCheckFailures24h,
   ] = await Promise.all([
     pool.query<{
       database_size_bytes: string;
       active_sessions: string;
       private_monitor_heartbeat_age_seconds: string;
+      private_monitor_collection_age_seconds: string;
+      private_monitor_heartbeat_delivery_age_seconds: string;
+      private_monitor_consecutive_failed_passes: string;
+      private_monitor_running_pass_age_seconds: string;
+      ilert_alert_last_received_age_seconds: string;
       queue_depth: string;
       users_total: string;
       active_installations: string;
@@ -350,6 +396,37 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
             WHERE component = 'monitor'),
           2147483647
         )::text AS private_monitor_heartbeat_age_seconds,
+        COALESCE(
+          (SELECT EXTRACT(EPOCH FROM now() - last_completed_at)::int
+             FROM private_monitor_state
+            WHERE id = 1),
+          2147483647
+        )::text AS private_monitor_collection_age_seconds,
+        COALESCE(
+          (SELECT EXTRACT(EPOCH FROM now() - observed_at)::int
+             FROM service_heartbeats
+            WHERE component = 'monitor-heartbeat-delivery'),
+          2147483647
+        )::text AS private_monitor_heartbeat_delivery_age_seconds,
+        (SELECT count(*)::text
+           FROM private_monitor_runs failed
+          WHERE failed.status = 'failed'
+            AND failed.id > COALESCE(
+              (SELECT MAX(completed.id)
+                 FROM private_monitor_runs completed
+                WHERE completed.status = 'completed'),
+              0
+            )) AS private_monitor_consecutive_failed_passes,
+        (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(started_at)), 0)::int::text
+           FROM private_monitor_runs
+          WHERE status = 'running') AS private_monitor_running_pass_age_seconds,
+        COALESCE(
+          (SELECT EXTRACT(EPOCH FROM now() - received_at)::int
+             FROM ilert_alert_events
+            ORDER BY sequence DESC
+            LIMIT 1),
+          2147483647
+        )::text AS ilert_alert_last_received_age_seconds,
         (SELECT count(*)::text FROM jobs WHERE status = 'queued') AS queue_depth,
         (SELECT count(*)::text FROM users) AS users_total,
         (SELECT count(*)::text FROM installations WHERE suspended = false) AS active_installations,
@@ -470,9 +547,7 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
          FROM reviews
          WHERE finished_at >= now() - interval '30 minutes'
            AND (
-             (status = 'failed'
-              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.'
-              AND error_message IS DISTINCT FROM 'Hosted review service is temporarily unavailable.')
+             (${OPERATIONAL_REVIEW_FAILURE_SQL})
              OR (
                status = 'completed'
                AND EXISTS (
@@ -535,6 +610,13 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
            -- time because failed jobs no longer use it for scheduling.
            AND run_after >= now() - interval '30 minutes') AS failed_job
     `),
+    pool.query<{ key: string; recovered: boolean; count: string }>(`
+      SELECT key, recovered, count(*)::text AS count
+        FROM private_monitor_check_failures
+       WHERE observed_at >= now() - interval '24 hours'
+       GROUP BY key, recovered
+       ORDER BY key, recovered
+    `),
   ]);
 
   const row = overview.rows[0];
@@ -552,6 +634,21 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
     activeSessions: toNumber(row.active_sessions),
     privateMonitorHeartbeatAgeSeconds: toNumber(
       row.private_monitor_heartbeat_age_seconds,
+    ),
+    privateMonitorCollectionAgeSeconds: toNumber(
+      row.private_monitor_collection_age_seconds,
+    ),
+    privateMonitorHeartbeatDeliveryAgeSeconds: toNumber(
+      row.private_monitor_heartbeat_delivery_age_seconds,
+    ),
+    privateMonitorConsecutiveFailedPasses: toNumber(
+      row.private_monitor_consecutive_failed_passes,
+    ),
+    privateMonitorRunningPassAgeSeconds: toNumber(
+      row.private_monitor_running_pass_age_seconds,
+    ),
+    ilertAlertLastReceivedAgeSeconds: toNumber(
+      row.ilert_alert_last_received_age_seconds,
     ),
     queueDepth: toNumber(row.queue_depth),
     usersTotal: toNumber(row.users_total),
@@ -649,6 +746,11 @@ async function collectDatabaseMetrics(): Promise<DatabaseMetrics> {
         toNumber(incidentRow?.[category]),
       ]),
     ),
+    monitorCheckFailures24h: monitorCheckFailures24h.rows.map((failureRow) => ({
+      key: failureRow.key,
+      recovered: failureRow.recovered === true,
+      count: toNumber(failureRow.count),
+    })),
   };
 }
 

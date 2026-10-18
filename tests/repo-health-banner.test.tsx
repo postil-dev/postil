@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
+  AddRepositoriesLinks,
+  RemovedRepositoriesNotice,
   RepoHealthBanner,
   SuspendedInstallationsNotice,
 } from "@/app/orgs/[slug]/repo-health-banner";
@@ -149,5 +151,86 @@ describe("SuspendedInstallationsNotice", () => {
     expect(markup).toContain("Ask a GitHub organization owner to manage the installation.");
     expect(markup).not.toContain("Manage postil-dev on GitHub");
     expect(markup).not.toContain("settings/installations/123");
+  });
+});
+
+describe("AddRepositoriesLinks", () => {
+  const installation = {
+    githubInstallationId: 123,
+    accountLogin: "postil-dev",
+    accountType: "Organization",
+  };
+
+  test("links the repository picker with hover text and no account label", () => {
+    const markup = renderToStaticMarkup(
+      <AddRepositoriesLinks installations={[installation]} isAdmin />,
+    );
+
+    expect(markup).toContain(
+      "https://github.com/organizations/postil-dev/settings/installations/123",
+    );
+    expect(markup).toContain(
+      "Choose which postil-dev repositories Postil reviews",
+    );
+    expect(markup).toContain("+ add");
+    expect(markup).not.toContain("+ add postil-dev");
+  });
+
+  test("names each account when the organization has several installations", () => {
+    const markup = renderToStaticMarkup(
+      <AddRepositoriesLinks
+        installations={[
+          installation,
+          { githubInstallationId: 124, accountLogin: "morgaesis", accountType: "User" },
+        ]}
+        isAdmin
+      />,
+    );
+
+    expect(markup).toContain("+ add postil-dev");
+    expect(markup).toContain("+ add morgaesis");
+    expect(markup).toContain("https://github.com/settings/installations/124");
+  });
+
+  test("renders nothing without an installation", () => {
+    expect(
+      renderToStaticMarkup(<AddRepositoriesLinks installations={[]} isAdmin />),
+    ).toBe("");
+  });
+
+  test("hides an action non-administrators cannot complete", () => {
+    expect(
+      renderToStaticMarkup(
+        <AddRepositoriesLinks installations={[installation]} isAdmin={false} />,
+      ),
+    ).toBe("");
+  });
+});
+
+describe("RemovedRepositoriesNotice", () => {
+  test("names repositories the installation no longer covers", () => {
+    const markup = renderToStaticMarkup(
+      <RemovedRepositoriesNotice
+        repositories={[
+          {
+            githubRepoId: 1251157939,
+            fullName: "postil-dev/example",
+            occurredAt: new Date("2026-07-11T10:00:00.000Z"),
+          },
+        ]}
+        now={NOW}
+      />,
+    );
+
+    expect(markup).toContain("Removed from the installation.");
+    expect(markup).toContain("postil-dev/example");
+    expect(markup).toContain("2h ago");
+    expect(markup).toContain("mentions");
+  });
+
+  test("renders nothing when every repository is still covered", () => {
+    expect(
+      renderToStaticMarkup(<RemovedRepositoriesNotice repositories={[]} now={NOW} />),
+    ).toBe("");
   });
 });

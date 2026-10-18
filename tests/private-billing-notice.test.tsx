@@ -12,7 +12,7 @@ describe("private repository billing notice", () => {
           allowed: false,
           reason: "no_entitlement",
           entitlement: null,
-          usageMicros: 0,
+          usageMicros: 0n,
           usageLimitMicros: null,
         }}
       />,
@@ -31,7 +31,7 @@ describe("private repository billing notice", () => {
             allowed: true,
             reason: "active_subscription",
             entitlement: null,
-            usageMicros: 0,
+            usageMicros: 0n,
             usageLimitMicros: null,
           }}
         />,
@@ -47,8 +47,8 @@ describe("private repository billing notice", () => {
           allowed: false,
           reason: "provider_mode_mismatch",
           entitlement: null,
-          usageMicros: 0,
-          usageLimitMicros: 6_000_000,
+          usageMicros: 0n,
+          usageLimitMicros: 6_000_000n,
         }}
       />,
     );
@@ -62,15 +62,15 @@ describe("private repository billing notice", () => {
         allowed: true as const,
         reason: "past_due_grace" as const,
         entitlement: null,
-        usageMicros: 10,
-        usageLimitMicros: 100,
+        usageMicros: 10n,
+        usageLimitMicros: 100n,
       },
       {
         allowed: true as const,
         reason: "active_subscription" as const,
         entitlement: null,
-        usageMicros: 80,
-        usageLimitMicros: 100,
+        usageMicros: 80n,
+        usageLimitMicros: 100n,
       },
     ]) {
       const markup = renderToStaticMarkup(

@@ -198,11 +198,16 @@ export async function transitionReceiptClaim<T extends string>(
   pool: Pool, lease: ReviewClaimLease, body: (client: PoolClient) => Promise<T>,
   outcome: (result: T) => PreparedReceipt["outcome"],
 ): Promise<T | "lost"> {
-  const client = await pool.connect();
+  // Queue feedback control can already own this pinned transaction.
+  const ownsTransaction = !("release" in pool);
+  const client = ownsTransaction ? await pool.connect() : pool as unknown as PoolClient;
   try {
-    await client.query("BEGIN");
+    if (ownsTransaction) await client.query("BEGIN");
     const row = await lockReceiptClaim(client, lease);
-    if (!row?.owned) { await client.query("ROLLBACK"); return "lost"; }
+    if (!row?.owned) {
+      if (ownsTransaction) await client.query("ROLLBACK");
+      return "lost";
+    }
     const result = await body(client);
     if (result !== "lost") {
       await client.query("UPDATE jobs SET active_claim_receipt_id = NULL WHERE id = $1::bigint",
@@ -210,12 +215,12 @@ export async function transitionReceiptClaim<T extends string>(
       await appendPreparedReceiptBatch(client, [claimEvent(lease.receiptClaim!.jobId,
         Number(row.attempts), lease.receiptClaim!.receiptId, "queue_closed", outcome(result))]);
     }
-    await client.query("COMMIT");
+    if (ownsTransaction) await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    if (ownsTransaction) await client.query("ROLLBACK").catch(() => undefined);
     throw error;
-  } finally { client.release(); }
+  } finally { if (ownsTransaction) client.release(); }
 }
 
 /** Prepare terminal observations before the append lock; legacy rows stay unqualified. */

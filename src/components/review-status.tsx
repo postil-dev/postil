@@ -37,14 +37,35 @@ export function ReviewStatusBadge({
   );
 }
 
+/**
+ * The gate verdict for one run, reported separately from the review status.
+ *
+ * A failed run still has a gate state: the default gate configuration fails on
+ * the operational sentinel that made the run failed, and the GitHub check
+ * reports it. Hiding it here while the organization table shows `failing` is
+ * the disagreement, so a failed run reports a failing gate. Anything short of
+ * a settled verdict (queued, running, stale, unavailable, or a failed run whose
+ * gate did not fail) stays blank rather than claiming the gate passed.
+ */
 export function GateBadge({
   gateFailing,
   status,
+  syncing = false,
+  syncFailed = false,
 }: {
   gateFailing: boolean | null;
   status: ReviewDisplayStatus;
+  syncing?: boolean;
+  syncFailed?: boolean;
 }) {
-  if (status !== "completed" || gateFailing === null) {
+  if (syncFailed) {
+    return <span className="font-mono text-xs text-rust">gate sync failed</span>;
+  }
+  if (syncing) {
+    return <span className="font-mono text-xs text-charcoal/70">syncing gate</span>;
+  }
+  const settled = status === "completed" || (status === "failed" && gateFailing === true);
+  if (!settled || gateFailing === null) {
     return <span className="font-mono text-xs text-charcoal/70">—</span>;
   }
   return gateFailing ? (

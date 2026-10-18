@@ -27,11 +27,7 @@ export function installNavigationAction(
     : { label: "Install the App", variant: "primary" };
 }
 
-/**
- * Accessible disclosure menu for viewports below `lg`. Toggles with a
- * hamburger button, traps nothing but closes on Escape, outside click,
- * route change, and viewport widening.
- */
+/** Disclosure menu below `xl`, closed by Escape, outside clicks, or a selected link. */
 export function MobileNav({
   items,
   session,
@@ -73,7 +69,7 @@ export function MobileNav({
   }, [open]);
 
   return (
-    <div className="lg:hidden">
+    <div className="xl:hidden">
       <button
         ref={buttonRef}
         type="button"

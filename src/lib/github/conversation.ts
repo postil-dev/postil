@@ -1,4 +1,5 @@
 import { githubAppBotLogin } from "@/lib/github-app";
+import { removePostilMentions } from "@/lib/mentions";
 
 const MAX_CONVERSATION_REQUEST_CHARS = 2_000;
 
@@ -10,7 +11,7 @@ const CLARIFICATION_PREFIX =
 
 /** Remove the bot handle before classifying a short conversational request. */
 export function withoutPostilMention(value: string): string {
-  return value.replace(/(^|[^\w])@postil(?=$|[^\w-])/giu, "$1").trim();
+  return removePostilMentions(value).trim();
 }
 
 export function isAcceptableConversationRequest(value: string): boolean {

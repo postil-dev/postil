@@ -1,6 +1,11 @@
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 
-import { publicOrigin, publicRequestUrl } from "@/lib/oauth";
+import {
+  isProtectedAccountPath,
+  publicOrigin,
+  publicRequestUrl,
+  REQUESTED_PATH_HEADER,
+} from "@/lib/oauth";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session-token";
 import {
   isPublicTelemetryPath,
@@ -30,7 +35,8 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.redirect(canonicalUrl, 308);
   }
 
-  const protectedRoute = isProtectedRoute(request.nextUrl.pathname);
+  const protectedRoute = isProtectedAccountPath(request.nextUrl.pathname);
+  const requestedPath = `${request.nextUrl.pathname}${request.nextUrl.search}`;
   let response = NextResponse.next();
 
   if (protectedRoute) {
@@ -38,11 +44,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     const secret = process.env.POSTIL_SESSION_SECRET;
     const sessionId = secret ? await verifySessionToken(token, secret) : null;
     if (sessionId) {
-      return responseWithTelemetry(request, event, responseWithCrawlerHeaders(request, response));
+      // A valid signature only proves we minted the cookie. The page checks
+      // the session row and redirects to sign-in when it is expired or
+      // revoked, so it needs the requested path to return the visitor here.
+      // Overwriting rather than appending keeps a client-supplied value from
+      // reaching the page.
+      const forwarded = new Headers(request.headers);
+      forwarded.set(REQUESTED_PATH_HEADER, requestedPath);
+      return responseWithTelemetry(
+        request,
+        event,
+        responseWithCrawlerHeaders(request, NextResponse.next({ request: { headers: forwarded } })),
+      );
     }
 
     const login = new URL("/login", publicOrigin(request));
-    login.searchParams.set("next", `${request.nextUrl.pathname}${request.nextUrl.search}`);
+    login.searchParams.set("next", requestedPath);
     response = NextResponse.redirect(login);
   }
 
@@ -118,16 +135,6 @@ function responseWithCrawlerHeaders(request: NextRequest, response: NextResponse
     response.headers.set("Referrer-Policy", "no-referrer");
   }
   return response;
-}
-
-function isProtectedRoute(pathname: string): boolean {
-  return (
-    pathname === "/operator" ||
-    pathname.startsWith("/operator/") ||
-    pathname === "/reports" ||
-    pathname.startsWith("/reports/") ||
-    pathname.startsWith("/orgs/")
-  );
 }
 
 function isWwwHost(request: NextRequest): boolean {

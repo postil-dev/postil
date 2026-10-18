@@ -43,28 +43,6 @@ export const BLOG_POSTS = [
       "AI reviewers differ less on what they find than on where your code goes, who keeps it, and whether it trains a model. A class-by-class audit of retention, training, and inference location.",
   },
   {
-    slug: "self-hosted-ai-code-review",
-    publishedOn: "2026-07-08",
-    title: "Self-hosted AI code review without the 500-seat enterprise gate",
-    description:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama, with no seat fees or license cost.",
-    socialDescription:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 AI code reviewer locally with Ollama.",
-    excerpt:
-      "CodeRabbit gates self-hosting behind 500 seats; most rivals don't offer it at all. Run an Apache-2.0 reviewer locally with Ollama, with no seat fees or license cost.",
-  },
-  {
-    slug: "ai-code-review-benchmarks",
-    publishedOn: "2026-07-08",
-    title: "Four AI code review benchmarks, four home-team winners",
-    description:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
-    socialDescription:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks are marketing in a lab coat, and a five-point test for spotting a rigged one.",
-    excerpt:
-      "Greptile scored 82% on its own benchmark and 45% when a rival re-ran it. Why vendor code-review benchmarks can't be trusted at face value, and a five-point test for spotting a rigged one.",
-  },
-  {
     slug: "why-copilot-cant-block-your-merge",
     publishedOn: "2026-07-08",
     title: "Why GitHub Copilot can't block your merge (and how a real AI merge gate works)",
@@ -76,50 +54,28 @@ export const BLOG_POSTS = [
       "Branch protection blocks on required status checks that conclude failure, not on review comments or neutral checks. Copilot posts a Comment, Claude Code review concludes neutral, and Macroscope defaults neutral unless configured to fail.",
   },
   {
-    slug: "ai-code-review-pricing-2026",
-    publishedOn: "2026-07-08",
-    title: "AI code review pricing in 2026: what a 20-developer team actually pays",
-    description:
-      "Four AI code review vendors changed pricing models in roughly ninety days. We run the same 20-developer team through CodeRabbit, Qodo, Greptile, Macroscope, Copilot, Bugbot, and Postil, with every assumption stated and every price sourced.",
-    socialDescription:
-      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
-    structuredDescription:
-      "The same 20-developer team priced through seven AI code review tools, with every assumption stated and every price sourced.",
-    excerpt:
-      "Four vendors changed pricing models in ninety days. We run the same 20-developer team through seven tools, assumptions stated, arithmetic shown, every price sourced.",
-  },
-  {
     slug: "best-ai-code-review-tools-2026",
     publishedOn: "2026-07-08",
     title: "Best AI code review tools in 2026: an evidence-first comparison",
     description:
-      "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing.",
+      "CodeRabbit, Qodo, Macroscope, Greptile, Copilot code review, Cursor Bugbot, and Postil compared on noise, merge gating, self-hosting, data handling, and source-linked pricing, with a worked monthly cost for a 20-developer team.",
     socialDescription:
-      "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing. Every claim sourced.",
+      "Seven AI code reviewers compared on noise, merge gating, self-hosting, data handling, and pricing, with a worked 20-developer bill. Every claim sourced.",
+    structuredDescription:
+      "An evidence-first comparison of seven AI code review tools on noise, merge gating, self-hosting, data handling, and pricing, including the 2026 repricing timeline and a worked monthly cost for a 20-developer team under stated assumptions.",
     excerpt:
       "CodeRabbit, Qodo, Macroscope, Greptile, Copilot, Bugbot, and Postil, compared on noise, merge gating, self-hosting, data handling, and a pricing landscape that changed four times in ninety days. Every claim sourced.",
   },
   {
-    slug: "the-gate-is-separate-from-the-review",
-    publishedOn: "2026-07-11",
-    title: "The gate is separate from the review",
+    slug: "the-least-useful-number",
+    publishedOn: "2026-08-19",
+    title: "Choosing a code review model",
     description:
-      "Postil splits advisory review output from the branch-protection gate: postil/review explains findings, while postil/gate carries the required merge verdict.",
+      "A one-point detection gap between GPT-5.6 Luna and GLM-5.2 hides larger differences in gate decisions, output failures, cost and run-to-run variance. What each benchmark number measures, and which one to weight least.",
     socialDescription:
-      "A merge gate and a review comment stream are different controls. Postil keeps them separate as postil/gate and postil/review.",
+      "A one-point detection gap between GPT-5.6 Luna and GLM-5.2 hides larger differences in gate decisions, output failures, cost and run-to-run variance. What each benchmark number measures, and which one to weight least.",
     excerpt:
-      "Postil keeps advisory findings and the branch-protection verdict separate: postil/review explains, while postil/gate carries the required merge decision.",
-  },
-  {
-    slug: "evidence-has-to-link-back",
-    publishedOn: "2026-07-11",
-    title: "Evidence has to link back",
-    description:
-      "Postil's public evidence examples link back to the source repository and the pull request files at the reviewed commit, with check-run artifacts retained in the data.",
-    socialDescription:
-      "Public AI review examples should resolve to the real PR state behind the claim, not a fictional demo.",
-    excerpt:
-      "Public AI review examples should resolve to the source repository, the reviewed pull request state, and the check-run records behind the claim.",
+      "A one-point detection gap between GPT-5.6 Luna and GLM-5.2 hides larger differences in gate decisions, output failures, cost and run-to-run variance. What each benchmark number measures, and which one to weight least.",
   },
 ] as const satisfies readonly BlogPost[];
 

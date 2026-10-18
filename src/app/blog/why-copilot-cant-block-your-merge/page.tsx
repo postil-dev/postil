@@ -208,7 +208,7 @@ export default function CopilotMergeGateArticle() {
           <code>{`/// Check conclusions, mapped per-forge. Postil semantics:
 /// - advisory check (\`postil/review\`): success unless the run itself failed.
 /// - gate check (\`postil/gate\`): failure iff gate-level findings exist (or the
-///   run failed — fail closed). Never \`neutral\` for the gate: a grey square
+///   run failed, so it fails closed). Never \`neutral\` for the gate: a grey square
 ///   that reads as "didn't fail" is the GitHub Copilot mistake.`}</code>
         </pre>
         <p>
@@ -229,12 +229,10 @@ export default function CopilotMergeGateArticle() {
         <p>
           Whether the gate is failing is itself a policy decision you control:
           findings at or above your configured <code>failOn</code> severity flip{" "}
-          <code>gate.failing</code> to true. The advisory check, by contrast, can
-          go neutral, but only to surface an operational problem. When the
-          review itself hits an operational error (a provider outage, unusable
-          model output) the advisory check goes neutral so an outage does not
-          masquerade as a clean pass, while the gate makes its own call
-          separately.
+          <code>gate.failing</code> to true. When the review itself hits an
+          operational error, such as a provider outage or unusable model output,
+          the review check fails. It cannot look skipped or clean, while the
+          merge gate applies its configured blocking policy separately.
         </p>
 
         <h2>The gate fails closed on error</h2>

@@ -19,6 +19,7 @@ import { getInstallationToken } from "@/lib/github/app-auth";
 import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
 import {
   ADVISORY_CHECK_NAME,
+  comparePullRequestSnapshotTimes,
   GATE_CHECK_NAME,
   getPullRequestReviewComment,
   getPullRequestHeadSha,
@@ -41,29 +42,42 @@ import {
 } from "@/lib/github/installation-sync";
 import {
   enqueueGateStateSync,
+  findDismissibleFindingState,
   findKindBlockingState,
   getReviewApprovalState,
+  hasInFlightReviewForPr,
   hasNewerCompletedReviewForHead,
+  hasNewerReviewForPr,
   insertFindingApproval,
+  lockActiveReviewState,
   lockReviewApprovalState,
   loadLatestCompletedReviewForPr,
+  resolveApprovableFindingId,
+  resolveDismissibleFindingId,
   updateStoredEffectiveGate,
 } from "@/lib/finding-approvals";
+import {
+  findPublishedFindingForGithubReply,
+  insertGithubFindingFeedbackReply,
+} from "@/lib/finding-feedback";
 import { lockOrganizationGateMode } from "@/lib/gate-mode";
 import { reviewDetailsUrl } from "@/lib/oauth";
 import {
   isPostilReviewCommand,
   mentionsPostil,
   parsePostilApproveCommand,
+  parsePostilDismissCommand,
 } from "@/lib/mentions";
 import { canProcessRepositoryInference } from "@/lib/private-repository-entitlement";
 import { applyPublicationThreadObservations } from "@/lib/publication-receipt";
+import { admitReviewFeedbackEvent } from "@/lib/review-feedback";
 import {
   enqueueOperatorAlert,
   installationRemovedAlertPayload,
 } from "@/lib/operator-alerts";
 import {
   acceptWebhookDelivery,
+  BoundedJobRetryError,
   cancelPullRequestPublication,
   enqueueGithubReactionJobOnce,
   enqueueRespondJobWithinHourlyCap,
@@ -115,6 +129,7 @@ interface PullRequestEventPayload {
     draft?: boolean;
     head?: { sha?: string };
     base?: { sha?: string };
+    updated_at?: unknown;
     user?: GithubUser;
   };
 }
@@ -126,6 +141,29 @@ const REVIEWABLE_PR_ACTIONS = new Set([
   "ready_for_review",
   "edited",
 ]);
+
+const PULL_REQUEST_AMBIGUITY_MAX_EVALUATIONS = 3;
+
+function ignoreOrRetryContradictoryPullRequestSnapshot(
+  repoFullName: string,
+  prNumber: number,
+  action: string,
+  eventUpdatedAt: unknown,
+  liveUpdatedAt: unknown,
+  evaluation: number,
+): void {
+  const order = comparePullRequestSnapshotTimes(eventUpdatedAt, liveUpdatedAt);
+  if (order === "event_newer") {
+    throw new Error(
+      `GitHub pull request ${repoFullName}#${prNumber} has not converged for ${action}`,
+    );
+  }
+  if (order === "equal" && evaluation < PULL_REQUEST_AMBIGUITY_MAX_EVALUATIONS) {
+    throw new BoundedJobRetryError(
+      `GitHub pull request ${repoFullName}#${prNumber} has not converged for ${action}`,
+    );
+  }
+}
 
 /**
  * The subset of a check_run/check_suite `pull_requests[]` entry we need to
@@ -183,6 +221,7 @@ interface CommentEventPayload {
     id?: number;
     html_url?: string;
     body?: string;
+    created_at?: string;
     user?: GithubUser;
     author_association?: string;
     // Present on pull_request_review_comment: the thread's anchor.
@@ -191,7 +230,7 @@ interface CommentEventPayload {
     in_reply_to_id?: number;
   };
   issue?: { number: number; body?: string; pull_request?: unknown };
-  pull_request?: { number: number };
+  pull_request?: { number: number; user?: GithubUser };
 }
 
 interface IssuesEventPayload {
@@ -200,6 +239,15 @@ interface IssuesEventPayload {
   repository?: RepoSummary;
   sender?: GithubUser;
   issue?: { number: number; body?: string; author_association?: string };
+}
+
+interface ReviewThreadEventPayload {
+  action?: string;
+  installation?: { id: number };
+  repository?: RepoSummary;
+  sender?: GithubUser;
+  pull_request?: { number: number };
+  thread?: { comments?: Array<{ id?: number }> };
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -272,9 +320,10 @@ export async function POST(request: Request): Promise<NextResponse> {
 export async function dispatchWebhookDelivery(
   event: string,
   payload: unknown,
-  options: { deliveryId: string; triggerFollowupDrain?: boolean },
+  options: { deliveryId: string; triggerFollowupDrain?: boolean; attempt?: number },
 ): Promise<void> {
   const triggerFollowupDrain = options.triggerFollowupDrain ?? true;
+  const attempt = options.attempt ?? 1;
   switch (event) {
     case "installation":
       await handleInstallation(payload as InstallationEventPayload, options.deliveryId);
@@ -287,6 +336,7 @@ export async function dispatchWebhookDelivery(
         payload as PullRequestEventPayload,
         options.deliveryId,
         triggerFollowupDrain,
+        attempt,
       );
       break;
     case "check_run":
@@ -317,6 +367,19 @@ export async function dispatchWebhookDelivery(
         triggerFollowupDrain,
       );
       break;
+    case "pull_request_review_thread": {
+      const thread = payload as ReviewThreadEventPayload;
+      if (!["resolved", "unresolved"].includes(thread.action ?? "") || !thread.installation ||
+          !thread.repository || !thread.pull_request || !thread.sender || isBot(thread.sender)) break;
+      const rootCommentId = thread.thread?.comments?.[0]?.id;
+      if (!Number.isSafeInteger(rootCommentId) || !rootCommentId || rootCommentId <= 0) break;
+      const admitted = await admitReviewFeedbackEvent({
+        installationId: thread.installation.id, githubRepoId: thread.repository.id,
+        prNumber: thread.pull_request.number, actor: thread.sender, rootCommentId,
+      });
+      if (admitted && triggerFollowupDrain) triggerQueueDrain("review-thread-feedback");
+      break;
+    }
     case "issues":
       await handleIssues(
         payload as IssuesEventPayload,
@@ -588,6 +651,7 @@ async function handlePullRequest(
   payload: PullRequestEventPayload,
   sourceDeliveryId: string,
   triggerFollowupDrain: boolean,
+  evaluation: number,
 ): Promise<void> {
   const action = payload.action ?? "";
   if (!REVIEWABLE_PR_ACTIONS.has(action) && action !== "closed") return;
@@ -600,11 +664,39 @@ async function handlePullRequest(
   const headSha = pr.head?.sha;
   const baseSha = pr.base?.sha;
   if (action === "closed") {
-    if (live.open && !live.merged) return;
+    if (live.open && !live.merged) {
+      ignoreOrRetryContradictoryPullRequestSnapshot(
+        repo.full_name,
+        pr.number,
+        action,
+        pr.updated_at,
+        live.updatedAt,
+        evaluation,
+      );
+      return;
+    }
   } else if (!live.open || live.merged || live.draft) {
+    ignoreOrRetryContradictoryPullRequestSnapshot(
+      repo.full_name,
+      pr.number,
+      action,
+      pr.updated_at,
+      live.updatedAt,
+      evaluation,
+    );
     return;
   }
-  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) return;
+  if (!headSha || !baseSha || headSha !== live.headSha || baseSha !== live.baseSha) {
+    ignoreOrRetryContradictoryPullRequestSnapshot(
+      repo.full_name,
+      pr.number,
+      action,
+      pr.updated_at,
+      live.updatedAt,
+      evaluation,
+    );
+    return;
+  }
 
   const db = getDb();
   const installation = (
@@ -985,6 +1077,56 @@ async function enqueueConversationReaction(
   });
 }
 
+/** Record a non-command, non-conversation reply without authorizing a decision. */
+async function recordFindingFeedbackReply(
+  findingPublicationId: number,
+  payload: CommentEventPayload,
+  body: string,
+  sourceDeliveryId: string,
+): Promise<void> {
+  const comment = payload.comment;
+  const actor = comment?.user;
+  const author = payload.pull_request?.user;
+  const githubCommentId = comment?.id;
+  const observedAt = typeof comment?.created_at === "string"
+    ? new Date(comment.created_at)
+    : null;
+  if (
+    !Number.isSafeInteger(githubCommentId) ||
+    githubCommentId === undefined ||
+    githubCommentId <= 0 ||
+    !Number.isSafeInteger(actor?.id) ||
+    actor?.id === undefined ||
+    actor.id <= 0 ||
+    typeof actor.login !== "string" ||
+    actor.login.trim().length === 0 ||
+    actor.login.length > 100 ||
+    !Number.isSafeInteger(author?.id) ||
+    author?.id === undefined ||
+    author.id <= 0 ||
+    typeof author.login !== "string" ||
+    author.login.trim().length === 0 ||
+    author.login.length > 100 ||
+    observedAt === null ||
+    Number.isNaN(observedAt.getTime()) ||
+    body.trim().length === 0 ||
+    body.length > 65_535 ||
+    sourceDeliveryId.trim().length === 0 ||
+    sourceDeliveryId.length > 200
+  ) return;
+  await insertGithubFindingFeedbackReply(getDb(), {
+    findingPublicationId,
+    githubCommentId,
+    body,
+    actorGithubId: actor.id,
+    actorLogin: actor.login,
+    prAuthorGithubId: author.id,
+    prAuthorLogin: author.login,
+    observedAt,
+    sourceDeliveryId,
+  });
+}
+
 async function handleIssueComment(
   payload: CommentEventPayload,
   sourceDeliveryId: string,
@@ -993,7 +1135,7 @@ async function handleIssueComment(
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
   if (
-    await handleApproveCommand(
+    await handleFindingDecisionCommand(
       payload,
       sourceDeliveryId,
       "issue_comment",
@@ -1087,18 +1229,32 @@ async function handleReviewComment(
     ]);
     return;
   }
+  if (["created", "edited"].includes(payload.action ?? "") && payload.comment?.body &&
+      !isBot(payload.comment.user) && !isBot(payload.sender) &&
+      !isGratitudeOnly(payload.comment.body) && !isPostilReviewCommand(payload.comment.body) &&
+      !parsePostilApproveCommand(payload.comment.body) && !parsePostilDismissCommand(payload.comment.body) &&
+      payload.comment.user && payload.installation && payload.repository && payload.pull_request &&
+      Number.isSafeInteger(payload.comment.in_reply_to_id) && payload.comment.in_reply_to_id! > 0) {
+    const admitted = await admitReviewFeedbackEvent({
+      installationId: payload.installation.id, githubRepoId: payload.repository.id,
+      prNumber: payload.pull_request.number, actor: payload.comment.user,
+      rootCommentId: payload.comment.in_reply_to_id!,
+    });
+    if (admitted && triggerFollowupDrain) triggerQueueDrain("review-comment-feedback");
+  }
   if (payload.action !== "created") return;
   const body = payload.comment?.body;
   if (
-    await handleApproveCommand(
+    await handleFindingDecisionCommand(
       payload,
       sourceDeliveryId,
       "pull_request_review_comment",
       triggerFollowupDrain,
     )
   ) return;
-  if (typeof body !== "string" || !isAcceptableConversationRequest(body)) return;
+  if (typeof body !== "string") return;
   const explicitMention = mentionsPostil(body);
+  if (explicitMention && !isAcceptableConversationRequest(body)) return;
   const inReplyToId = payload.comment?.in_reply_to_id;
   if (
     (!explicitMention &&
@@ -1106,10 +1262,22 @@ async function handleReviewComment(
     isBot(payload.comment?.user) ||
     isBot(payload.sender)
   ) return;
-  if (!mayTriggerRespond(payload.comment?.author_association)) return;
   if (!payload.pull_request || !payload.repository) return;
-  const authority = await enabledRepoForMention(payload.installation?.id, payload.repository);
+  const mayRespond = mayTriggerRespond(payload.comment?.author_association);
+  const authority = await enabledRepoForMention(
+    payload.installation?.id,
+    payload.repository,
+    false,
+  );
   if (!authority) return;
+  if (explicitMention && !mayRespond) return;
+  const inferenceAllowed = async (): Promise<boolean> => (
+    await canProcessRepositoryInference(getDb(), {
+      orgId: authority.sourceOrgId,
+      repositoryPrivate: payload.repository!.private,
+    })
+  ).allowed;
+  if (explicitMention && !(await inferenceAllowed())) return;
   if (explicitMention && isPostilReviewCommand(body)) {
     await enqueueMentionReview(
       payload,
@@ -1130,6 +1298,8 @@ async function handleReviewComment(
     );
     if (!isPostilBotLogin(root.userLogin)) return;
     if (isGratitudeOnly(body!)) {
+      if (!mayRespond) return;
+      if (!(await inferenceAllowed())) return;
       await enqueueConversationReaction(
         payload,
         sourceDeliveryId,
@@ -1140,9 +1310,36 @@ async function handleReviewComment(
       if (triggerFollowupDrain) triggerQueueDrain("conversation-gratitude");
       return;
     }
-    if (!isClarificationRequest(body!)) return;
-    threadContext = boundedThreadContext(root.body);
+    if (isClarificationRequest(body!)) {
+      if (!mayRespond) return;
+      if (!(await inferenceAllowed())) return;
+      threadContext = boundedThreadContext(root.body);
+    } else {
+      const actorGithubId = payload.comment?.user?.id;
+      const prAuthorGithubId = payload.pull_request.user?.id;
+      const actorIsPrAuthor = Number.isSafeInteger(actorGithubId) &&
+        actorGithubId !== undefined &&
+        actorGithubId > 0 &&
+        actorGithubId === prAuthorGithubId;
+      if (!mayRespond && !actorIsPrAuthor) return;
+      const findingPublicationId = await findPublishedFindingForGithubReply(getDb(), {
+        githubInstallationId: payload.installation!.id,
+        githubRepoId: payload.repository.id,
+        prNumber: payload.pull_request.number,
+        githubCommentId: root.inReplyToId ?? root.id,
+      });
+      if (findingPublicationId === null) return;
+      await recordFindingFeedbackReply(
+        findingPublicationId,
+        payload,
+        body,
+        sourceDeliveryId,
+      );
+      return;
+    }
   } else if (isGratitudeOnly(body!)) {
+    if (!mayRespond) return;
+    if (!(await inferenceAllowed())) return;
     await enqueueConversationReaction(
       payload,
       sourceDeliveryId,
@@ -1153,6 +1350,8 @@ async function handleReviewComment(
     if (triggerFollowupDrain) triggerQueueDrain("conversation-gratitude");
     return;
   }
+  if (!mayRespond) return;
+  if (!isAcceptableConversationRequest(body)) return;
   // Review comments anchor to a file/line; without it the bot answers blind
   // to which code the question is about.
   const anchor =
@@ -1289,14 +1488,18 @@ async function enqueueMentionReview(
   }
 }
 
-async function handleApproveCommand(
+async function handleFindingDecisionCommand(
   payload: CommentEventPayload,
   sourceDeliveryId: string,
   commentKind: "issue_comment" | "pull_request_review_comment",
   triggerFollowupDrain: boolean,
 ): Promise<boolean> {
-  const command = parsePostilApproveCommand(payload.comment?.body);
+  const approvalCommand = parsePostilApproveCommand(payload.comment?.body);
+  const dismissalCommand = parsePostilDismissCommand(payload.comment?.body);
+  const command = dismissalCommand ?? approvalCommand;
   if (!command) return false;
+  const verb = dismissalCommand ? "dismiss" : "approve";
+  const decisionLabel = verb === "dismiss" ? "Dismissal" : "Approval";
 
   const repo = payload.repository;
   const installationId = payload.installation?.id;
@@ -1316,7 +1519,7 @@ async function handleApproveCommand(
   ) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: the GitHub event lacks a complete pull request or comment identity.",
+      `${decisionLabel} rejected: the GitHub event lacks a complete pull request or comment identity.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1333,6 +1536,7 @@ async function handleApproveCommand(
     await queueWebhookComment(payload, command.error, sourceDeliveryId, triggerFollowupDrain);
     return true;
   }
+  const dismissal = dismissalCommand?.ok ? dismissalCommand : null;
 
   const token = await getInstallationToken(installationId);
   const db = getDb();
@@ -1347,11 +1551,49 @@ async function handleApproveCommand(
     return true;
   }
 
+  if (await hasInFlightReviewForPr(db, review)) {
+    await queueWebhookComment(
+      payload,
+      `${decisionLabel} rejected: a review is in progress; re-issue after it completes.`,
+      sourceDeliveryId,
+      triggerFollowupDrain,
+    );
+    return true;
+  }
+
+  let requestedFindingId = command.ok ? command.findingId : null;
+  if (verb === "dismiss" && command.ok && !requestedFindingId) {
+    const replyTo = payload.comment?.in_reply_to_id;
+    if (commentKind !== "pull_request_review_comment" || !Number.isSafeInteger(replyTo) || !replyTo || replyTo <= 0) {
+      await queueWebhookComment(
+        payload,
+        "Dismissal rejected: include a finding id, or reply directly to the finding comment.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    const publication = (await db.select({ findingId: schema.findingPublications.findingId })
+      .from(schema.findingPublications)
+      .where(and(eq(schema.findingPublications.reviewId, review.id), eq(schema.findingPublications.githubCommentId, String(replyTo))))
+      .limit(1))[0];
+    if (!publication) {
+      await queueWebhookComment(
+        payload,
+        "Dismissal rejected: the replied-to comment is not a finding from this review.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    requestedFindingId = publication.findingId;
+  }
+
   const currentHeadSha = await getPullRequestHeadSha(token, repo.full_name, prNumber);
   if (currentHeadSha !== review.headSha) {
     await queueWebhookComment(
       payload,
-      `Approval rejected: the pull request head is ${currentHeadSha.slice(0, 12)}, but the latest completed review is for ${review.headSha.slice(0, 12)}.`,
+      `${decisionLabel} rejected: the pull request head is ${currentHeadSha.slice(0, 12)}, but the latest completed review is for ${review.headSha.slice(0, 12)}.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1361,7 +1603,7 @@ async function handleApproveCommand(
   if (await hasNewerCompletedReviewForHead(db, review)) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: a newer completed review exists for this commit.",
+      `${decisionLabel} rejected: a newer completed review exists for this commit.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1377,7 +1619,7 @@ async function handleApproveCommand(
   if (!actor) {
     await queueWebhookComment(
       payload,
-      "Approval rejected: GitHub could not verify this account as an active organization member.",
+      `${decisionLabel} rejected: GitHub could not verify this account as an active organization member.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
@@ -1386,27 +1628,49 @@ async function handleApproveCommand(
   if (actor.role !== "admin") {
     await queueWebhookComment(
       payload,
-      "Approval rejected: approving this finding requires an organization admin.",
+      `${decisionLabel} rejected: this decision requires an organization admin.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );
     return true;
   }
-
+  let authorGithubId = review.authorGithubId ?? null;
   let effectiveFailing: boolean | null = null;
   try {
+    if (verb === "dismiss" && authorGithubId === null) {
+      authorGithubId = (
+        await getPullRequestReviewContext(token, repo.full_name, prNumber)
+      ).authorGithubId ?? null;
+    }
     const state = await getReviewApprovalState(db, review);
-    const finding = findKindBlockingState(state, command.findingId);
-    if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
+    const resolution = verb === "dismiss"
+      ? resolveDismissibleFindingId(state, requestedFindingId!)
+      : resolveApprovableFindingId(state, requestedFindingId!);
+    if (!resolution.ok && resolution.reason === "ambiguous") {
       await queueWebhookComment(
         payload,
-        "Approval rejected: that finding is absent, already approved, revoked, or no longer kind-blocking.",
+        `${verb === "dismiss" ? "Dismissal" : "Approval"} rejected: finding id prefix ${requestedFindingId} matches ${resolution.matches.length} blocking findings. Use a longer prefix or the full id.`,
         sourceDeliveryId,
         triggerFollowupDrain,
       );
       return true;
     }
-    if (finding.severityBlocking) {
+    const findingId = resolution.ok ? resolution.findingId : requestedFindingId!;
+    const finding = verb === "dismiss"
+      ? findDismissibleFindingState(state, findingId)
+      : findKindBlockingState(state, findingId);
+    if (!finding || (verb === "dismiss" ? finding.activeDismissal || finding.activeApproval : !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt)) {
+      await queueWebhookComment(
+        payload,
+        verb === "dismiss"
+          ? "Dismissal rejected: that finding is absent, operational, already dismissed, or has an active approval."
+          : "Approval rejected: that finding is absent, already approved, revoked, or no longer kind-blocking.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    if (verb === "approve" && finding.severityBlocking) {
       await queueWebhookComment(
         payload,
         "Approval rejected: this finding is also severity-blocking, and approvals only clear kind-based blocks.",
@@ -1417,23 +1681,39 @@ async function handleApproveCommand(
     }
 
     await db.transaction(async (tx) => {
+      await lockActiveReviewState(tx, review);
       await lockReviewApprovalState(tx, review.id);
+      if (await hasNewerReviewForPr(tx, review)) {
+        throw new Error("a newer review exists");
+      }
+      if (await hasInFlightReviewForPr(tx, review)) {
+        throw new Error("a review is in progress");
+      }
       const lockedState = await getReviewApprovalState(tx, review);
-      const lockedFinding = findKindBlockingState(lockedState, command.findingId);
+      const lockedFinding = verb === "dismiss"
+        ? findDismissibleFindingState(lockedState, findingId)
+        : findKindBlockingState(lockedState, findingId);
       if (
         !lockedFinding ||
-        !lockedFinding.blocking ||
-        lockedFinding.activeApproval ||
-        lockedFinding.latestApproval?.revokedAt ||
-        lockedFinding.severityBlocking
+        (verb === "dismiss"
+          ? Boolean(lockedFinding.activeDismissal || lockedFinding.activeApproval)
+          : !lockedFinding.blocking || lockedFinding.activeApproval || lockedFinding.activeDismissal || lockedFinding.latestApproval?.revokedAt || lockedFinding.severityBlocking)
       ) {
         throw new Error("the finding changed while the approval was being recorded");
       }
       await insertFindingApproval(tx, {
         reviewId: review.id,
-        findingId: command.findingId,
+        findingId,
         actor,
         rationale: command.rationale,
+        verb,
+        ...(verb === "dismiss" ? {
+          reasonTag: dismissal!.reasonTag,
+          authorSelfDismissal: authorGithubId === Number(actor.githubId),
+          finding: lockedFinding.finding,
+          findingGeneratorModel: review.envelope!.modelUsed,
+          findingScorerModel: review.envelope!.scorerModel,
+        } : {}),
         source: "github",
         sourceCommentId: null,
         sourceUrl: payload.comment?.html_url ?? null,
@@ -1466,23 +1746,45 @@ async function handleApproveCommand(
         isPr: true,
         sourceHeadSha: review.headSha,
         sourceDeliveryId,
-        body: `Approval recorded by @${actor.login} for finding ${command.findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
+        body: verb === "dismiss"
+          ? `Dismissal recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}: ${dismissal!.reasonTag}. ${authorGithubId === Number(actor.githubId) ? "The pull request author dismissed this finding. " : ""}The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}. You may now resolve this thread.`
+          : `Approval recorded by @${actor.login} for finding ${findingId} on commit ${review.headSha}. The gate update is queued${effectiveFailing ? "; other blockers remain" : ""}.`,
       });
     });
   } catch (err) {
-    if (isUniqueConstraintError(err)) {
+    if (err instanceof Error && err.message === "a review is in progress") {
       await queueWebhookComment(
         payload,
-        "Approval rejected: this finding already has an active approval.",
+        `${decisionLabel} rejected: a review is in progress; re-issue after it completes.`,
         sourceDeliveryId,
         triggerFollowupDrain,
       );
       return true;
     }
-    console.error(`approval command failed: ${redactSecrets(err)}`);
+    if (err instanceof Error && err.message === "a newer review exists") {
+      await queueWebhookComment(
+        payload,
+        `${decisionLabel} rejected: a newer review exists for this pull request.`,
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    if (isUniqueConstraintError(err)) {
+      await queueWebhookComment(
+        payload,
+        verb === "dismiss"
+          ? "Dismissal rejected: this finding already has an active dismissal."
+          : "Approval rejected: this finding already has an active approval.",
+        sourceDeliveryId,
+        triggerFollowupDrain,
+      );
+      return true;
+    }
+    console.error(`${verb} command failed: ${redactSecrets(err)}`);
     await queueWebhookComment(
       payload,
-      "Approval could not be recorded. Try again or open the Postil run for details.",
+      `${verb === "dismiss" ? "Dismissal" : "Approval"} could not be recorded. Try again or open the Postil run for details.`,
       sourceDeliveryId,
       triggerFollowupDrain,
     );

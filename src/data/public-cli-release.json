@@ -1,8 +1,21 @@
 {
   "cliRelease": "v0.7.2",
   "cliCommit": "dcf4e34c4804d4bf64705ab6367c883cea23b33a",
-  "hostedCliRelease": "v0.8.3",
-  "hostedCliCommit": "348ce5e55bfb10b2aa6cfd64c2bb31f834af44dc",
-  "hostedCliLinuxX86_64Sha256": "8fd1d078f1de41b581185b656352f4532738a2a98a6e69ab9a1efa5e9e7cdc89",
+  "hostedCliRelease": "v0.9.19",
+  "hostedCliCommit": "6550f956da82bbe36570c4df46ed622800ed7b8d",
+  "hostedCliLinuxX86_64Sha256": "69798458e4d50abcc6fc27348f64486e80bdf58e4bb17c098f125c9ff76d6f6c",
+  "hostedCliDefaultModel": "openai/gpt-5.6-luna",
+  "hostedCliManagedProfile": {
+    "apiBase": "https://openrouter.ai/api/v1",
+    "apiFormat": "openai-compatible",
+    "model": "openai/gpt-5.6-luna",
+    "providerName": "Azure",
+    "providerRoute": "azure/eu",
+    "reasoningEffort": "low",
+    "maxOutputTokens": 8000,
+    "temperature": 0.1,
+    "maxPromptPrice": 0.22,
+    "maxCompletionPrice": 1.32
+  },
   "actionCommit": "00442e2340edaa4a681955dbb25e20650ca1514c"
 }

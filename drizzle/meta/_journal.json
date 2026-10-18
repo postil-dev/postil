@@ -320,8 +320,134 @@
     {
       "idx": 45,
       "version": "7",
-      "when": 1792347173330,
-      "tag": "0045_job_attempt_receipts",
+      "when": 1785248656627,
+      "tag": "0045_finding-presentation-receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1785373682375,
+      "tag": "0046_wise_anthem",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1786239138686,
+      "tag": "0048_woozy_tigra",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1787049114658,
+      "tag": "0049_worker_org_concurrency",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1787600585978,
+      "tag": "0050_harsh_warpath",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1787609557500,
+      "tag": "0051_refreshable_cli_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1787631899427,
+      "tag": "0052_file_level_publication_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1787660875867,
+      "tag": "0053_wonderful_annihilus",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1787685932258,
+      "tag": "0054_finding_model_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1787690410565,
+      "tag": "0055_finding_feedback_reactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1787763292752,
+      "tag": "0056_ilert_alert_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1787829440381,
+      "tag": "0057_monitor_heartbeat_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1787853636499,
+      "tag": "0058_amused_wolverine",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1787873286640,
+      "tag": "0059_publication_lifecycle_nonblocking_triggers",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1788690574979,
+      "tag": "0060_monitor_check_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1790035237566,
+      "tag": "0061_review_feedback_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1790162457485,
+      "tag": "0062_monitor_delivery_receipt",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1790186892052,
+      "tag": "0063_review_feedback_control",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1792355455226,
+      "tag": "0064_job_attempt_receipts",
       "breakpoints": true
     }
   ]

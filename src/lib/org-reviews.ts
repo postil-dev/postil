@@ -1,9 +1,9 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql, type SQL } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
 import { schema } from "@/lib/db";
 import { computeEffectiveGate } from "@/lib/envelope";
-import { getActiveApprovalIds, parseEnvelopeForApprovals } from "@/lib/finding-approvals";
+import { getActiveApprovalIds, getActiveDismissalIds, parseEnvelopeForApprovals } from "@/lib/finding-approvals";
 import {
   reviewDisplayStatus,
   type ReviewDisplayStatus,
@@ -28,6 +28,13 @@ export interface OrgReviewRow {
   finishedAt: string | null;
   repoFullName: string;
   triggerSource: ReviewTriggerSource;
+}
+
+/** Match publication outcomes that prove a finding reached a pull request. */
+export function shippedPublicationStateSql(column: SQL): SQL {
+  return sql`${column} IN (
+    'inline', 'fileComment', 'checkAnnotation', 'summaryOnly', 'carried', 'inlineRejected'
+  )`;
 }
 
 /**
@@ -77,19 +84,22 @@ export async function getOrgReviewRows(
     rows.map(async ({ envelope: rawEnvelope, errorMessage, ...row }) => {
       const envelope = parseEnvelopeForApprovals(rawEnvelope);
       const approvalIds = await getActiveApprovalIds(db, row.id);
+      const dismissalIds = await getActiveDismissalIds(db, row.id);
       const counts = publicationCounts.get(row.id) ?? null;
       const activePublished = counts
         ? counts.inline +
+          counts.fileComment +
+          counts.checkAnnotation +
           counts.summaryOnly +
           counts.carried +
           counts.inlineRejected
         : null;
       return {
         ...row,
-        status: reviewDisplayStatus(row.status, errorMessage),
+        status: reviewDisplayStatus(row.status, errorMessage, rawEnvelope),
         triggerSource: row.triggerSource as ReviewTriggerSource,
         gateFailing: envelope
-          ? computeEffectiveGate(envelope, approvalIds).failing
+          ? computeEffectiveGate(envelope, approvalIds, dismissalIds).failing
           : row.gateFailing,
         findingsCount: counts && counts.unknown === 0 ? activePublished : null,
         modelUsed: envelope?.modelUsed ?? null,

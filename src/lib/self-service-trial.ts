@@ -12,9 +12,13 @@ import {
 } from "@/lib/operator-alerts";
 import {
   HOSTED_INFERENCE_LOCK,
-  HOSTED_TRIALS_PER_GITHUB_ACTOR,
+  HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY,
   hostedInferenceCapability,
 } from "@/lib/release-job-rollout";
+import {
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+  hostedProviderKeyLifecycleJobPayload,
+} from "@/lib/queue";
 
 export const SELF_SERVICE_TRIAL_DAYS = 30;
 const SELF_SERVICE_TRIAL_DURATION_MS =
@@ -24,8 +28,6 @@ const SELF_SERVICE_TRIAL_DURATION_MS =
 // reservation layer remains fail-closed while ordinary trial usage has ample
 // headroom.
 export const SELF_SERVICE_TRIAL_HOSTED_USAGE_MICROS = 100_000_000;
-export const SELF_SERVICE_HOSTED_TRIALS_PER_ACTOR =
-  HOSTED_TRIALS_PER_GITHUB_ACTOR;
 
 export interface SelfServiceTrialInput {
   orgId: number;
@@ -37,7 +39,7 @@ export interface SelfServiceTrialInput {
   initiatedByGithubId: number;
   subscriptionMode: "hosted" | "byok";
   hostedInferenceEnabled: boolean;
-  hostedReleaseCapability: string | null;
+  hostedReleaseSha: string | null;
 }
 
 export interface SelfServiceTrialBackfillInput {
@@ -45,19 +47,24 @@ export interface SelfServiceTrialBackfillInput {
   releaseSha: string;
 }
 
-async function lockSelfServiceTrialActor(
+async function lockHostedInferenceRelease(
   db: Pick<Database, "execute">,
-  githubActorId: number,
 ): Promise<void> {
   await db.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${HOSTED_INFERENCE_LOCK}, 0))`,
   );
-  await db.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:trial-actor:${githubActorId}`}, 0))`,
-  );
 }
 
-/** Grant one owner-scoped trial and enqueue its alert in the same transaction. */
+/**
+ * Grant one account-scoped trial and enqueue its alert in the same transaction.
+ *
+ * A trial belongs to the installation account, so each organization gets one
+ * and the entitlement's org uniqueness is the whole limit. The installing
+ * identity is recorded but never capped: the same person can be an owner on one
+ * account and a maintainer on several others whose owners installed Postil
+ * independently, and denying those accounts a trial would penalize the member
+ * rather than the account that is actually trialing.
+ */
 export async function grantSelfServiceTrial(
   db: Database,
   input: SelfServiceTrialInput,
@@ -65,37 +72,26 @@ export async function grantSelfServiceTrial(
 ): Promise<{ granted: boolean; trialEndsAt: Date | null }> {
   const trialEndsAt = new Date(now.getTime() + SELF_SERVICE_TRIAL_DURATION_MS);
   return db.transaction(async (tx) => {
-    await lockSelfServiceTrialActor(tx, input.initiatedByGithubId);
-    const capability = input.hostedReleaseCapability
+    await lockHostedInferenceRelease(tx);
+    const capability = input.hostedReleaseSha
       ? await tx.execute(sql`
           SELECT EXISTS (
             SELECT 1 FROM deployment_capabilities
-            WHERE name = ${input.hostedReleaseCapability}
+            WHERE name = ${hostedInferenceCapability(input.hostedReleaseSha)}
+          ) AND EXISTS (
+            SELECT 1 FROM deployment_capabilities
+            WHERE name = ${HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY}
           ) AS active
         `)
       : null;
     const hostedAvailable =
       input.hostedInferenceEnabled &&
       (capability === null || capability.rows[0]?.active === true);
-    const hostedTrialCount =
-      (
-        await tx
-          .select({ count: sql<number>`count(*)::int` })
-          .from(schema.selfServiceTrialGrants)
-          .where(
-            and(
-              eq(
-                schema.selfServiceTrialGrants.initiatedByGithubId,
-                input.initiatedByGithubId,
-              ),
-              eq(schema.selfServiceTrialGrants.grantedMode, "hosted"),
-            ),
-          )
-      )[0]?.count ?? 0;
+    // Mode only. The one-trial-per-organization limit is the entitlement's
+    // org_id primary key, enforced by the conflict clause below: a second
+    // attempt for an organization inserts nothing and reports granted: false.
     const hostedEligible =
-      input.subscriptionMode === "hosted" &&
-      hostedAvailable &&
-      hostedTrialCount < SELF_SERVICE_HOSTED_TRIALS_PER_ACTOR;
+      input.subscriptionMode === "hosted" && hostedAvailable;
     const grantedMode =
       input.subscriptionMode === "hosted" && !hostedEligible
         ? "byok"
@@ -109,8 +105,8 @@ export async function grantSelfServiceTrial(
         trialEndsAt,
         periodStartsAt: now,
         periodEndsAt: trialEndsAt,
-        includedUsageMicros: SELF_SERVICE_TRIAL_HOSTED_USAGE_MICROS,
-        overageHardCapMicros: 0,
+        includedUsageMicros: BigInt(SELF_SERVICE_TRIAL_HOSTED_USAGE_MICROS),
+        overageHardCapMicros: 0n,
         includedUsageCents: SELF_SERVICE_TRIAL_HOSTED_USAGE_MICROS / 10_000,
         overageHardCapCents: 0,
         updatedBy: "self-service-trial",
@@ -130,10 +126,18 @@ export async function grantSelfServiceTrial(
     });
     if (grantedMode !== input.subscriptionMode) {
       console.warn(
-        hostedAvailable
-          ? `self-service hosted trial limit reached for GitHub actor ${input.initiatedByGithubId}`
-          : `self-service hosted trial deferred until managed inference activation for GitHub actor ${input.initiatedByGithubId}`,
+        `self-service hosted trial deferred until managed inference activation for organization ${input.orgId}`,
       );
+    }
+    if (grantedMode === "hosted" && input.hostedReleaseSha) {
+      await tx.insert(schema.jobs).values({
+        kind: HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+        payload: hostedProviderKeyLifecycleJobPayload(
+          input.orgId,
+          input.hostedReleaseSha,
+        ),
+        maxAttempts: 25,
+      });
     }
 
     await enqueueOperatorAlert(
@@ -247,7 +251,7 @@ export async function backfillSelfServiceTrials(
         initiatedByGithubId: candidate.githubOwnerId,
         subscriptionMode: "hosted",
         hostedInferenceEnabled: input.hostedInferenceEnabled,
-        hostedReleaseCapability: capability,
+        hostedReleaseSha: input.releaseSha,
       },
       now,
     );
@@ -260,19 +264,66 @@ export async function backfillSelfServiceTrials(
     const githubOwnerId = candidate.githubOwnerId;
     const trialEndsAt = candidate.trialEndsAt;
     const created = await db.transaction(async (tx) => {
-      await lockSelfServiceTrialActor(tx, githubOwnerId);
+      await lockHostedInferenceRelease(tx);
+      const active = input.hostedInferenceEnabled
+        ? await tx.execute(sql`
+            SELECT EXISTS (
+              SELECT 1 FROM deployment_capabilities
+              WHERE name = ${capability}
+            ) AND EXISTS (
+              SELECT 1 FROM deployment_capabilities
+              WHERE name = ${HOSTED_INFERENCE_FLEET_ACTIVE_CAPABILITY}
+            ) AS active
+          `)
+        : null;
+      const grantHosted = active?.rows[0]?.active === true;
       const inserted = await tx
         .insert(schema.selfServiceTrialGrants)
         .values({
           orgId: candidate.orgId,
           initiatedByGithubId: githubOwnerId,
           requestedMode: "hosted",
-          grantedMode: "byok",
+          grantedMode: grantHosted ? "hosted" : "byok",
           createdAt: now,
         })
         .onConflictDoNothing({ target: schema.selfServiceTrialGrants.orgId })
         .returning({ orgId: schema.selfServiceTrialGrants.orgId });
       if (inserted.length === 0) return false;
+      if (grantHosted) {
+        const promoted = await tx
+          .update(schema.organizationEntitlements)
+          .set({
+            subscriptionMode: "hosted",
+            updatedBy: "hosted-release-activation",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(schema.organizationEntitlements.orgId, candidate.orgId),
+              eq(schema.organizationEntitlements.subscriptionMode, "byok"),
+              eq(schema.organizationEntitlements.status, "trialing"),
+              eq(
+                schema.organizationEntitlements.updatedBy,
+                "self-service-trial",
+              ),
+              gt(schema.organizationEntitlements.trialEndsAt, now),
+            ),
+          )
+          .returning({ orgId: schema.organizationEntitlements.orgId });
+        if (promoted.length !== 1) {
+          throw new Error(
+            "self-service trial changed during hosted activation",
+          );
+        }
+        await tx.insert(schema.jobs).values({
+          kind: HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
+          payload: hostedProviderKeyLifecycleJobPayload(
+            candidate.orgId,
+            input.releaseSha,
+          ),
+          maxAttempts: 25,
+        });
+      }
       await enqueueOperatorAlert(
         tx,
         trialStartedAlertPayload({ ...candidate, githubOwnerId, trialEndsAt }),

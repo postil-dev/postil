@@ -10,9 +10,19 @@ const OLD_ENV = { ...process.env };
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
 const failed: Array<{ id: number; error: string }> = [];
+const finiteRetrySchedules: Array<{
+  id: number;
+  attempts: number;
+  maxAttempts: number;
+  delayMs: number;
+}> = [];
 const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
-const retriedIndefinitely: Array<{ id: number; error: string }> = [];
+const retriedIndefinitely: Array<{
+  id: number;
+  error: string;
+  startedAt?: Date;
+}> = [];
 const shutdownRequeues: number[] = [];
 let claimCalls = 0;
 const claimCapabilities: string[][] = [];
@@ -23,6 +33,7 @@ let respondDeliveryRun: (() => Promise<void>) | undefined;
 let respondFailureCommentRun: (() => Promise<void>) | undefined;
 let webhookCommentRun: (() => Promise<void>) | undefined;
 let githubReactionRun: (() => Promise<void>) | undefined;
+let hostedProviderKeyLifecycleRun: (() => Promise<void>) | undefined;
 let billingContactVerificationRun: (() => Promise<void>) | undefined;
 let billingSettlementRun: (() => Promise<void>) | undefined;
 let operatorAlertRun: (() => Promise<void>) | undefined;
@@ -32,8 +43,16 @@ const customerNotificationEmailFailures: Array<{
   terminal: boolean;
 }> = [];
 let gateStateSyncRun: (() => Promise<void>) | undefined;
+let publicationLifecycleActivated = true;
+let gateJobLeaseActive = true;
 let cleanupRun: (() => Promise<void>) | undefined;
 let webhookDeliveryLoadError: Error | undefined;
+let webhookDeliveryToLoad:
+  | { deliveryId: string; event: string; action: string | null; payload: unknown }
+  | undefined;
+let webhookDispatchError: Error | undefined;
+let webhookDispatchOptions: Record<string, unknown> | undefined;
+const webhookDeliveriesCompleted: string[] = [];
 let reviewTiming:
   | { queuedAt: Date; startedAt: Date; lease?: ClaimedJob }
   | undefined;
@@ -44,11 +63,34 @@ const operationalFailures: string[] = [];
 const operationalWarnings: string[] = [];
 
 class MockWorkerShutdownError extends Error {}
-class MockReviewPublicationReconciliationError extends Error {}
+class MockReviewPublicationReconciliationError extends Error {
+  readonly reconciliationStartedAt = new Date("2026-08-27T18:30:00.000Z");
+}
+class MockBoundedJobRetryError extends Error {}
 class MockPermanentJobError extends Error {
   permanent = true;
 }
 class MockWebhookDeliveryStateError extends Error {}
+class MockGitHubHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GitHubHttpError";
+  }
+}
+
+class MockHostedInferenceReleaseDarkError extends Error {
+  constructor(readonly releaseSha: string) {
+    super("managed hosted inference release is awaiting activation");
+  }
+}
+class MockPublicationLifecycleReleaseDarkError extends Error {
+  constructor() {
+    super("publication lifecycle release is awaiting activation");
+  }
+}
 
 mock.module("@/lib/server-observability", () => ({
   reportOperationalFailure: (_processGroup: string, failureClass: string) => {
@@ -63,6 +105,23 @@ mock.module("@/lib/db", () => ({
   getDb: () => ({}),
   getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
   schema: {},
+}));
+
+mock.module("@/lib/release-job-rollout", () => ({
+  HostedInferenceReleaseDarkError: MockHostedInferenceReleaseDarkError,
+  PublicationLifecycleReleaseDarkError:
+    MockPublicationLifecycleReleaseDarkError,
+  deferHostedProviderKeyLifecycleForRelease: async () => "deferred",
+  deferHostedReviewForRelease: async () => "deferred",
+  withPublicationLifecycleReleaseActive: async <T>(
+    _pool: unknown,
+    operation: (db: unknown, client: unknown) => Promise<T>,
+  ) => {
+    if (!publicationLifecycleActivated) {
+      throw new MockPublicationLifecycleReleaseDarkError();
+    }
+    return operation({}, {});
+  },
 }));
 
 mock.module("@/lib/operator-alerts", () => ({
@@ -94,7 +153,11 @@ mock.module("@/lib/customer-notification-email", () => ({
 }));
 
 mock.module("@/lib/queue", () => ({
+  FEEDBACK_REVIEW_JOB_KIND: "review-feedback",
+  HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND: "hosted-provider-key-lifecycle",
   WebhookDeliveryStateError: MockWebhookDeliveryStateError,
+  isBoundedJobRetryError: (error: unknown) =>
+    error instanceof MockBoundedJobRetryError,
   isPermanentJobError: (error: unknown) =>
     error instanceof MockPermanentJobError,
   claimJob: async (
@@ -111,11 +174,14 @@ mock.module("@/lib/queue", () => ({
   completeJob: async (_pool: unknown, job: ClaimedJob) => {
     completed.push(job.id);
   },
+  externalSideEffectLeaseActive: async () => gateJobLeaseActive,
   continueClaimedJob: async () => undefined,
-  completeWebhookDelivery: async () => undefined,
+  completeWebhookDelivery: async (_pool: unknown, deliveryId: string) => {
+    webhookDeliveriesCompleted.push(deliveryId);
+  },
   loadWebhookDelivery: async () => {
     if (webhookDeliveryLoadError) throw webhookDeliveryLoadError;
-    return null;
+    return webhookDeliveryToLoad ?? null;
   },
   failJob: async (
     _pool: unknown,
@@ -131,14 +197,38 @@ mock.module("@/lib/queue", () => ({
     if (options?.failureFollowup) {
       failureFollowups.push(options.failureFollowup.payload);
     }
+    if (
+      job.kind === "webhook-dispatch" &&
+      webhookDispatchError instanceof MockBoundedJobRetryError &&
+      !options?.permanent &&
+      job.attempts < job.maxAttempts
+    ) {
+      finiteRetrySchedules.push({
+        id: job.id,
+        attempts: job.attempts,
+        maxAttempts: job.maxAttempts,
+        delayMs: Math.min(
+          30_000 * 2 ** Math.max(job.attempts - 1, 0),
+          15 * 60_000,
+        ),
+      });
+      return "retried";
+    }
     return "failed";
   },
   retryJobIndefinitely: async (
     _pool: unknown,
     job: ClaimedJob,
     error: string,
+    budget?: number | { startedAt?: Date },
   ) => {
-    retriedIndefinitely.push({ id: job.id, error });
+    retriedIndefinitely.push({
+      id: job.id,
+      error,
+      ...(typeof budget === "object" && budget.startedAt
+        ? { startedAt: budget.startedAt }
+        : {}),
+    });
     return "retried";
   },
   requeueJobsOwnedBy: async (
@@ -155,6 +245,17 @@ mock.module("@/lib/queue", () => ({
 
 mock.module("@/worker/watchdog", () => ({
   watchdogPass: async () => undefined,
+}));
+
+mock.module("@/lib/github/webhook-handler", () => ({
+  dispatchWebhookDelivery: async (
+    _event: string,
+    _payload: unknown,
+    options: Record<string, unknown>,
+  ) => {
+    webhookDispatchOptions = options;
+    if (webhookDispatchError) throw webhookDispatchError;
+  },
 }));
 
 mock.module("@/worker/review", () => ({
@@ -211,6 +312,12 @@ mock.module("@/worker/github-reaction", () => ({
   },
 }));
 
+mock.module("@/worker/hosted-provider-key-lifecycle", () => ({
+  runHostedProviderKeyLifecycleJob: async () => {
+    await hostedProviderKeyLifecycleRun?.();
+  },
+}));
+
 mock.module("@/worker/billing-contact-verification", () => ({
   runBillingContactVerificationJob: async () => {
     await billingContactVerificationRun?.();
@@ -235,8 +342,13 @@ mock.module("@/worker/gate-enforcement-sweep", () => ({
   runGateEnforcementSweepJob: async () => null,
 }));
 
-const { drainQueueOnce, runClaimedJob, triggerQueueDrain } =
-  await import("@/worker/runner");
+const {
+  drainQueueOnce,
+  PROCESSABLE_JOB_KINDS,
+  runClaimedJob,
+  triggerQueueDrain,
+  WEB_PROCESSABLE_JOB_KINDS,
+} = await import("@/worker/runner");
 
 function reviewJob(id: number): ClaimedJob {
   return {
@@ -262,6 +374,7 @@ beforeEach(() => {
   jobs.length = 0;
   completed.length = 0;
   failed.length = 0;
+  finiteRetrySchedules.length = 0;
   failureFollowups.length = 0;
   permanentFailures.length = 0;
   retriedIndefinitely.length = 0;
@@ -275,14 +388,21 @@ beforeEach(() => {
   respondFailureCommentRun = async () => undefined;
   webhookCommentRun = async () => undefined;
   githubReactionRun = async () => undefined;
+  hostedProviderKeyLifecycleRun = async () => undefined;
   billingContactVerificationRun = async () => undefined;
   billingSettlementRun = async () => undefined;
   operatorAlertRun = async () => undefined;
   customerNotificationEmailRun = async () => undefined;
   customerNotificationEmailFailures.length = 0;
   gateStateSyncRun = async () => undefined;
+  publicationLifecycleActivated = true;
+  gateJobLeaseActive = true;
   cleanupRun = async () => undefined;
   webhookDeliveryLoadError = undefined;
+  webhookDeliveryToLoad = undefined;
+  webhookDispatchError = undefined;
+  webhookDispatchOptions = undefined;
+  webhookDeliveriesCompleted.length = 0;
   reviewTiming = undefined;
   reviewProcessGroup = undefined;
   reviewSignal = undefined;
@@ -299,6 +419,19 @@ afterEach(() => {
 });
 
 describe("drainQueueOnce", () => {
+  test("executes an admitted feedback review while new admission is disabled", async () => {
+    const enabled = process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+    process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = "0";
+    try {
+      await runClaimedJob({ ...reviewJob(71), kind: "review-feedback" }, "worker 0", "worker");
+      expect(completed).toEqual([71]);
+      expect(failed).toEqual([]);
+    } finally {
+      if (enabled === undefined) delete process.env.POSTIL_REVIEW_FEEDBACK_ENABLED;
+      else process.env.POSTIL_REVIEW_FEEDBACK_ENABLED = enabled;
+    }
+  });
+
   test("forwards worker cancellation to review execution", async () => {
     const controller = new AbortController();
     const onPublicationStarted = () => undefined;
@@ -356,7 +489,11 @@ describe("drainQueueOnce", () => {
     await runClaimedJob(reviewJob(9), "worker 0", "worker");
 
     expect(retriedIndefinitely).toEqual([
-      { id: 9, error: "exact terminal checks are not observable yet" },
+      {
+        id: 9,
+        error: "exact terminal checks are not observable yet",
+        startedAt: new Date("2026-08-27T18:30:00.000Z"),
+      },
     ]);
     expect(failed).toEqual([]);
     expect(completed).toEqual([]);
@@ -417,8 +554,9 @@ describe("drainQueueOnce", () => {
     expect(worker).toContain("activeControllers.set(job.id, controller)");
     expect(worker).toContain("requeueableReviewIds.add(job.id)");
     expect(worker).toContain("requeueableReviewIds.delete(job.id)");
-    expect(worker).toContain("if (shuttingDown && job)");
-    expect(worker).toContain("[job.id]");
+    // A claim that lands during shutdown is requeued before it is started.
+    expect(worker).toContain('if (shuttingDown && outcome.status === "claimed")');
+    expect(worker).toContain("[outcome.job.id]");
     expect(shutdown).toContain("controller.abort()");
     expect(shutdown).toContain("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)");
     expect(shutdown).toContain(
@@ -427,7 +565,7 @@ describe("drainQueueOnce", () => {
     expect(shutdown).toContain("requeueableReviewIds.has(jobId)");
     expect(shutdown).toContain("await requeueJobsOwnedBy(");
     expect(shutdown).toContain("`${workerId}#`");
-    expect(shutdown).toContain('["review"]');
+    expect(shutdown).toContain('["review", FEEDBACK_REVIEW_JOB_KIND]');
     expect(shutdown.indexOf("controller.abort()")).toBeLessThan(
       shutdown.indexOf("await waitForWorkerIdle(SHUTDOWN_SETTLE_MS)"),
     );
@@ -438,7 +576,7 @@ describe("drainQueueOnce", () => {
       "if (!shuttingDown) {\n      await sleepUntilWebhookRedelivery",
     );
     expect(fly).toContain('kill_signal = "SIGTERM"');
-    expect(fly).toContain('kill_timeout = "30s"');
+    expect(fly).toContain('kill_timeout = "120s"');
   });
 
   test("hosted process launcher drops privileges and forwards termination", () => {
@@ -495,6 +633,7 @@ describe("drainQueueOnce", () => {
       [
         "webhook-dispatch",
         "review",
+        "review-feedback",
         "respond",
         "respond-delivery",
         "billing-contact-verification",
@@ -506,9 +645,34 @@ describe("drainQueueOnce", () => {
         "respond-failure-comment",
         "webhook-comment",
         "github-reaction",
+        "finding-feedback-reconciliation",
+        "review-feedback-reconciliation",
       ],
     ]);
     expect(claimOptions).toEqual([{ excludePrivateWorkerRehearsals: true }]);
+  });
+
+  test("keeps hosted provider lifecycle mutations on the dedicated worker", async () => {
+    expect(PROCESSABLE_JOB_KINDS).toContain("hosted-provider-key-lifecycle");
+    expect(WEB_PROCESSABLE_JOB_KINDS).not.toContain(
+      "hosted-provider-key-lifecycle" as never,
+    );
+
+    const job = reviewJob(91);
+    job.kind = "hosted-provider-key-lifecycle";
+    job.payload = {
+      orgId: 42,
+      releaseSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    };
+    let called = false;
+    hostedProviderKeyLifecycleRun = async () => {
+      called = true;
+    };
+
+    await runClaimedJob(job, "provider-lifecycle", "worker");
+
+    expect(called).toBe(true);
+    expect(completed).toEqual([91]);
   });
 
   test("dispatches fixed webhook comments through a durable job", async () => {
@@ -586,6 +750,141 @@ describe("drainQueueOnce", () => {
     ]);
     expect(failed).toEqual([]);
     expect(operationalWarnings).toEqual(["job_retrying"]);
+  });
+
+  test("passes the claimed attempt into webhook state evaluation", async () => {
+    const job = reviewJob(24);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-24" };
+    job.attempts = 3;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-24",
+      event: "pull_request",
+      action: "reopened",
+      payload: {},
+    };
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDispatchOptions).toEqual({
+      deliveryId: "delivery-24",
+      triggerFollowupDrain: false,
+      attempt: 3,
+    });
+    expect(webhookDeliveriesCompleted).toEqual(["delivery-24"]);
+    expect(completed).toEqual([24]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(failed).toEqual([]);
+  });
+
+  test("uses finite queue backoff for equal-second webhook ambiguity", async () => {
+    webhookDispatchError = new MockBoundedJobRetryError(
+      "GitHub pull request octo/repo#7 has not converged for closed",
+    );
+
+    for (const attempts of [1, 2]) {
+      const job = reviewJob(24 + attempts);
+      job.kind = "webhook-dispatch";
+      job.payload = { deliveryId: `delivery-${24 + attempts}` };
+      job.attempts = attempts;
+      webhookDeliveryToLoad = {
+        deliveryId: `delivery-${24 + attempts}`,
+        event: "pull_request",
+        action: "closed",
+        payload: {},
+      };
+      await runClaimedJob(job, "worker 0", "worker");
+    }
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(failed).toEqual([
+      {
+        id: 25,
+        error: "GitHub pull request octo/repo#7 has not converged for closed",
+      },
+      {
+        id: 26,
+        error: "GitHub pull request octo/repo#7 has not converged for closed",
+      },
+    ]);
+    expect(finiteRetrySchedules).toEqual([
+      { id: 25, attempts: 1, maxAttempts: 3, delayMs: 30_000 },
+      { id: 26, attempts: 2, maxAttempts: 3, delayMs: 60_000 },
+    ]);
+    expect(retriedIndefinitely).toEqual([]);
+    expect(operationalWarnings).toEqual(["job_retrying", "job_retrying"]);
+  });
+
+  test("completes a webhook delivery whose forge target stays gone", async () => {
+    const job = reviewJob(21);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-21" };
+    job.attempts = 2;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-21",
+      event: "pull_request",
+      action: "opened",
+      payload: {},
+    };
+    webhookDispatchError = new MockGitHubHttpError(
+      404,
+      "GitHub GET /repos/acme/deleted/pulls/1 failed: HTTP 404",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual(["delivery-21"]);
+    expect(failed).toEqual([]);
+    expect(retriedIndefinitely).toEqual([]);
+  });
+
+  test("retries a first-attempt 404 before treating the target as gone", async () => {
+    const job = reviewJob(23);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-23" };
+    job.attempts = 1;
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-23",
+      event: "pull_request",
+      action: "opened",
+      payload: {},
+    };
+    webhookDispatchError = new MockGitHubHttpError(
+      404,
+      "GitHub GET /repos/acme/fresh/pulls/1 failed: HTTP 404",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(retriedIndefinitely).toEqual([
+      { id: 23, error: "GitHub GET /repos/acme/fresh/pulls/1 failed: HTTP 404" },
+    ]);
+    expect(failed).toEqual([]);
+  });
+
+  test("keeps retrying a webhook dispatch on a transient forge error", async () => {
+    const job = reviewJob(22);
+    job.kind = "webhook-dispatch";
+    job.payload = { deliveryId: "delivery-22" };
+    webhookDeliveryToLoad = {
+      deliveryId: "delivery-22",
+      event: "pull_request",
+      action: "opened",
+      payload: {},
+    };
+    webhookDispatchError = new MockGitHubHttpError(
+      503,
+      "GitHub GET /repos/acme/live/pulls/1 failed: HTTP 503",
+    );
+
+    await runClaimedJob(job, "worker 0", "worker");
+
+    expect(webhookDeliveriesCompleted).toEqual([]);
+    expect(retriedIndefinitely).toEqual([
+      { id: 22, error: "GitHub GET /repos/acme/live/pulls/1 failed: HTTP 503" },
+    ]);
+    expect(failed).toEqual([]);
   });
 
   test("fails an orphaned webhook dispatch instead of retrying forever", async () => {
@@ -763,6 +1062,51 @@ describe("drainQueueOnce", () => {
 
     expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
     expect(called).toBe(true);
+    expect(completed).toEqual([1]);
+  });
+
+  test("parks gate synchronization while lifecycle publication is dark", async () => {
+    const job = reviewJob(1);
+    job.kind = "gate-state-sync";
+    job.payload = {
+      reviewId: 7,
+      reviewPublicId: "00000000-0000-4000-8000-000000000007",
+    };
+    publicationLifecycleActivated = false;
+    let called = false;
+    gateStateSyncRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(false);
+    expect(completed).toEqual([]);
+    expect(retriedIndefinitely).toEqual([
+      {
+        id: 1,
+        error: "publication lifecycle release is awaiting activation",
+        startedAt: job.lockedAt,
+      },
+    ]);
+  });
+
+  test("does not publish from a gate claim recovered during activation", async () => {
+    const job = reviewJob(1);
+    job.kind = "gate-state-sync";
+    job.payload = {
+      reviewId: 7,
+      reviewPublicId: "00000000-0000-4000-8000-000000000007",
+    };
+    gateJobLeaseActive = false;
+    let called = false;
+    gateStateSyncRun = async () => {
+      called = true;
+    };
+    jobs.push(job);
+
+    expect(await drainQueueOnce("test-drain", { maxJobs: 1 })).toBe(1);
+    expect(called).toBe(false);
     expect(completed).toEqual([1]);
   });
 

@@ -4,6 +4,8 @@ const TOKEN = "metrics-route-test-token";
 
 let queryShouldThrow = false;
 let privateMonitorHeartbeatAge = "42";
+let privateMonitorCollectionAge = "35";
+let privateMonitorHeartbeatDeliveryAge = "30";
 let getPoolCalls = 0;
 let queryCalls = 0;
 
@@ -26,6 +28,8 @@ beforeEach(() => {
   process.env.METRICS_TOKEN = TOKEN;
   queryShouldThrow = false;
   privateMonitorHeartbeatAge = "42";
+  privateMonitorCollectionAge = "35";
+  privateMonitorHeartbeatDeliveryAge = "30";
   getPoolCalls = 0;
   queryCalls = 0;
 });
@@ -43,12 +47,20 @@ function queryResponse(text: string): {
     expect(sql).toContain("kind = 'check-run-cleanup'");
     expect(sql).toContain("status = 'failed'");
     expect(sql).toContain("run_after >= now() - interval '30 minutes'");
+    expect(sql).toContain("FROM ilert_alert_events ORDER BY sequence DESC LIMIT 1");
+    expect(sql).not.toContain("count(*)::text FROM ilert_alert_events");
     return {
       rows: [
         {
           database_size_bytes: "123456",
           active_sessions: "2",
           private_monitor_heartbeat_age_seconds: privateMonitorHeartbeatAge,
+          private_monitor_collection_age_seconds: privateMonitorCollectionAge,
+          private_monitor_heartbeat_delivery_age_seconds:
+            privateMonitorHeartbeatDeliveryAge,
+          private_monitor_consecutive_failed_passes: "2",
+          private_monitor_running_pass_age_seconds: "75",
+          ilert_alert_last_received_age_seconds: "120",
           queue_depth: "7",
           users_total: "42",
           active_installations: "3",
@@ -199,6 +211,16 @@ function queryResponse(text: string): {
       ],
     };
   }
+  if (sql.includes("FROM private_monitor_check_failures")) {
+    expect(sql).toContain("observed_at >= now() - interval '24 hours'");
+    expect(sql).toContain("GROUP BY key, recovered");
+    return {
+      rows: [
+        { key: "public-favicon", recovered: true, count: "3" },
+        { key: "public-site", recovered: false, count: "1" },
+      ] as unknown as Array<Record<string, string | null>>,
+    };
+  }
   throw new Error(`unexpected metrics query: ${text}`);
 }
 
@@ -260,6 +282,16 @@ describe("/api/metrics", () => {
     expect(text).toContain("postil_sessions_active 2");
     expect(text).toContain("postil_private_monitor_heartbeat_age_seconds 42");
     expect(text).toContain("postil_private_monitor_heartbeat_fresh 1");
+    expect(text).toContain("postil_private_monitor_collection_age_seconds 35");
+    expect(text).toContain("postil_private_monitor_collection_fresh 1");
+    expect(text).toContain("postil_monitor_heartbeat_delivery_age_seconds 30");
+    expect(text).toContain("postil_monitor_heartbeat_delivery_fresh 1");
+    expect(text).toContain("postil_private_monitor_consecutive_failed_passes 2");
+    expect(text).toContain("postil_private_monitor_running_pass_age_seconds 75");
+    expect(text).toContain("postil_ilert_alert_last_received_age_seconds 120");
+    expect(text).toContain(
+      '# TYPE postil_private_monitor_check_failures_24h gauge\npostil_private_monitor_check_failures_24h{key="public-favicon",recovered="true"} 3\npostil_private_monitor_check_failures_24h{key="public-site",recovered="false"} 1',
+    );
     expect(text).toContain("postil_queue_depth 7");
     expect(text).toContain('postil_installations_current{state="active"} 3');
     expect(text).toContain('postil_installations_current{state="suspended"} 1');
@@ -346,11 +378,13 @@ describe("/api/metrics", () => {
       'postil_review_incidents_30m{category="failed_job"} 6',
     );
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(12);
+    expect(queryCalls).toBe(13);
   });
 
   test("emits an explicit unhealthy sentinel when the private monitor heartbeat is absent", async () => {
     privateMonitorHeartbeatAge = "2147483647";
+    privateMonitorCollectionAge = "2147483647";
+    privateMonitorHeartbeatDeliveryAge = "2147483647";
 
     const response = await GET(metricsRequest());
     const text = await response.text();
@@ -360,6 +394,14 @@ describe("/api/metrics", () => {
       "postil_private_monitor_heartbeat_age_seconds 2147483647",
     );
     expect(text).toContain("postil_private_monitor_heartbeat_fresh 0");
+    expect(text).toContain(
+      "postil_private_monitor_collection_age_seconds 2147483647",
+    );
+    expect(text).toContain("postil_private_monitor_collection_fresh 0");
+    expect(text).toContain(
+      "postil_monitor_heartbeat_delivery_age_seconds 2147483647",
+    );
+    expect(text).toContain("postil_monitor_heartbeat_delivery_fresh 0");
   });
 
   test("keeps the scrape successful and reports database down when DB access fails", async () => {
@@ -375,6 +417,6 @@ describe("/api/metrics", () => {
     expect(text).not.toContain("postil_database_size_bytes");
     expect(text).not.toContain("postil_queue_depth");
     expect(getPoolCalls).toBe(1);
-    expect(queryCalls).toBe(12);
+    expect(queryCalls).toBe(13);
   });
 });

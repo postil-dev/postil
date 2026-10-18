@@ -1,61 +1,337 @@
 {
-  "generatedAt": "2026-07-10T11:00:12.292Z",
-  "cliVersion": "postil 0.1.2",
-  "sourceRun": "https://github.com/postil-dev/postil-cli/actions/runs/29087470897",
+  "generatedAt": "2026-08-19T16:21:48.868Z",
+  "cliVersion": "postil 0.8.26",
+  "fixtureCorpusSha256": "8e4c2cb9ad5a7efdfe6a875566d20133e905155b6f693a873595adf6c069e065",
+  "evaluatorSha256": "ebc72a8d7d60c08bf79759a0dfc5dbf821a9e6f79f4503c08ea9660dddece4d7",
+  "benchmarkedBinarySha256": "37d0c7ef4b49ab27d55697e074f96c600025f80869bff9cb9344028b815f6d0b",
+  "defectCases": 57,
+  "cleanCases": 13,
   "models": [
     {
-      "id": "deepseek/deepseek-v4-pro",
-      "detectionRate": 0.9696969696969697,
+      "id": "openai/gpt-5.6-luna",
+      "detectionRate": 0.9649122807017544,
+      "gateVerdictCorrectness": 0.9,
       "falsePositives": 0,
-      "casesRun": 40,
-      "meanCostUsdPerReview": 0.0009161208749999998,
-      "meanDurationMs": 6479.275,
-      "totalCostUsd": 0.036644834999999994
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 0.06282649,
+      "meanCostUsdPerReview": 0.0008975212857142856,
+      "latencyMsP50": 9318,
+      "latencyMsP95": 21432,
+      "pinnedProviderContract": {
+        "provider": "Azure",
+        "runs": 3,
+        "detectionRate": 0.8947368421052632,
+        "gateVerdictCorrectness": 0.8552631578947368,
+        "falsePositives": 0,
+        "totalCostUsd": 0.0555,
+        "latencyMsP95": 17559
+      }
     },
     {
-      "id": "deepseek/deepseek-v4-flash",
-      "detectionRate": 0.9090909090909091,
-      "falsePositives": 1,
-      "casesRun": 40,
-      "meanCostUsdPerReview": 0.000164934,
-      "meanDurationMs": 7363.175,
-      "totalCostUsd": 0.00659736
+      "id": "openai/gpt-5.6-terra",
+      "detectionRate": 0.9473684210526315,
+      "gateVerdictCorrectness": 0.8571428571428571,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 0.64024169,
+      "meanCostUsdPerReview": 0.009146309857142857,
+      "latencyMsP50": 8230,
+      "latencyMsP95": 17603
+    },
+    {
+      "id": "moonshotai/kimi-k2.7-code",
+      "detectionRate": 0.9473684210526315,
+      "gateVerdictCorrectness": 0.8260869565217391,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 1,
+      "casesRun": 70,
+      "totalCostUsd": 0.51079418,
+      "meanCostUsdPerReview": 0.007297059714285714,
+      "latencyMsP50": 5225,
+      "latencyMsP95": 18147,
+      "pinnedProviderContract": {
+        "provider": "CoreWeave",
+        "runs": 1,
+        "detectionRate": 0.9473684210526315,
+        "gateVerdictCorrectness": 0.8550724637681159,
+        "falsePositives": 0,
+        "totalCostUsd": 0.5046,
+        "latencyMsP95": 58200
+      }
+    },
+    {
+      "id": "z-ai/glm-5.2",
+      "detectionRate": 0.9473684210526315,
+      "gateVerdictCorrectness": 0.7681159420289855,
+      "falsePositives": 3,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 1,
+      "casesRun": 70,
+      "totalCostUsd": 0.63287166,
+      "meanCostUsdPerReview": 0.009041023714285714,
+      "latencyMsP50": 10272,
+      "latencyMsP95": 62096
+    },
+    {
+      "id": "openai/gpt-5.6-luna-pro",
+      "detectionRate": 0.9298245614035088,
+      "gateVerdictCorrectness": 0.8571428571428571,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 0.30326815,
+      "meanCostUsdPerReview": 0.004332402142857143,
+      "latencyMsP50": 27396,
+      "latencyMsP95": 38836
     },
     {
       "id": "moonshotai/kimi-k2.6",
-      "detectionRate": 0.8484848484848485,
-      "falsePositives": 0,
-      "casesRun": 40,
-      "meanCostUsdPerReview": 0.006907768999999999,
-      "meanDurationMs": 34350.475,
-      "totalCostUsd": 0.27631076
+      "detectionRate": 0.9122807017543859,
+      "gateVerdictCorrectness": 0.8428571428571429,
+      "falsePositives": 1,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 1.60869745,
+      "meanCostUsdPerReview": 0.022981392142857143,
+      "latencyMsP50": 22231,
+      "latencyMsP95": 57789
     },
     {
-      "id": "qwen/qwen3-32b",
-      "detectionRate": 0.9393939393939394,
+      "id": "google/gemma-4-31b-it",
+      "detectionRate": 0.9122807017543859,
+      "gateVerdictCorrectness": 0.7794117647058824,
       "falsePositives": 3,
-      "casesRun": 40,
-      "meanCostUsdPerReview": 0.00020167099999999997,
-      "meanDurationMs": 2387.125,
-      "totalCostUsd": 0.008066839999999999
+      "cleanCasesSilent": 10,
+      "cleanCases": 13,
+      "unscoredCases": 2,
+      "casesRun": 70,
+      "totalCostUsd": 0.2846151,
+      "meanCostUsdPerReview": 0.00406593,
+      "latencyMsP50": 1636,
+      "latencyMsP95": 11732
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "detectionRate": 0.9122807017543859,
+      "gateVerdictCorrectness": 0.7391304347826086,
+      "falsePositives": 1,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 1,
+      "casesRun": 70,
+      "totalCostUsd": 0.98161095,
+      "meanCostUsdPerReview": 0.014023013571428572,
+      "latencyMsP50": 22766,
+      "latencyMsP95": 67506
     },
     {
       "id": "mistralai/mistral-small-3.2-24b-instruct",
-      "detectionRate": 1,
+      "detectionRate": 0.9122807017543859,
+      "gateVerdictCorrectness": 0.7313432835820896,
+      "falsePositives": 7,
+      "cleanCasesSilent": 6,
+      "cleanCases": 13,
+      "unscoredCases": 3,
+      "casesRun": 70,
+      "totalCostUsd": 0.03365288625,
+      "meanCostUsdPerReview": 0.00048075551785714283,
+      "latencyMsP50": 13429,
+      "latencyMsP95": 27855
+    },
+    {
+      "id": "thinkingmachines/inkling-small",
+      "detectionRate": 0.8947368421052632,
+      "gateVerdictCorrectness": 0.8208955223880597,
       "falsePositives": 0,
-      "casesRun": 40,
-      "meanCostUsdPerReview": 0.00009437562500000003,
-      "meanDurationMs": 5631.3,
-      "totalCostUsd": 0.003775025000000001
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 3,
+      "casesRun": 70,
+      "totalCostUsd": 0.2467231,
+      "meanCostUsdPerReview": 0.0035246157142857144,
+      "latencyMsP50": 23097,
+      "latencyMsP95": 63238
     },
     {
       "id": "google/gemma-3-27b-it",
-      "detectionRate": 0.9696969696969697,
+      "detectionRate": 0.8771929824561403,
+      "gateVerdictCorrectness": 0.7936507936507936,
+      "falsePositives": 8,
+      "cleanCasesSilent": 4,
+      "cleanCases": 13,
+      "unscoredCases": 7,
+      "casesRun": 70,
+      "totalCostUsd": 0.042586394,
+      "meanCostUsdPerReview": 0.0006083770571428572,
+      "latencyMsP50": 13052,
+      "latencyMsP95": 41756
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "detectionRate": 0.8596491228070176,
+      "gateVerdictCorrectness": 0.7857142857142857,
+      "falsePositives": 2,
+      "cleanCasesSilent": 12,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 0.70536192,
+      "meanCostUsdPerReview": 0.010076598857142858,
+      "latencyMsP50": 17953,
+      "latencyMsP95": 48373
+    },
+    {
+      "id": "qwen/qwen3-32b",
+      "detectionRate": 0.8596491228070176,
+      "gateVerdictCorrectness": 0.7777777777777778,
+      "falsePositives": 12,
+      "cleanCasesSilent": 8,
+      "cleanCases": 13,
+      "unscoredCases": 7,
+      "casesRun": 70,
+      "totalCostUsd": 0.13161951,
+      "meanCostUsdPerReview": 0.0018802787142857141,
+      "latencyMsP50": 5123,
+      "latencyMsP95": 19610
+    },
+    {
+      "id": "meta/muse-glimmer-30b",
+      "detectionRate": 0.8421052631578947,
+      "gateVerdictCorrectness": 0.8285714285714286,
       "falsePositives": 1,
-      "casesRun": 40,
-      "meanCostUsdPerReview": 0.00008865400000000002,
-      "meanDurationMs": 2915.25,
-      "totalCostUsd": 0.003546160000000001
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 0,
+      "casesRun": 70,
+      "totalCostUsd": 0.28107195,
+      "meanCostUsdPerReview": 0.0040153135714285715,
+      "latencyMsP50": 24363,
+      "latencyMsP95": 54546
+    },
+    {
+      "id": "nvidia/nemotron-3.5-lightning",
+      "detectionRate": 0.8421052631578947,
+      "gateVerdictCorrectness": 0.7941176470588235,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 2,
+      "casesRun": 70,
+      "totalCostUsd": 0.1732027,
+      "meanCostUsdPerReview": 0.0024743242857142855,
+      "latencyMsP50": 36385,
+      "latencyMsP95": 87095
+    },
+    {
+      "id": "google/gemini-3.7-flash",
+      "detectionRate": 0.7543859649122807,
+      "gateVerdictCorrectness": 0.803030303030303,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 4,
+      "casesRun": 70,
+      "totalCostUsd": 0.2323275,
+      "meanCostUsdPerReview": 0.0033189642857142858,
+      "latencyMsP50": 11189,
+      "latencyMsP95": 22047
+    },
+    {
+      "id": "bytedance-seed/seed-2.0-code",
+      "detectionRate": 0.7368421052631579,
+      "gateVerdictCorrectness": 0.8333333333333334,
+      "falsePositives": 2,
+      "cleanCasesSilent": 10,
+      "cleanCases": 13,
+      "unscoredCases": 16,
+      "casesRun": 70,
+      "totalCostUsd": 0.6598235,
+      "meanCostUsdPerReview": 0.00942605,
+      "latencyMsP50": 55973,
+      "latencyMsP95": 131605
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-0731",
+      "detectionRate": 0.6842105263157895,
+      "gateVerdictCorrectness": 0.6323529411764706,
+      "falsePositives": 0,
+      "cleanCasesSilent": 13,
+      "cleanCases": 13,
+      "unscoredCases": 2,
+      "casesRun": 70,
+      "totalCostUsd": 0.064687309,
+      "meanCostUsdPerReview": 0.0009241044142857143,
+      "latencyMsP50": 24765,
+      "latencyMsP95": 74376
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "detectionRate": 0.631578947368421,
+      "gateVerdictCorrectness": 0.75,
+      "falsePositives": 0,
+      "cleanCasesSilent": 12,
+      "cleanCases": 13,
+      "unscoredCases": 18,
+      "casesRun": 70,
+      "totalCostUsd": 1.23569172,
+      "meanCostUsdPerReview": 0.017652738857142858,
+      "latencyMsP50": 69856,
+      "latencyMsP95": 134602
+    },
+    {
+      "id": "qwen/qwen3.8-max",
+      "unreachable": true,
+      "casesRun": 70,
+      "unscoredCases": 70
     }
-  ]
+  ],
+  "note": "Rows are screening runs on unconstrained provider routing. Where a model carries pinnedProviderContract, that block is the median of runs made under the hosted contract: one pinned upstream provider, zero-retention required, price ceiling applied.",
+  "repeatRuns": {
+    "note": "Detection rates from repeated screening runs on the same model and corpus with unconstrained provider routing. The spread includes every reported run, including runs marked in degradedRunIndexes for invalid output. Luna's full observed range is 21.1 percentage points; its degraded run has 16 unavailable results among 70 attempts. Unavailable defect cases receive no detection credit.",
+    "models": [
+      {
+        "id": "openai/gpt-5.6-luna",
+        "detectionRates": [
+          0.9649122807017544,
+          0.9122807017543859,
+          0.9298245614035088,
+          0.7543859649122807
+        ],
+        "degradedRunIndexes": [
+          3
+        ]
+      },
+      {
+        "id": "moonshotai/kimi-k2.7-code",
+        "detectionRates": [
+          0.9473684210526315,
+          0.8947368421052632,
+          0.9824561403508771,
+          0.9473684210526315
+        ]
+      },
+      {
+        "id": "z-ai/glm-5.2",
+        "detectionRates": [
+          0.9473684210526315,
+          0.8947368421052632,
+          0.8771929824561403,
+          0.8947368421052632
+        ]
+      }
+    ]
+  }
 }

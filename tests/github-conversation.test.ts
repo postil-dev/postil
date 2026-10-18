@@ -37,6 +37,10 @@ describe("GitHub conversation classification", () => {
 
   test("strips markers and bounds trusted thread context", () => {
     expect(withoutPostilMention("Please @postil explain")).toBe("Please  explain");
+    expect(withoutPostilMention("@postil-dev explain")).toBe("explain");
+    expect(withoutPostilMention("Ask @postil-dev/maintainers")).toBe(
+      "Ask @postil-dev/maintainers",
+    );
     expect(boundedThreadContext(`Review text\n\n<!-- postil-respond-job:7 -->`)).toBe(
       "Review text",
     );

@@ -22,8 +22,8 @@ export interface OrganizationEntitlementSnapshot {
   pastDueGraceEndsAt: Date | null;
   periodStartsAt: Date | null;
   periodEndsAt: Date | null;
-  includedUsageMicros: number;
-  overageHardCapMicros: number | null;
+  includedUsageMicros: bigint;
+  overageHardCapMicros: bigint | null;
   promotionalEligible: boolean;
   promotionalEndsAt: Date | null;
   billingContactEmail: string | null;
@@ -34,8 +34,8 @@ export interface RepositoryInferenceAccessDecision {
   allowed: boolean;
   reason: RepositoryInferenceAccessReason;
   entitlement: OrganizationEntitlementSnapshot | null;
-  usageMicros: number;
-  usageLimitMicros: number | null;
+  usageMicros: bigint;
+  usageLimitMicros: bigint | null;
 }
 
 /** Keep provider selection within the repository's active inference entitlement. */
@@ -68,7 +68,7 @@ export function requireMatchingProviderMode(
 export function evaluateRepositoryInferenceAccess(
   repositoryPrivate: boolean,
   entitlement: OrganizationEntitlementSnapshot | null,
-  usageMicros: number,
+  usageMicros: bigint,
   now = new Date(),
 ): RepositoryInferenceAccessDecision {
   if (!entitlement) {
@@ -91,7 +91,7 @@ export function evaluateRepositoryInferenceAccess(
   }
   const effectiveOverageHardCapMicros =
     entitlement.overageHardCapMicros ??
-    (entitlement.subscriptionMode === "hosted" ? 0 : null);
+    (entitlement.subscriptionMode === "hosted" ? 0n : null);
   const usageLimitMicros =
     effectiveOverageHardCapMicros === null
       ? null
@@ -150,7 +150,7 @@ export async function canProcessRepositoryInference(
 ): Promise<RepositoryInferenceAccessDecision> {
   const now = input.now ?? new Date();
   if (input.orgId === null) {
-    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, null, 0, now);
+    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, null, 0n, now);
   }
   const entitlement = (
     await db
@@ -174,19 +174,19 @@ export async function canProcessRepositoryInference(
       .limit(1)
   )[0] as OrganizationEntitlementSnapshot | undefined;
   if (!entitlement) {
-    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, null, 0, now);
+    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, null, 0n, now);
   }
 
   // BYOK provider charges never pass through Postil, so provider-side limits
   // remain authoritative and Postil does not estimate or gate that spend.
   if (entitlement.subscriptionMode === "byok") {
-    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, entitlement, 0, now);
+    return evaluateRepositoryInferenceAccess(input.repositoryPrivate, entitlement, 0n, now);
   }
 
-  let usageMicros = 0;
+  let usageMicros = 0n;
   const effectiveOverageHardCapMicros =
     entitlement.overageHardCapMicros ??
-    (entitlement.subscriptionMode === "hosted" ? 0 : null);
+    (entitlement.subscriptionMode === "hosted" ? 0n : null);
   if (effectiveOverageHardCapMicros !== null) {
     const filters = [
       eq(schema.usageEvents.orgId, input.orgId),
@@ -201,13 +201,13 @@ export async function canProcessRepositoryInference(
     const usage = (
       await db
         .select({
-          costMicros: sql<number>`COALESCE(SUM(${schema.usageEvents.costMicros}), 0)::bigint`,
+          costMicros: sql<string>`COALESCE(SUM(${schema.usageEvents.costMicros}), 0)::bigint`,
           unpricedCount: sql<number>`COUNT(*) FILTER (WHERE ${schema.usageEvents.costMicros} IS NULL)::int`,
         })
         .from(schema.usageEvents)
         .where(and(...filters))
     )[0];
-    const pricedUsageMicros = usage?.costMicros ?? 0;
+    const pricedUsageMicros = BigInt(usage?.costMicros ?? "0");
     const usageLimitMicros =
       entitlement.includedUsageMicros + effectiveOverageHardCapMicros;
     // A hard cap cannot be proven while an event in the period is unpriced.

@@ -47,10 +47,10 @@ export function deriveGateEnforcementPresentation(
         ? "not enforced"
         : "unverified",
     consequence: status === "required"
-      ? "GitHub requires this App's postil/gate result for merges covered by the rule."
+      ? "GitHub blocks merges until the Postil GitHub App's postil/gate check passes."
       : status === "not_required"
-        ? "Postil publishes a gate result, but GitHub does not require this App's check before merge."
-        : "Postil publishes a gate result, but merge enforcement could not be verified.",
+        ? "Reviews run, but a failing gate does not block merges here."
+        : "Postil cannot read whether this repository's rules enforce the gate.",
   };
 }
 

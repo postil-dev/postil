@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 
 import type { Pool, PoolClient } from "pg";
 
@@ -10,15 +11,43 @@ import {
   configuredMonitoringAlertTransport,
   sendOperatorNotification,
   type OperatorNotificationTransport,
+  type NotificationDelivery,
 } from "@/lib/operator-notifications";
 import { redactSecrets } from "@/lib/redact";
+import { getInstallationToken } from "@/lib/github/app-auth";
+import { listOpenPullRequestHeadsPage, type OpenPullRequestHead } from "@/lib/github/checks";
+import { OPERATIONAL_REVIEW_FAILURE_SQL } from "@/lib/review-outcome";
 import type { TransactionalEmailContent } from "@/lib/transactional-email";
+
+const deliverySchema = z.object({
+  transport: z.enum(["ilert", "email", "unknown"]),
+  fallbackUsed: z.boolean(),
+  primaryOutcome: z.enum(["accepted", "http_rejected", "timeout", "network_error", "unknown"]),
+  primaryHttpStatus: z.number().int().min(100).max(599).nullable(),
+}).strict();
+const receiptSchema = deliverySchema.extend({
+  notificationKey: z.string().min(1).max(512),
+  acceptedAt: z.string().datetime(),
+}).strict();
+export type MonitoringDeliveryReceipt = z.infer<typeof receiptSchema>;
+
+/** The receipt describes the last acknowledged acceptance, not a pending delivery. */
+export function matchingMonitoringDeliveryReceipt(
+  receipt: unknown, notificationKey: string | null, notifiedAt: Date | null,
+): MonitoringDeliveryReceipt | null {
+  const parsed = receiptSchema.safeParse(receipt);
+  if (!parsed.success || !notificationKey || !notifiedAt ||
+      parsed.data.notificationKey !== notificationKey ||
+      parsed.data.acceptedAt !== notifiedAt.toISOString()) return null;
+  return parsed.data;
+}
 
 export type PrivateMonitoringGroup =
   | "availability"
   | "billing"
   | "email"
   | "fleet"
+  | "monitoring"
   | "provider"
   | "queue"
   | "signup"
@@ -32,6 +61,36 @@ export interface PrivateMonitoringCheck {
   healthy: boolean;
   summary: string;
   detail: string;
+  /** Attempts the check made within the pass; absent for single-shot checks. */
+  attempts?: number;
+  /**
+   * Bounded evidence for every attempt that failed before the final one. A
+   * healthy check with entries here recovered through a retry.
+   */
+  attemptFailures?: readonly string[];
+}
+
+export interface PrivateMonitoringIncidentEvent {
+  id: number;
+  key: string;
+  group: string;
+  severity: PrivateMonitoringSeverity;
+  transition: "opened" | "resolved";
+  summary: string;
+  detail: string;
+  occurrenceCount: number;
+  firstDetectedAt: Date;
+  occurredAt: Date;
+}
+
+export interface PrivateMonitoringCheckFailure {
+  id: number;
+  runId: number;
+  key: string;
+  attempt: number;
+  recovered: boolean;
+  detail: string;
+  observedAt: Date;
 }
 
 export interface PrivateMonitoringNotification {
@@ -65,6 +124,7 @@ export interface PrivateMonitoringDashboard {
     lastStartedAt: Date | null;
     lastCompletedAt: Date | null;
     lastError: string | null;
+    heartbeatDeliveryError: string | null;
   };
   heartbeats: Array<{
     component: string;
@@ -77,6 +137,7 @@ export interface PrivateMonitoringDashboard {
     severity: PrivateMonitoringSeverity;
     summary: string;
     detail: string;
+    openedDetail: string | null;
     state: "open" | "resolved";
     occurrenceCount: number;
     firstDetectedAt: Date;
@@ -85,6 +146,7 @@ export interface PrivateMonitoringDashboard {
     notificationAttempts: number;
     lastNotifiedAt: Date | null;
     lastNotificationError: string | null;
+    lastDeliveryReceipt?: MonitoringDeliveryReceipt | null;
   }>;
   runs: Array<{
     id: number;
@@ -94,13 +156,207 @@ export interface PrivateMonitoringDashboard {
     startedAt: Date;
     finishedAt: Date | null;
   }>;
+  events: PrivateMonitoringIncidentEvent[];
+  checkFailures: PrivateMonitoringCheckFailure[];
 }
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type Sleep = (milliseconds: number) => Promise<void>;
+
+export interface OperationalReviewRepository {
+  repositoryId: number;
+  installationId: number;
+  repoFullName: string;
+}
+
+interface ReviewMonitoringOptions {
+  signal?: AbortSignal;
+  github?: {
+    getInstallationToken: typeof getInstallationToken;
+    listOpenPullRequestHeadsPage: typeof listOpenPullRequestHeadsPage;
+  };
+}
+
+const CURRENT_OPERATIONAL_REVIEWS_SQL = `
+    WITH current_terminal_reviews AS (
+      SELECT review.*, repository.full_name AS repo_full_name,
+             installation.github_installation_id
+        FROM reviews AS review
+        JOIN repositories AS repository ON repository.id = review.repository_id
+        JOIN installations AS installation ON installation.id = repository.installation_id
+       WHERE review.status IN ('completed', 'failed')
+         AND repository.enabled AND NOT installation.suspended
+         AND NOT EXISTS (
+           SELECT 1 FROM reviews AS newer
+            WHERE newer.repository_id = review.repository_id
+              AND newer.pr_number = review.pr_number
+              AND newer.id > review.id
+              AND (
+                newer.head_sha <> review.head_sha
+                OR newer.status IN ('completed', 'failed', 'stale')
+              )
+         )
+    ),
+    operational_failures AS (
+      SELECT * FROM current_terminal_reviews
+         WHERE (
+             (${OPERATIONAL_REVIEW_FAILURE_SQL})
+             OR (status = 'completed' AND EXISTS (
+               SELECT 1 FROM jsonb_array_elements(
+                 CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
+                   THEN envelope -> 'findings' ELSE '[]'::jsonb END
+               ) AS finding
+               WHERE finding ->> 'path' IN (
+                 '.postil/operational', '.postil/provider', '.postil/model-output'
+               )
+             ))
+           )
+    )`;
+
+export async function checkOutstandingOperationalReviews(
+  pool: Pick<Pool, "query">,
+  repositories: readonly OperationalReviewRepository[],
+  options: ReviewMonitoringOptions = {},
+): Promise<PrivateMonitoringCheck> {
+  const limit = 20;
+  const selected = repositories.slice(0, limit);
+  const overflow = repositories.length > limit;
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(20_000),
+    ...(options.signal ? [options.signal] : []),
+  ]);
+  const github = options.github ?? { getInstallationToken, listOpenPullRequestHeadsPage };
+  const tokens = new Map<number, Promise<string>>();
+  const heads: Array<{ repositoryId: number; prNumber: number; headSha: string }> = [];
+  let unresolved = 0;
+  let unknown = 0;
+  let next = 0;
+  let pages = 0;
+  let budgetExceeded = overflow;
+  let databaseUnknown = false;
+  let rejectAborted: () => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAborted = () => reject(new Error("Review state observation cancelled"));
+  });
+  signal.addEventListener("abort", rejectAborted, { once: true });
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, selected.length) }, async () => {
+      for (;;) {
+        const repository = selected[next++];
+        if (!repository) return;
+        try {
+          signal.throwIfAborted();
+          if (pages >= limit) {
+            budgetExceeded = true;
+            throw new Error("Review state page budget exhausted");
+          }
+          let token = tokens.get(repository.installationId);
+          if (!token) {
+            token = github.getInstallationToken(repository.installationId, signal);
+            tokens.set(repository.installationId, token);
+          }
+          const credential = await Promise.race([token, aborted]);
+          const observed = new Map<number, OpenPullRequestHead>();
+          let page: number | null = 1;
+          while (page !== null) {
+            signal.throwIfAborted();
+            if (pages >= limit) {
+              budgetExceeded = true;
+              throw new Error("Review state page budget exhausted");
+            }
+            pages += 1;
+            const live: Awaited<ReturnType<typeof listOpenPullRequestHeadsPage>> = await Promise.race([
+              github.listOpenPullRequestHeadsPage(credential, repository.repoFullName, page, signal),
+              aborted,
+            ]);
+            signal.throwIfAborted();
+            for (const pull of live.pullRequests) {
+              const previous = observed.get(pull.number);
+              if (previous && (previous.headSha !== pull.headSha || previous.draft !== pull.draft)) {
+                throw new Error("Conflicting open pull request observations");
+              }
+              observed.set(pull.number, pull);
+            }
+            if (live.nextPage !== null && live.nextPage !== page + 1) {
+              throw new Error("Review state page did not advance");
+            }
+            page = live.nextPage;
+          }
+          for (const pull of observed.values()) {
+            if (!pull.draft) heads.push({
+              repositoryId: repository.repositoryId, prNumber: pull.number, headSha: pull.headSha,
+            });
+          }
+        } catch {
+          unknown += 1;
+        }
+      }
+    }));
+    if (heads.length > 0) {
+      try {
+        signal.throwIfAborted();
+        const result = await Promise.race([
+          pool.query<{ count: string }>(`
+            ${CURRENT_OPERATIONAL_REVIEWS_SQL}
+            SELECT count(*)::text AS count FROM operational_failures AS failure
+            JOIN jsonb_to_recordset($1::jsonb) AS live(
+              "repositoryId" integer, "prNumber" integer, "headSha" text
+            ) ON failure.repository_id = live."repositoryId"
+              AND failure.pr_number = live."prNumber" AND failure.head_sha = live."headSha"
+          `, [JSON.stringify(heads)]),
+          aborted,
+        ]);
+        signal.throwIfAborted();
+        unresolved = numeric(result.rows[0]?.count, "operational failures on open heads");
+      } catch {
+        databaseUnknown = true;
+      }
+    }
+  } finally {
+    signal.removeEventListener("abort", rejectAborted);
+  }
+  return {
+    key: "review-operational-failures",
+    group: "provider",
+    severity: "critical",
+    healthy: unresolved === 0 && unknown === 0 && !budgetExceeded && !databaseUnknown,
+    summary: "Current reviews have no unresolved operational failures",
+    detail: `${unresolved} unresolved terminal review failures on open current heads; ${unknown} repository listings could not be verified.${budgetExceeded ? " Repository or page budget exceeded; additional failures remain unverified." : ""}${databaseUnknown ? " Current-head failure matching could not be verified." : ""}`,
+  };
+}
+
+export interface PublicProbeOptions {
+  /** Delay implementation between retry attempts; tests replace it. */
+  sleep?: Sleep;
+}
+
+interface ProbeAttempt {
+  response: Response;
+  body: string;
+}
+
+interface ProbeEvaluation {
+  healthy: boolean;
+  detail: string;
+}
 
 const MONITOR_STATE_ID = 1;
 const DEFAULT_LEASE_MS = 2 * 60 * 1_000;
 const PUBLIC_PROBE_TIMEOUT_MS = 8_000;
+/**
+ * A probe retries transport failures and transient statuses before it counts
+ * as unhealthy. The delays are long enough to outlive a proxy reconnect or a
+ * single slow response, and short enough that a pass still finishes well
+ * inside the monitoring interval when every probe is down.
+ */
+const PUBLIC_PROBE_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000];
+const TRANSIENT_PUBLIC_PROBE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const PUBLIC_PROBE_BODY_LIMIT = 32_768;
+const CHECK_FAILURE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+const INCIDENT_EVENT_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
+const HEARTBEAT_DELIVERY_MAX_AGE_SECONDS = 15 * 60;
+/** Retried attempts that recovered within 24 hours before flapping is reported. */
+const CHECK_RECOVERY_FLAP_THRESHOLD = 2;
 const INCIDENT_REMINDER_MS = 6 * 60 * 60 * 1_000;
 const NOTIFICATION_LEASE_MS = 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS = 5;
@@ -114,7 +370,7 @@ const SAFE_INSTANCE = /^[A-Za-z0-9._:-]{1,160}$/;
 
 export async function recordServiceHeartbeat(
   pool: Pool,
-  component: "worker" | "monitor",
+  component: "worker" | "monitor" | "monitor-heartbeat-delivery",
   instanceId: string,
   now = new Date(),
 ): Promise<void> {
@@ -131,16 +387,91 @@ export async function recordServiceHeartbeat(
   );
 }
 
+export async function deliverExternalMonitorHeartbeat(
+  pool: Pool,
+  options: {
+    url: string | undefined;
+    instanceId: string;
+    now?: Date;
+    fetchImpl?: Fetch;
+  },
+): Promise<"disabled" | "delivered"> {
+  if (!options.url) return "disabled";
+  const url = new URL(options.url);
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error(
+      "external monitor heartbeat URL must use HTTPS without URL user info",
+    );
+  }
+  const now = options.now ?? new Date();
+  let response: Response;
+  try {
+    response = await (options.fetchImpl ?? fetch)(url, {
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    const message = boundedDetail(
+      `external monitor heartbeat request failed: ${redactSecrets(error)}`,
+    );
+    await recordHeartbeatDeliveryError(pool, message, now);
+    throw new Error(message);
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    const reason = redactSecrets(body).replace(/\s+/g, " ").trim().slice(0, 300);
+    const message = boundedDetail(
+      `external monitor heartbeat returned HTTP ${response.status}${reason ? `: ${reason}` : ""}`,
+    );
+    await recordHeartbeatDeliveryError(pool, message, now);
+    throw new Error(message);
+  }
+  await response.body?.cancel().catch(() => undefined);
+  await recordServiceHeartbeat(
+    pool,
+    "monitor-heartbeat-delivery",
+    options.instanceId,
+    now,
+  );
+  await recordHeartbeatDeliveryError(pool, null, now);
+  return "delivered";
+}
+
+async function recordHeartbeatDeliveryError(
+  pool: Pool,
+  message: string | null,
+  now: Date,
+): Promise<void> {
+  await pool
+    .query(
+      `INSERT INTO private_monitor_state (id, heartbeat_delivery_error, updated_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO UPDATE SET
+         heartbeat_delivery_error = EXCLUDED.heartbeat_delivery_error,
+         updated_at = EXCLUDED.updated_at`,
+      [MONITOR_STATE_ID, message, now],
+    )
+    .catch(() => undefined);
+}
+
 export async function getPrivateMonitoringDashboard(
   pool: Pool,
 ): Promise<PrivateMonitoringDashboard> {
-  const [stateResult, heartbeatResult, incidentResult, runResult] = await Promise.all([
+  const [
+    stateResult,
+    heartbeatResult,
+    incidentResult,
+    runResult,
+    eventResult,
+    checkFailureResult,
+  ] = await Promise.all([
     pool.query<{
       last_started_at: Date | null;
       last_completed_at: Date | null;
       last_error: string | null;
+      heartbeat_delivery_error: string | null;
     }>(
-      `SELECT last_started_at, last_completed_at, last_error
+      `SELECT last_started_at, last_completed_at, last_error, heartbeat_delivery_error
          FROM private_monitor_state
         WHERE id = $1`,
       [MONITOR_STATE_ID],
@@ -160,6 +491,7 @@ export async function getPrivateMonitoringDashboard(
       severity: PrivateMonitoringSeverity;
       summary: string;
       detail: string;
+      opened_detail: string | null;
       state: "open" | "resolved";
       occurrence_count: number;
       first_detected_at: Date;
@@ -168,10 +500,13 @@ export async function getPrivateMonitoringDashboard(
       notification_attempts: number;
       last_notified_at: Date | null;
       last_notification_error: string | null;
+      last_notification_key: string | null;
+      last_delivery_receipt: unknown;
     }>(
-      `SELECT key, "group", severity, summary, detail, state, occurrence_count,
-              first_detected_at, last_detected_at, resolved_at,
-              notification_attempts, last_notified_at, last_notification_error
+      `SELECT key, "group", severity, summary, detail, opened_detail, state,
+              occurrence_count, first_detected_at, last_detected_at, resolved_at,
+              notification_attempts, last_notified_at, last_notification_error,
+              last_notification_key, last_delivery_receipt
          FROM private_monitor_incidents
         ORDER BY (state = 'open') DESC,
                  (severity = 'critical') DESC,
@@ -191,6 +526,39 @@ export async function getPrivateMonitoringDashboard(
         ORDER BY id DESC
         LIMIT 24`,
     ),
+    pool.query<{
+      id: string;
+      key: string;
+      group: string;
+      severity: PrivateMonitoringSeverity;
+      transition: "opened" | "resolved";
+      summary: string;
+      detail: string;
+      occurrence_count: number;
+      first_detected_at: Date;
+      occurred_at: Date;
+    }>(
+      `SELECT id, key, "group", severity, transition, summary, detail,
+              occurrence_count, first_detected_at, occurred_at
+         FROM private_monitor_incident_events
+        ORDER BY id DESC
+        LIMIT 100`,
+    ),
+    pool.query<{
+      id: string;
+      run_id: string;
+      key: string;
+      attempt: number;
+      recovered: boolean;
+      detail: string;
+      observed_at: Date;
+    }>(
+      `SELECT id, run_id, key, attempt, recovered, detail, observed_at
+         FROM private_monitor_check_failures
+        WHERE observed_at >= now() - interval '24 hours'
+        ORDER BY id DESC
+        LIMIT 100`,
+    ),
   ]);
   const state = stateResult.rows[0];
   return {
@@ -198,6 +566,7 @@ export async function getPrivateMonitoringDashboard(
       lastStartedAt: state?.last_started_at ?? null,
       lastCompletedAt: state?.last_completed_at ?? null,
       lastError: state?.last_error ?? null,
+      heartbeatDeliveryError: state?.heartbeat_delivery_error ?? null,
     },
     heartbeats: heartbeatResult.rows.map((row) => ({
       component: row.component,
@@ -210,6 +579,7 @@ export async function getPrivateMonitoringDashboard(
       severity: row.severity,
       summary: row.summary,
       detail: row.detail,
+      openedDetail: row.opened_detail,
       state: row.state,
       occurrenceCount: row.occurrence_count,
       firstDetectedAt: row.first_detected_at,
@@ -218,6 +588,9 @@ export async function getPrivateMonitoringDashboard(
       notificationAttempts: row.notification_attempts,
       lastNotifiedAt: row.last_notified_at,
       lastNotificationError: row.last_notification_error,
+      lastDeliveryReceipt: matchingMonitoringDeliveryReceipt(
+        row.last_delivery_receipt, row.last_notification_key, row.last_notified_at,
+      ),
     })),
     runs: runResult.rows.map((row) => ({
       id: Number(row.id),
@@ -226,6 +599,27 @@ export async function getPrivateMonitoringDashboard(
       failureCount: row.failure_count,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
+    })),
+    events: eventResult.rows.map((row) => ({
+      id: Number(row.id),
+      key: row.key,
+      group: row.group,
+      severity: row.severity,
+      transition: row.transition,
+      summary: row.summary,
+      detail: row.detail,
+      occurrenceCount: row.occurrence_count,
+      firstDetectedAt: row.first_detected_at,
+      occurredAt: row.occurred_at,
+    })),
+    checkFailures: checkFailureResult.rows.map((row) => ({
+      id: Number(row.id),
+      runId: Number(row.run_id),
+      key: row.key,
+      attempt: row.attempt,
+      recovered: row.recovered,
+      detail: row.detail,
+      observedAt: row.observed_at,
     })),
   };
 }
@@ -303,6 +697,14 @@ export async function startPrivateMonitoringPass(
           AND COALESCE(finished_at, started_at) < $1`,
       [new Date(now.getTime() - MONITOR_RUN_RETENTION_MS)],
     );
+    await client.query(
+      `DELETE FROM private_monitor_check_failures WHERE observed_at < $1`,
+      [new Date(now.getTime() - CHECK_FAILURE_RETENTION_MS)],
+    );
+    await client.query(
+      `DELETE FROM private_monitor_incident_events WHERE occurred_at < $1`,
+      [new Date(now.getTime() - INCIDENT_EVENT_RETENTION_MS)],
+    );
     const result = await client.query<{ id: string }>(
       `INSERT INTO private_monitor_runs
          (scheduled_for, owner, status, started_at)
@@ -359,6 +761,7 @@ export async function finishPrivateMonitoringPass(
     for (const check of checks) {
       await reconcileCheck(client, check, now);
     }
+    await recordCheckFailures(client, pass.runId, checks, now);
     const failureCount = checks.filter((check) => !check.healthy).length;
     await client.query(
       `UPDATE private_monitor_runs
@@ -408,49 +811,83 @@ export async function failPrivateMonitoringPass(
   );
 }
 
+/**
+ * Probes the public origin. Serving probes (site, liveness, dependencies)
+ * are critical; hygiene probes (sitemap, favicon, robots, redirects, noindex
+ * headers) are warnings because their failure degrades discoverability, not
+ * service. Every probe retries transport failures and transient statuses
+ * before it counts as unhealthy, and records each failed attempt so a probe
+ * that only ever recovers on retry is still visible as flapping.
+ */
 export async function runPublicMonitoringChecks(
   publicOrigin: string,
   fetchImpl: Fetch = fetch,
+  options: PublicProbeOptions = {},
 ): Promise<PrivateMonitoringCheck[]> {
   const origin = new URL(publicOrigin);
   if (origin.protocol !== "https:" || origin.username || origin.password) {
     throw new Error("private monitor public origin must be a credential-free HTTPS URL");
   }
+  const probe = (
+    key: string,
+    summary: string,
+    severity: PrivateMonitoringSeverity,
+    url: URL,
+    init: RequestInit,
+    evaluate: (attempt: ProbeAttempt) => ProbeEvaluation,
+  ) => probeWithRetry({ key, summary, severity, url, init, evaluate, fetchImpl, options });
+  const ok = (attempt: ProbeAttempt, url: URL): ProbeEvaluation => ({
+    healthy: attempt.response.ok,
+    detail: `${url.toString()} returned HTTP ${attempt.response.status}.`,
+  });
+  const site = new URL("/", origin);
+  const liveness = new URL("/api/health", origin);
+  const sitemap = new URL("/sitemap.xml", origin);
+  const favicon = new URL("/favicon.ico", origin);
+  const dependencies = new URL("/api/health/dependencies", origin);
+  const robots = new URL("/robots.txt", origin);
   const checks = await Promise.all([
-    probeOk("public-site", "Public site responds", new URL("/", origin), fetchImpl),
-    probeOk(
-      "public-liveness",
-      "Web liveness endpoint responds",
-      new URL("/api/health", origin),
-      fetchImpl,
+    probe("public-site", "Public site responds", "critical", site, { redirect: "follow" }, (attempt) => ok(attempt, site)),
+    probe("public-liveness", "Web liveness endpoint responds", "critical", liveness, { redirect: "follow" }, (attempt) => ok(attempt, liveness)),
+    probe("public-sitemap", "Sitemap responds", "warning", sitemap, { redirect: "follow" }, (attempt) => ok(attempt, sitemap)),
+    probe("public-favicon", "Favicon responds", "warning", favicon, { redirect: "follow" }, (attempt) => ok(attempt, favicon)),
+    probe("public-dependencies", "Web dependencies are ready", "critical", dependencies, { redirect: "follow" }, (attempt) =>
+      evaluateDependencies(dependencies, attempt),
     ),
-    probeOk("public-sitemap", "Sitemap responds", new URL("/sitemap.xml", origin), fetchImpl),
-    probeOk("public-favicon", "Favicon responds", new URL("/favicon.ico", origin), fetchImpl),
-    probeDependencies(origin, fetchImpl),
-    probeRobots(origin, fetchImpl),
-    probeRedirect(
+    probe("public-robots", "Robots policy exposes public pages", "warning", robots, { redirect: "follow" }, (attempt) =>
+      evaluateRobots(origin, robots, attempt),
+    ),
+    probe(
       "redirect-about",
       "Legacy about route redirects",
+      "warning",
       new URL("/about", origin),
-      new URL("/why-postil", origin),
-      fetchImpl,
+      { redirect: "manual" },
+      (attempt) => evaluateRedirect(new URL("/about", origin), new URL("/why-postil", origin), attempt),
     ),
-    probeNoIndex("noindex-login", "Login is excluded from indexing", new URL("/login", origin), fetchImpl),
-    probeNoIndex(
+    probe("noindex-login", "Login is excluded from indexing", "warning", new URL("/login", origin), { redirect: "follow" }, (attempt) =>
+      evaluateNoIndex(new URL("/login", origin), attempt),
+    ),
+    probe(
       "noindex-api-health",
       "Health API is excluded from indexing",
+      "warning",
       new URL("/api/health", origin),
-      fetchImpl,
+      { redirect: "follow" },
+      (attempt) => evaluateNoIndex(new URL("/api/health", origin), attempt),
     ),
   ]);
   if (origin.hostname === "postil.dev") {
+    const www = new URL("https://www.postil.dev/docs?utm_source=monitor");
     checks.push(
-      await probeRedirect(
+      await probe(
         "redirect-www",
         "WWW traffic reaches the canonical origin",
-        new URL("https://www.postil.dev/docs?utm_source=monitor"),
-        new URL("https://postil.dev/docs?utm_source=monitor"),
-        fetchImpl,
+        "warning",
+        www,
+        { redirect: "manual" },
+        (attempt) =>
+          evaluateRedirect(www, new URL("https://postil.dev/docs?utm_source=monitor"), attempt),
       ),
     );
   }
@@ -459,10 +896,15 @@ export async function runPublicMonitoringChecks(
 
 export async function runDatabaseMonitoringChecks(
   pool: Pool,
-  options: { workerHeartbeatMaxAgeSeconds?: number } = {},
+  options: ReviewMonitoringOptions & {
+    workerHeartbeatMaxAgeSeconds?: number;
+    /** Whether an external dead-man heartbeat URL is configured, so its delivery is a check. */
+    externalHeartbeatConfigured?: boolean;
+  } = {},
 ): Promise<PrivateMonitoringCheck[]> {
   const workerHeartbeatMaxAgeSeconds =
     options.workerHeartbeatMaxAgeSeconds ?? 180;
+  const externalHeartbeatConfigured = options.externalHeartbeatConfigured ?? false;
   if (
     !Number.isSafeInteger(workerHeartbeatMaxAgeSeconds) ||
     workerHeartbeatMaxAgeSeconds < 30 ||
@@ -473,9 +915,27 @@ export async function runDatabaseMonitoringChecks(
     );
   }
   const result = await pool.query<Record<string, string | null>>(`
+    ${CURRENT_OPERATIONAL_REVIEWS_SQL}
     SELECT
       (SELECT EXTRACT(EPOCH FROM now() - observed_at)::int::text
          FROM service_heartbeats WHERE component = 'worker') AS worker_heartbeat_age,
+      (SELECT EXTRACT(EPOCH FROM now() - observed_at)::int::text
+         FROM service_heartbeats
+        WHERE component = 'monitor-heartbeat-delivery') AS heartbeat_delivery_age,
+      (SELECT heartbeat_delivery_error
+         FROM private_monitor_state WHERE id = 1) AS heartbeat_delivery_error,
+      (SELECT count(*)::text FROM private_monitor_check_failures
+         WHERE recovered
+           AND observed_at >= now() - interval '24 hours') AS check_recoveries_24h,
+      (SELECT string_agg(key || ' ' || attempts::text, ', ' ORDER BY attempts DESC, key)
+         FROM (
+           SELECT key, count(*) AS attempts
+             FROM private_monitor_check_failures
+            WHERE recovered
+              AND observed_at >= now() - interval '24 hours'
+            GROUP BY key
+            LIMIT 12
+         ) AS recovered_checks) AS check_recovery_summary_24h,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(started_at)), 0)::int::text
          FROM reviews WHERE status = 'running') AS running_review_age,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(run_after)), 0)::int::text
@@ -511,9 +971,13 @@ export async function runDatabaseMonitoringChecks(
          WHERE entitlement.org_id IS NULL) AS trial_entitlement_gaps,
       (SELECT count(*)::text
          FROM self_service_trial_grants AS grant_row
-         LEFT JOIN operator_alert_deliveries AS delivery
-           ON delivery.event_key = 'trial-started:' || grant_row.initiated_by_github_id::text
-         WHERE delivery.status IS DISTINCT FROM 'delivered') AS trial_alert_gaps,
+         WHERE NOT EXISTS (
+           SELECT 1
+             FROM operator_alert_deliveries AS delivery
+            WHERE delivery.org_id = grant_row.org_id
+              AND delivery.event = 'trial_started'
+              AND delivery.status = 'delivered'
+         )) AS trial_alert_gaps,
       (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(received_at)), 0)::int::text
          FROM webhook_deliveries WHERE completed_at IS NULL) AS webhook_pending_age,
       (SELECT count(*)::text FROM github_webhook_delivery_recoveries
@@ -530,31 +994,37 @@ export async function runDatabaseMonitoringChecks(
        END) AS webhook_scan_age,
       (SELECT last_error_category
          FROM github_webhook_redelivery_state WHERE id = 1) AS webhook_scan_error_category,
-      (SELECT count(*)::text
-         FROM reviews
-         WHERE finished_at >= now() - interval '30 minutes'
-           AND (
-             (status = 'failed'
-              AND error_message IS DISTINCT FROM 'Hosted inference allowance is unavailable or fully reserved.'
-             AND error_message IS DISTINCT FROM 'Hosted review service is temporarily unavailable.')
-             OR (status = 'completed' AND EXISTS (
-               SELECT 1 FROM jsonb_array_elements(
-                 CASE WHEN jsonb_typeof(envelope -> 'findings') = 'array'
-                   THEN envelope -> 'findings' ELSE '[]'::jsonb END
-               ) AS finding
-               WHERE finding ->> 'path' IN ('.postil/provider', '.postil/model-output', '.postil/operational')
-             ))
-           )) AS operational_failures,
+      (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'repositoryId', candidate.repository_id,
+                'installationId', candidate.github_installation_id,
+                'repoFullName', candidate.repo_full_name
+              ) ORDER BY candidate.repository_id), '[]'::jsonb)::text
+         FROM (SELECT DISTINCT repository_id, github_installation_id, repo_full_name
+                 FROM operational_failures ORDER BY repository_id LIMIT 21
+              ) AS candidate) AS operational_failure_repositories,
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND (
-             NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
-             OR EXISTS (
+             -- An invalid scorer output has the narrower alert below. Preserve
+             -- every other typed scorer failure and untyped legacy error.
+             EXISTS (
                SELECT 1 FROM jsonb_array_elements(
                  CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
                    THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
                ) AS incident
                WHERE incident ->> 'phase' = 'scorer' AND incident ->> 'recovered' = 'false'
+                 AND (incident ->> 'category') IS DISTINCT FROM 'invalidOutput'
+             )
+             OR (
+               NULLIF(btrim(envelope ->> 'scorerError'), '') IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(envelope -> 'modelIncidents') = 'array'
+                     THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
+                 ) AS incident
+                 WHERE incident ->> 'phase' = 'scorer'
+                   AND incident ->> 'recovered' = 'false'
+               )
              )
            )) AS scorer_failures,
       (SELECT count(*)::text FROM reviews
@@ -575,6 +1045,9 @@ export async function runDatabaseMonitoringChecks(
              ) AS incident
              WHERE incident ->> 'phase' = 'review' AND incident ->> 'recovery' = 'fallback'
            )) AS model_fallbacks,
+      -- Only output the run could not repair or fall back from. A recovered
+      -- incident is the review pipeline working as designed, and the metrics
+      -- endpoint still counts every observation for trend reporting.
       (SELECT count(*)::text FROM reviews
          WHERE status = 'completed' AND finished_at >= now() - interval '30 minutes'
            AND EXISTS (
@@ -583,6 +1056,7 @@ export async function runDatabaseMonitoringChecks(
                  THEN envelope -> 'modelIncidents' ELSE '[]'::jsonb END
              ) AS incident
              WHERE incident ->> 'category' = 'invalidOutput'
+               AND incident ->> 'recovered' = 'false'
            )) AS invalid_outputs,
       (SELECT count(*)::text FROM jobs
          WHERE status = 'failed'
@@ -590,6 +1064,11 @@ export async function runDatabaseMonitoringChecks(
   `);
   const row = result.rows[0];
   if (!row) throw new Error("private monitoring database query returned no row");
+  const operationalReviewCheck = await checkOutstandingOperationalReviews(
+    pool,
+    JSON.parse(row.operational_failure_repositories ?? "[]") as OperationalReviewRepository[],
+    options,
+  );
 
   const age = (key: string) => numeric(row[key], key);
   const count = (key: string) => numeric(row[key], key);
@@ -613,7 +1092,45 @@ export async function runDatabaseMonitoringChecks(
   const workerHeartbeat = row.worker_heartbeat_age === null
     ? Number.POSITIVE_INFINITY
     : age("worker_heartbeat_age");
+  const heartbeatDelivery = row.heartbeat_delivery_age === null
+    ? Number.POSITIVE_INFINITY
+    : age("heartbeat_delivery_age");
+  const heartbeatDeliveryError = row.heartbeat_delivery_error?.trim() || null;
+  const checkRecoveries = count("check_recoveries_24h");
+  const checkRecoverySummary = row.check_recovery_summary_24h?.trim() || null;
   return [
+    {
+      key: "monitor-heartbeat-delivery",
+      group: "monitoring",
+      severity: "critical",
+      healthy:
+        !externalHeartbeatConfigured ||
+        heartbeatDelivery <= HEARTBEAT_DELIVERY_MAX_AGE_SECONDS,
+      summary: "External dead-man heartbeat is accepted",
+      detail: boundedDetail(
+        !externalHeartbeatConfigured
+          ? "No external heartbeat URL is configured."
+          : `${
+              Number.isFinite(heartbeatDelivery)
+                ? `${heartbeatDelivery.toLocaleString("en-US")} seconds since the external heartbeat was accepted`
+                : "No external heartbeat has ever been accepted"
+            }; threshold ${HEARTBEAT_DELIVERY_MAX_AGE_SECONDS.toLocaleString("en-US")}.${
+              heartbeatDeliveryError ? ` Last delivery result: ${heartbeatDeliveryError}` : ""
+            }`,
+      ),
+    },
+    {
+      key: "check-flapping",
+      group: "monitoring",
+      severity: "warning",
+      healthy: checkRecoveries <= CHECK_RECOVERY_FLAP_THRESHOLD,
+      summary: "Checks pass without relying on retries",
+      detail: boundedDetail(
+        `${checkRecoveries.toLocaleString("en-US")} failed attempts recovered by retry in 24 hours; threshold ${CHECK_RECOVERY_FLAP_THRESHOLD.toLocaleString("en-US")}.${
+          checkRecoverySummary ? ` Recovered attempts by check: ${checkRecoverySummary}.` : ""
+        }`,
+      ),
+    },
     {
       key: "worker-heartbeat",
       group: "fleet",
@@ -653,11 +1170,14 @@ export async function runDatabaseMonitoringChecks(
               : ""
           }`,
     },
-    thresholdCheck("review-operational-failures", "provider", "critical", "Reviews complete without operational sentinels", count("operational_failures"), 0),
+    operationalReviewCheck,
     thresholdCheck("scorer-failures", "provider", "critical", "Scoring completes", count("scorer_failures"), 0),
     thresholdCheck("scorer-fallbacks", "provider", "warning", "Scoring avoids repeated fallback", count("scorer_fallbacks"), 2),
     thresholdCheck("model-fallbacks", "provider", "warning", "Review models avoid repeated fallback", count("model_fallbacks"), 5),
-    thresholdCheck("invalid-model-output", "provider", "critical", "Model output validates", count("invalid_outputs"), 0),
+    // Unrecovered invalid output pages only when it bursts: one occurrence in
+    // a window is a flaky upstream completion, and the scheduled GitHub
+    // monitor applies the same threshold to this category.
+    thresholdCheck("invalid-model-output", "provider", "critical", "Model output validates", count("invalid_outputs"), 2),
     thresholdCheck("failed-jobs", "queue", "critical", "Queue jobs avoid terminal failure", count("failed_jobs"), 0),
   ];
 }
@@ -752,7 +1272,7 @@ export async function deliverPrivateMonitoringNotification(
     dashboardUrl,
   );
   try {
-    await sendOperatorNotification(
+    const result = await sendOperatorNotification(
       {
         recipient: input.recipient,
         subject: `[${notification.severity}] Postil monitor: ${content.title}`,
@@ -766,7 +1286,7 @@ export async function deliverPrivateMonitoringNotification(
       },
       input.transport ?? configuredMonitoringAlertTransport(),
     );
-    await recordDeliveredNotification(pool, notification, now);
+    await recordDeliveredNotification(pool, notification, now, result.delivery);
   } catch (error) {
     const delayMs =
       notification.attempt >= MAX_NOTIFICATION_ATTEMPTS
@@ -799,6 +1319,7 @@ async function recordDeliveredNotification(
   pool: Pool,
   notification: PrivateMonitoringNotification,
   now: Date,
+  delivery: NotificationDelivery | undefined,
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -817,13 +1338,14 @@ async function recordDeliveredNotification(
         WHERE key = $1 AND pending_notification_key = $2`,
       [notification.incidentKey, notification.notificationKey, now],
     );
-    if ((recorded.rowCount ?? 0) === 0 && notification.kind !== "resolved") {
+    let acknowledged = (recorded.rowCount ?? 0) > 0;
+    if (!acknowledged && notification.kind !== "resolved") {
       const resolutionKey = incidentNotificationKey(
         notification.incidentKey,
         "resolved",
         now,
       );
-      await client.query(
+      const resolved = await client.query(
         `UPDATE private_monitor_incidents
             SET pending_notification_key = $2,
                 pending_notification_kind = 'resolved',
@@ -838,6 +1360,22 @@ async function recordDeliveredNotification(
             AND state = 'resolved'
             AND pending_notification_key IS NULL`,
         [notification.incidentKey, resolutionKey, now],
+      );
+      acknowledged = (resolved.rowCount ?? 0) > 0;
+    }
+    if (acknowledged) {
+      const parsed = deliverySchema.safeParse(delivery);
+      const receipt = parsed.success && notification.notificationKey.length <= 512 ? {
+        ...parsed.data, notificationKey: notification.notificationKey, acceptedAt: now.toISOString(),
+      } : null;
+      // The timestamp write clears stale provenance, including legacy acknowledgments.
+      // Attach this result under the same row lock and transaction as its acknowledgment.
+      await client.query(
+        `UPDATE private_monitor_incidents
+            SET last_notification_key = $2, last_delivery_receipt = $3::jsonb
+          WHERE key = $1 AND last_notified_at = $4`,
+        [notification.incidentKey, receipt ? notification.notificationKey : null,
+          receipt ? JSON.stringify(receipt) : null, now],
       );
     }
     await client.query("COMMIT");
@@ -1053,6 +1591,8 @@ function incidentTitle(check: PrivateMonitoringCheck): string {
     "scorer-fallbacks": "Finding scoring is repeatedly falling back",
     "model-fallbacks": "Review models are repeatedly falling back",
     "invalid-model-output": "Model output is invalid",
+    "monitor-heartbeat-delivery": "Monitor heartbeat delivery is failing",
+    "check-flapping": "Monitoring checks are flapping",
     "openrouter-monitoring-configuration": "OpenRouter cap monitoring needs configuration",
     "openrouter-keys-metadata": "OpenRouter key metadata is unavailable",
     "openrouter-credits-metadata": "OpenRouter account credit metadata is unavailable",
@@ -1072,6 +1612,7 @@ function capabilityLabel(capability: PrivateMonitoringGroup): string {
     billing: "Billing operations",
     email: "Operator email delivery",
     fleet: "Review worker fleet",
+    monitoring: "Production monitoring",
     provider: "Review inference",
     queue: "Review job processing",
     signup: "Customer signup",
@@ -1104,6 +1645,12 @@ function incidentRecommendedAction(key: string): string {
   if (key === "worker-heartbeat") {
     return "Inspect the worker process and heartbeat before restarting or replacing a machine.";
   }
+  if (key === "monitor-heartbeat-delivery") {
+    return "Confirm the alerting account still accepts heartbeat pings and the configured heartbeat URL is current; until then a dead monitor cannot page.";
+  }
+  if (key === "check-flapping") {
+    return "Open private monitoring and read the retained failed attempts before treating the affected checks as healthy.";
+  }
   return "Open private monitoring, inspect the affected run and queue state, and preserve evidence before retrying work.";
 }
 
@@ -1131,12 +1678,16 @@ async function reconcileCheck(
 ): Promise<void> {
   const existing = await client.query<{
     state: "open" | "resolved";
+    detail: string;
+    opened_detail: string | null;
+    occurrence_count: number;
     first_detected_at: Date;
     last_notified_at: Date | null;
     pending_notification_key: string | null;
     notification_lease_expires_at: Date | null;
   }>(
-    `SELECT state, first_detected_at, last_notified_at, pending_notification_key,
+    `SELECT state, detail, opened_detail, occurrence_count, first_detected_at,
+            last_notified_at, pending_notification_key,
             notification_lease_expires_at
        FROM private_monitor_incidents
       WHERE key = $1
@@ -1149,10 +1700,11 @@ async function reconcileCheck(
     const notificationKey = incidentNotificationKey(check.key, "opened", now);
     await client.query(
       `INSERT INTO private_monitor_incidents
-         (key, "group", severity, summary, detail, state, occurrence_count,
-          first_detected_at, last_detected_at, pending_notification_key,
-          pending_notification_kind, notification_available_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'open', 1, $6, $6, $7, 'opened', $6, $6)`,
+         (key, "group", severity, summary, detail, opened_detail, state,
+          occurrence_count, first_detected_at, last_detected_at,
+          pending_notification_key, pending_notification_kind,
+          notification_available_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $5, 'open', 1, $6, $6, $7, 'opened', $6, $6)`,
       [
         check.key,
         check.group,
@@ -1163,6 +1715,12 @@ async function reconcileCheck(
         notificationKey,
       ],
     );
+    await recordIncidentEvent(client, check, "opened", {
+      detail: check.detail,
+      occurrenceCount: 1,
+      firstDetectedAt: now,
+      occurredAt: now,
+    });
     await broadcastCustomerServiceTransition(client, check.key, "opened", now, now);
     return;
   }
@@ -1185,6 +1743,7 @@ async function reconcileCheck(
               severity = $3,
               summary = $4,
               detail = $5,
+              opened_detail = CASE WHEN $6 OR opened_detail IS NULL THEN $5 ELSE opened_detail END,
               state = 'open',
               occurrence_count = CASE WHEN $6 THEN 1 ELSE occurrence_count + 1 END,
               first_detected_at = CASE WHEN $6 THEN $7 ELSE first_detected_at END,
@@ -1213,6 +1772,12 @@ async function reconcileCheck(
       ],
     );
     if (reopened) {
+      await recordIncidentEvent(client, check, "opened", {
+        detail: check.detail,
+        occurrenceCount: 1,
+        firstDetectedAt: now,
+        occurredAt: now,
+      });
       await broadcastCustomerServiceTransition(client, check.key, "opened", now, now);
     }
     return;
@@ -1257,6 +1822,12 @@ async function reconcileCheck(
       notificationKey,
     ],
   );
+  await recordIncidentEvent(client, check, "resolved", {
+    detail: row.opened_detail ?? row.detail,
+    occurrenceCount: row.occurrence_count,
+    firstDetectedAt: row.first_detected_at,
+    occurredAt: now,
+  });
   await broadcastCustomerServiceTransition(
     client,
     check.key,
@@ -1264,6 +1835,72 @@ async function reconcileCheck(
     row.first_detected_at,
     now,
   );
+}
+
+async function recordIncidentEvent(
+  client: PoolClient,
+  check: PrivateMonitoringCheck,
+  transition: "opened" | "resolved",
+  event: {
+    detail: string;
+    occurrenceCount: number;
+    firstDetectedAt: Date;
+    occurredAt: Date;
+  },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO private_monitor_incident_events
+       (key, "group", severity, transition, summary, detail, occurrence_count,
+        first_detected_at, occurred_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      check.key,
+      check.group,
+      check.severity,
+      transition,
+      incidentTitle(check),
+      boundedDetail(event.detail),
+      Math.max(1, event.occurrenceCount),
+      event.firstDetectedAt,
+      event.occurredAt,
+    ],
+  );
+}
+
+/**
+ * Persists every failed attempt of the pass. An unhealthy check contributes
+ * its final evidence; a check that recovered through retry contributes only
+ * the attempts that failed, flagged as recovered.
+ */
+async function recordCheckFailures(
+  client: PoolClient,
+  runId: number,
+  checks: readonly PrivateMonitoringCheck[],
+  now: Date,
+): Promise<void> {
+  const rows: Array<[string, number, boolean, string]> = [];
+  for (const check of checks) {
+    const attemptFailures = check.attemptFailures ?? [];
+    attemptFailures.forEach((detail, index) => {
+      rows.push([check.key, index + 1, check.healthy, boundedDetail(detail)]);
+    });
+    if (!check.healthy) {
+      rows.push([
+        check.key,
+        check.attempts ?? attemptFailures.length + 1,
+        false,
+        boundedDetail(check.detail),
+      ]);
+    }
+  }
+  for (const [key, attempt, recovered, detail] of rows) {
+    await client.query(
+      `INSERT INTO private_monitor_check_failures
+         (run_id, key, attempt, recovered, detail, observed_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [runId, key, attempt, recovered, detail, now],
+    );
+  }
 }
 
 function customerServiceIncidentKey(key: string): CustomerServiceIncidentKey | null {
@@ -1291,125 +1928,142 @@ async function broadcastCustomerServiceTransition(
   );
 }
 
-async function probeOk(
-  key: string,
-  summary: string,
-  url: URL,
-  fetchImpl: Fetch,
-): Promise<PrivateMonitoringCheck> {
-  try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
-    return availabilityCheck(key, summary, response.ok, `${url.toString()} returned HTTP ${response.status}.`);
-  } catch (error) {
-    return availabilityCheck(key, summary, false, requestFailure(url, error));
-  }
-}
-
-async function probeDependencies(origin: URL, fetchImpl: Fetch): Promise<PrivateMonitoringCheck> {
-  const url = new URL("/api/health/dependencies", origin);
-  try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
-    const body = (await response.text()).slice(0, 4_096);
-    let healthy = response.ok;
+async function probeWithRetry(input: {
+  key: string;
+  summary: string;
+  severity: PrivateMonitoringSeverity;
+  url: URL;
+  init: RequestInit;
+  evaluate: (attempt: ProbeAttempt) => ProbeEvaluation;
+  fetchImpl: Fetch;
+  options: PublicProbeOptions;
+}): Promise<PrivateMonitoringCheck> {
+  const sleep = input.options.sleep ?? defaultSleep;
+  const attemptFailures: string[] = [];
+  const maxAttempts = PUBLIC_PROBE_RETRY_DELAYS_MS.length + 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let outcome: { evaluation: ProbeEvaluation; transient: boolean };
     try {
-      const parsed = JSON.parse(body) as { ok?: unknown; database?: unknown };
-      healthy = healthy && parsed.ok === true && parsed.database === "up";
-    } catch {
-      healthy = false;
+      const response = await input.fetchImpl(input.url, {
+        ...input.init,
+        cache: "no-store",
+        headers: { "cache-control": "no-cache", "user-agent": "postil-private-monitor/1" },
+        signal: AbortSignal.timeout(PUBLIC_PROBE_TIMEOUT_MS),
+      });
+      const body = await readProbeBody(response);
+      const evaluation = input.evaluate({ response, body });
+      outcome = {
+        evaluation,
+        transient: !evaluation.healthy && TRANSIENT_PUBLIC_PROBE_STATUSES.has(response.status),
+      };
+    } catch (error) {
+      outcome = {
+        evaluation: { healthy: false, detail: requestFailure(input.url, error) },
+        transient: true,
+      };
     }
-    return availabilityCheck(
-      "public-dependencies",
-      "Web dependencies are ready",
-      healthy,
-      `${url.toString()} returned HTTP ${response.status} with ${healthy ? "healthy" : "invalid"} readiness data.`,
-    );
-  } catch (error) {
-    return availabilityCheck("public-dependencies", "Web dependencies are ready", false, requestFailure(url, error));
+    const detail = boundedDetail(outcome.evaluation.detail);
+    if (outcome.evaluation.healthy) {
+      return {
+        key: input.key,
+        group: "availability",
+        severity: input.severity,
+        healthy: true,
+        summary: input.summary,
+        detail: boundedDetail(
+          attemptFailures.length === 0
+            ? detail
+            : `${detail} Recovered on attempt ${attempt} after: ${attemptFailures[0]}`,
+        ),
+        attempts: attempt,
+        attemptFailures,
+      };
+    }
+    const retryDelay = PUBLIC_PROBE_RETRY_DELAYS_MS[attempt - 1];
+    if (!outcome.transient || retryDelay === undefined) {
+      return {
+        key: input.key,
+        group: "availability",
+        severity: input.severity,
+        healthy: false,
+        summary: input.summary,
+        detail: boundedDetail(
+          attemptFailures.length === 0
+            ? detail
+            : `${detail} Failed ${attempt} attempts; first: ${attemptFailures[0]}`,
+        ),
+        attempts: attempt,
+        attemptFailures,
+      };
+    }
+    attemptFailures.push(detail);
+    // A delay that cannot be awaited must not turn one probe into a failed
+    // pass; the next attempt simply runs without the pause.
+    await sleep(retryDelay).catch(() => undefined);
   }
+  throw new Error("probe retry loop exited without a result");
 }
 
-async function probeRobots(origin: URL, fetchImpl: Fetch): Promise<PrivateMonitoringCheck> {
-  const url = new URL("/robots.txt", origin);
+/**
+ * Reads a bounded body so the connection returns to the pool and semantic
+ * probes can inspect content. A body that cannot be read is not a failure
+ * on its own; the evaluator decides from the status and headers.
+ */
+async function readProbeBody(response: Response): Promise<string> {
   try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
-    const body = (await response.text()).slice(0, 32_768);
-    const healthy =
-      response.ok &&
-      !/^Disallow:/m.test(body) &&
-      /^User-Agent: \*$/m.test(body) &&
-      /^Allow: \/$/m.test(body) &&
-      body.includes(`Sitemap: ${new URL("/sitemap.xml", origin).toString()}`);
-    return availabilityCheck(
-      "public-robots",
-      "Robots policy exposes public pages",
-      healthy,
-      `${url.toString()} returned HTTP ${response.status} with ${healthy ? "expected" : "unexpected"} directives.`,
-    );
-  } catch (error) {
-    return availabilityCheck("public-robots", "Robots policy exposes public pages", false, requestFailure(url, error));
+    return (await response.text()).slice(0, PUBLIC_PROBE_BODY_LIMIT);
+  } catch {
+    return "";
   }
 }
 
-async function probeRedirect(
-  key: string,
-  summary: string,
-  url: URL,
-  expected: URL,
-  fetchImpl: Fetch,
-): Promise<PrivateMonitoringCheck> {
+function evaluateDependencies(url: URL, attempt: ProbeAttempt): ProbeEvaluation {
+  let healthy = attempt.response.ok;
   try {
-    const response = await monitoredFetch(url, { redirect: "manual" }, fetchImpl);
-    const location = response.headers.get("location");
-    const actual = location ? new URL(location, url).toString() : "missing";
-    const healthy = response.status === 308 && actual === expected.toString();
-    return availabilityCheck(
-      key,
-      summary,
-      healthy,
-      `${url.toString()} returned HTTP ${response.status} to ${actual}; expected ${expected.toString()}.`,
-    );
-  } catch (error) {
-    return availabilityCheck(key, summary, false, requestFailure(url, error));
+    const parsed = JSON.parse(attempt.body.slice(0, 4_096)) as { ok?: unknown; database?: unknown };
+    healthy = healthy && parsed.ok === true && parsed.database === "up";
+  } catch {
+    healthy = false;
   }
+  return {
+    healthy,
+    detail: `${url.toString()} returned HTTP ${attempt.response.status} with ${healthy ? "healthy" : "invalid"} readiness data.`,
+  };
 }
 
-async function probeNoIndex(
-  key: string,
-  summary: string,
-  url: URL,
-  fetchImpl: Fetch,
-): Promise<PrivateMonitoringCheck> {
-  try {
-    const response = await monitoredFetch(url, { redirect: "follow" }, fetchImpl);
-    const value = response.headers.get("x-robots-tag")?.toLowerCase() ?? "missing";
-    const healthy = response.ok && value === "noindex, nofollow";
-    return availabilityCheck(
-      key,
-      summary,
-      healthy,
-      `${url.toString()} returned HTTP ${response.status} with X-Robots-Tag ${value}.`,
-    );
-  } catch (error) {
-    return availabilityCheck(key, summary, false, requestFailure(url, error));
-  }
+function evaluateRobots(origin: URL, url: URL, attempt: ProbeAttempt): ProbeEvaluation {
+  const body = attempt.body;
+  const healthy =
+    attempt.response.ok &&
+    !/^Disallow:/m.test(body) &&
+    /^User-Agent: \*$/m.test(body) &&
+    /^Allow: \/$/m.test(body) &&
+    body.includes(`Sitemap: ${new URL("/sitemap.xml", origin).toString()}`);
+  return {
+    healthy,
+    detail: `${url.toString()} returned HTTP ${attempt.response.status} with ${healthy ? "expected" : "unexpected"} directives.`,
+  };
 }
 
-function availabilityCheck(
-  key: string,
-  summary: string,
-  healthy: boolean,
-  detail: string,
-): PrivateMonitoringCheck {
-  return { key, group: "availability", severity: "critical", healthy, summary, detail };
+function evaluateRedirect(url: URL, expected: URL, attempt: ProbeAttempt): ProbeEvaluation {
+  const location = attempt.response.headers.get("location");
+  const actual = location ? new URL(location, url).toString() : "missing";
+  return {
+    healthy: attempt.response.status === 308 && actual === expected.toString(),
+    detail: `${url.toString()} returned HTTP ${attempt.response.status} to ${actual}; expected ${expected.toString()}.`,
+  };
 }
 
-function monitoredFetch(url: URL, init: RequestInit, fetchImpl: Fetch): Promise<Response> {
-  return fetchImpl(url, {
-    ...init,
-    cache: "no-store",
-    headers: { "cache-control": "no-cache", "user-agent": "postil-private-monitor/1" },
-    signal: AbortSignal.timeout(PUBLIC_PROBE_TIMEOUT_MS),
-  });
+function evaluateNoIndex(url: URL, attempt: ProbeAttempt): ProbeEvaluation {
+  const value = attempt.response.headers.get("x-robots-tag")?.toLowerCase() ?? "missing";
+  return {
+    healthy: attempt.response.ok && value === "noindex, nofollow",
+    detail: `${url.toString()} returned HTTP ${attempt.response.status} with X-Robots-Tag ${value}.`,
+  };
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function requestFailure(url: URL, error: unknown): string {
@@ -1431,6 +2085,17 @@ function validateCheckSet(checks: readonly PrivateMonitoringCheck[]): void {
     }
     if (!check.detail.trim() || check.detail.length > MAX_DETAIL_CHARS) {
       throw new Error("private monitoring check detail is malformed");
+    }
+    const attemptFailures = check.attemptFailures ?? [];
+    const attempts = check.attempts ?? attemptFailures.length + 1;
+    if (
+      !Number.isSafeInteger(attempts) ||
+      attempts < 1 ||
+      attempts > 10 ||
+      attemptFailures.length >= attempts ||
+      attemptFailures.some((detail) => !detail.trim() || detail.length > MAX_DETAIL_CHARS)
+    ) {
+      throw new Error("private monitoring check attempts are malformed");
     }
   }
 }

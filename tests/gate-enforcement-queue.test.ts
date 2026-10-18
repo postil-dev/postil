@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 
+import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import {
   enqueueGateEnforcementSweepOnce,
   findActiveGateEnforcementSweep,
@@ -73,11 +74,13 @@ describe("gate enforcement sweep admission", () => {
 
 describeDb("gate enforcement sweep concurrent admission", () => {
   const schemaName = `gate_sweep_queue_${process.pid}_${Date.now()}`;
+  let ephemeralDb: EphemeralDatabase;
   let backingPool: Pool;
   let scopedPool: { connect: () => Promise<PoolClient> };
 
   beforeAll(async () => {
-    backingPool = new Pool({ connectionString: TEST_URL });
+    ephemeralDb = await createEphemeralDatabase("gate_enforcement_queue");
+    backingPool = ephemeralDb.pool;
     await backingPool.query(`CREATE SCHEMA "${schemaName}"`);
     await backingPool.query(`
       CREATE TABLE "${schemaName}".jobs (
@@ -97,13 +100,11 @@ describeDb("gate enforcement sweep concurrent admission", () => {
         return client;
       },
     };
-  });
+  }, 30_000);
 
   afterAll(async () => {
-    if (!backingPool) return;
-    await backingPool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
-    await backingPool.end();
-  });
+    await ephemeralDb?.drop();
+  }, 30_000);
 
   test("admits exactly one sweep when two workers race for the same scope", async () => {
     const results = await Promise.all([

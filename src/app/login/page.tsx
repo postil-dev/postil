@@ -25,13 +25,17 @@ const ERROR_MESSAGES: Record<string, string> = {
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; next?: string }>;
+  searchParams: Promise<{
+    error?: string | string[];
+    next?: string | string[];
+  }>;
 }) {
   const params = await searchParams;
-  if (await getSessionUser()) redirect("/reports");
+  const returnTo =
+    typeof params.next === "string" ? safeReturnTarget(params.next) : undefined;
+  if (await getSessionUser()) redirect(returnTo ?? "/reports");
 
-  const returnTo = safeReturnTarget(params.next);
-  const error = params.error
+  const error = typeof params.error === "string"
     ? (ERROR_MESSAGES[params.error] ?? "Sign-in failed. Try again.")
     : null;
   const loginHref = returnTo

@@ -14,9 +14,13 @@ import {
 const MAX_RECEIPT_BYTES = 512 * 1024;
 const MAX_RECEIPT_FINDINGS = 1_000;
 const CARRIED_MARKER = "[carried from previous review]";
+const MAX_SIGNED_INT64 = 9_223_372_036_854_775_807n;
+const DECIMAL_IDENTIFIER = /^[1-9][0-9]{0,18}$/;
 
 export const PUBLICATION_STATES = [
   "inline",
+  "fileComment",
+  "checkAnnotation",
   "summaryOnly",
   "carried",
   "resolved",
@@ -35,6 +39,8 @@ const receiptFindingSchema = z
     stableIdentity: z.boolean().default(true),
     initialOutcome: z.enum([
       "inline",
+      "fileComment",
+      "checkAnnotation",
       "summaryOnly",
       "carried",
       "resolved",
@@ -42,19 +48,47 @@ const receiptFindingSchema = z
       "unknown",
     ]),
     inlineRejected: z.boolean().default(false),
-    commentId: z.string().regex(/^[1-9][0-9]{0,19}$/).optional(),
+    commentId: z.string().regex(DECIMAL_IDENTIFIER).refine(
+      (value) => !DECIMAL_IDENTIFIER.test(value) || BigInt(value) <= MAX_SIGNED_INT64,
+      "comment identity exceeds signed 64-bit storage",
+    ).optional(),
   })
   .strict();
 
 const publicationReceiptSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
+    channel: z.enum(["reviewComments", "checkAnnotations"]).optional(),
     receiptId: z.string().trim().min(1).max(200),
-    reviewId: z.string().regex(/^[1-9][0-9]{0,19}$/).optional(),
+    reviewId: z.string().regex(DECIMAL_IDENTIFIER).refine(
+      (value) => !DECIMAL_IDENTIFIER.test(value) || BigInt(value) <= MAX_SIGNED_INT64,
+      "review identity exceeds signed 64-bit storage",
+    ).optional(),
     findings: z.array(receiptFindingSchema).max(MAX_RECEIPT_FINDINGS),
   })
   .strict()
   .superRefine((receipt, context) => {
+    if (receipt.version === 1 && receipt.channel !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["channel"],
+        message: "version 1 receipts do not carry a publication channel",
+      });
+    }
+    if (receipt.version === 2 && receipt.channel === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["channel"],
+        message: "version 2 receipts require a publication channel",
+      });
+    }
+    if (receipt.channel === "checkAnnotations" && receipt.reviewId) {
+      context.addIssue({
+        code: "custom",
+        path: ["reviewId"],
+        message: "check annotation receipts cannot carry a review identity",
+      });
+    }
     const ids = new Set<string>();
     for (const [index, finding] of receipt.findings.entries()) {
       if (ids.has(finding.findingId)) {
@@ -65,6 +99,48 @@ const publicationReceiptSchema = z
         });
       }
       ids.add(finding.findingId);
+      if (receipt.version === 1 && finding.initialOutcome === "checkAnnotation") {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "version 1 receipts cannot report check annotations",
+        });
+      }
+      if (receipt.version === 1 && finding.initialOutcome === "fileComment") {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "version 1 receipts cannot report file-level comments",
+        });
+      }
+      if (
+        receipt.channel === "reviewComments" &&
+        finding.initialOutcome === "checkAnnotation"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "review comment receipts cannot report check annotations",
+        });
+      }
+      if (
+        receipt.channel === "checkAnnotations" &&
+        (finding.initialOutcome === "inline" ||
+          finding.initialOutcome === "fileComment")
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "initialOutcome"],
+          message: "check annotation receipts cannot report review comments",
+        });
+      }
+      if (receipt.channel === "checkAnnotations" && finding.commentId !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "commentId"],
+          message: "check annotation receipts cannot carry comment identities",
+        });
+      }
       if (finding.inlineRejected && finding.initialOutcome !== "summaryOnly") {
         context.addIssue({
           code: "custom",
@@ -72,17 +148,42 @@ const publicationReceiptSchema = z
           message: "rejected inline placement must use summaryOnly outcome",
         });
       }
-      if (finding.commentId && finding.initialOutcome !== "inline") {
+      if (finding.initialOutcome === "fileComment" && !finding.commentId) {
         context.addIssue({
           code: "custom",
           path: ["findings", index, "commentId"],
-          message: "only inline findings can carry a comment identity",
+          message: "file-level comments require a comment identity",
+        });
+      }
+      // A carried finding is one an earlier review already published, so it
+      // names that review's comment rather than one this run created. The
+      // identity is what the lifecycle pass observes the thread by, so
+      // withholding it here would leave those threads unobserved.
+      if (
+        finding.commentId &&
+        finding.initialOutcome !== "inline" &&
+        finding.initialOutcome !== "fileComment" &&
+        finding.initialOutcome !== "carried"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "commentId"],
+          message: "only a published finding can carry a comment identity",
         });
       }
     }
   });
 
 export type PublicationReceipt = z.infer<typeof publicationReceiptSchema>;
+
+/** Validate an in-memory publication receipt against the persisted wire contract. */
+export function parsePublicationReceipt(value: unknown): PublicationReceipt {
+  const parsed = publicationReceiptSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`publication receipt is invalid: ${z.prettifyError(parsed.error)}`);
+  }
+  return parsed.data;
+}
 
 export async function readPublicationReceipt(path: string): Promise<PublicationReceipt> {
   const stat = await lstat(path);
@@ -101,11 +202,7 @@ export async function readPublicationReceipt(path: string): Promise<PublicationR
   } catch {
     throw new Error("publication receipt is not valid JSON");
   }
-  const parsed = publicationReceiptSchema.safeParse(decoded);
-  if (!parsed.success) {
-    throw new Error(`publication receipt is invalid: ${z.prettifyError(parsed.error)}`);
-  }
-  return parsed.data;
+  return parsePublicationReceipt(decoded);
 }
 
 function envelopeFindingIds(envelope: Envelope): Set<string> {
@@ -229,6 +326,10 @@ export async function persistPublicationReceipt(
     reviewId: input.reviewId,
     receiptVersion: input.receipt?.version ?? null,
     receiptId: input.receipt?.receiptId ?? null,
+    publicationChannel:
+      input.receipt?.version === 1
+        ? "reviewComments"
+        : (input.receipt?.channel ?? null),
     githubReviewId: input.receipt?.reviewId ?? null,
   });
 
@@ -283,7 +384,9 @@ export async function persistPublicationReceipt(
 
 export interface PublicationThreadObservation {
   githubCommentId: string;
+  githubThreadId?: string;
   state: "inline" | "resolved" | "outdated" | "deleted";
+  viewerCanResolve?: boolean;
 }
 
 /** Apply only forge-observed thread state; human prose and review dismissal are not inputs. */
@@ -311,27 +414,93 @@ export async function applyPublicationThreadObservations(
   }
 }
 
-export async function getPullRequestPublicationCommentIds(
+export interface PullRequestPublicationThreadPlan {
+  commentIds: string[];
+  resolveCommentIds: string[];
+}
+
+/** Load every owned thread plus the subset whose finding is no longer active. */
+export async function getPullRequestPublicationThreadPlan(
   db: Database,
   repositoryId: number,
   prNumber: number,
-): Promise<string[]> {
+): Promise<PullRequestPublicationThreadPlan> {
   const rows = await db
-    .selectDistinct({ githubCommentId: schema.findingPublications.githubCommentId })
+    .select({
+      reviewId: schema.findingPublications.reviewId,
+      findingId: schema.findingPublications.findingId,
+      stableIdentity: schema.findingPublications.stableIdentity,
+      githubCommentId: schema.findingPublications.githubCommentId,
+      currentState: schema.findingPublications.currentState,
+      reviewStatus: schema.reviews.status,
+      queuedAt: schema.reviews.queuedAt,
+    })
     .from(schema.findingPublications)
     .innerJoin(schema.reviews, eq(schema.reviews.id, schema.findingPublications.reviewId))
     .where(
       and(
         eq(schema.reviews.repositoryId, repositoryId),
         eq(schema.reviews.prNumber, prNumber),
-        sql`${schema.findingPublications.githubCommentId} IS NOT NULL`,
       ),
     );
-  return rows.flatMap((row) => (row.githubCommentId ? [row.githubCommentId] : []));
+  const commentIds = new Set<string>();
+  const resolveCommentIds = new Set<string>();
+  // Forge observations can move the published comment row to outdated or
+  // deleted. Resolve from the newest stable occurrence of the finding: a
+  // later terminal receipt row has no comment identity, while a still later
+  // active recurrence must supersede that terminal state.
+  const latestStableState = new Map<
+    string,
+    {
+      reviewId: number;
+      queuedAt: Date;
+      currentState: PublicationState;
+      reviewStatus: (typeof schema.reviews.status.enumValues)[number];
+    }
+  >();
+  for (const row of rows) {
+    if (!row.stableIdentity) continue;
+    const latest = latestStableState.get(row.findingId);
+    if (
+      !latest ||
+      row.queuedAt > latest.queuedAt ||
+      (row.queuedAt.getTime() === latest.queuedAt.getTime() &&
+        row.reviewId > latest.reviewId)
+    ) {
+      latestStableState.set(row.findingId, {
+        reviewId: row.reviewId,
+        queuedAt: row.queuedAt,
+        currentState: row.currentState as PublicationState,
+        reviewStatus: row.reviewStatus,
+      });
+    }
+  }
+  const terminalFindingIds = new Set(
+    [...latestStableState]
+      .filter(
+        ([, row]) =>
+          row.reviewStatus === "completed" &&
+          (row.currentState === "resolved" || row.currentState === "suppressed"),
+      )
+      .map(([findingId]) => findingId),
+  );
+  for (const row of rows) {
+    if (!row.githubCommentId) continue;
+    commentIds.add(row.githubCommentId);
+    if (row.stableIdentity && terminalFindingIds.has(row.findingId)) {
+      resolveCommentIds.add(row.githubCommentId);
+    }
+  }
+  return {
+    commentIds: [...commentIds].sort(),
+    resolveCommentIds: [...resolveCommentIds].sort(),
+  };
 }
 
 export interface PublicationCounts {
   inline: number;
+  fileComment: number;
+  checkAnnotation: number;
   summaryOnly: number;
   carried: number;
   resolved: number;

@@ -35,6 +35,10 @@ const DEFAULT_REPOSITORY_ID = 990_002;
 const DEFAULT_PR_NUMBER = 1;
 const HOSTED_CLI_ARCHIVE = "postil-x86_64-unknown-linux-gnu.tar.gz";
 const MAX_HOSTED_CLI_ARCHIVE_BYTES = 32 * 1024 * 1024;
+const APPROVED_LOCAL_REVIEW_CASCADE =
+  "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code";
+const APPROVED_LOCAL_REVIEW_FALLBACK =
+  "openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code";
 
 type DiffTarget =
   | { kind: "staged" }
@@ -114,6 +118,12 @@ interface LocalPullFile {
 interface DatabaseHandle {
   databaseUrl: string;
   cleanup(): Promise<void>;
+}
+
+export interface DisposableDatabaseCleanupPlan {
+  dropDatabase: boolean;
+  stopContainer: boolean;
+  retainContainer: boolean;
 }
 
 interface RunResult {
@@ -429,7 +439,7 @@ export function formatRunSummary(result: RunResult): string {
   return lines.join("\n");
 }
 
-function createLocalGitHubServer(input: {
+export function createLocalGitHubServer(input: {
   repoPath: string;
   repoFullName: string;
   prNumber: number;
@@ -498,8 +508,13 @@ function createLocalGitHubServer(input: {
         request.method === "GET" &&
         suffix.startsWith(`pulls/${input.prNumber}/files`)
       ) {
-        const page = Number(url.searchParams.get("page") ?? "1");
-        return json(page === 1 ? pullFiles : []);
+        return json(
+          paginateLocalPullFiles(
+            pullFiles,
+            url.searchParams.get("per_page"),
+            url.searchParams.get("page"),
+          ),
+        );
       }
 
       if (request.method === "GET" && suffix.startsWith("contents/")) {
@@ -667,9 +682,91 @@ export function pullFilesFromDiff(diffText: string): LocalPullFile[] {
   });
 }
 
+export function paginateLocalPullFiles(
+  pullFiles: readonly LocalPullFile[],
+  requestedPerPage: string | null,
+  requestedPage: string | null,
+): LocalPullFile[] {
+  const parsedPerPage = Number(requestedPerPage ?? "30");
+  const parsedPage = Number(requestedPage ?? "1");
+  const perPage =
+    Number.isSafeInteger(parsedPerPage) && parsedPerPage > 0
+      ? Math.min(parsedPerPage, 100)
+      : 30;
+  const page =
+    Number.isSafeInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const start = (page - 1) * perPage;
+  return pullFiles.slice(start, start + perPage);
+}
+
 function repositoryPathFromMarker(marker: string | undefined): string | undefined {
   if (!marker || marker === "/dev/null") return undefined;
   return marker.startsWith("a/") || marker.startsWith("b/") ? marker.slice(2) : marker;
+}
+
+const DISPOSABLE_POSTGRES_IMAGE = "postgres:17.2-alpine";
+const CONTAINER_RUNTIMES = ["docker", "podman"] as const;
+
+export function disposablePostgresRunArgs(
+  containerName: string,
+  port: number,
+  keepDatabase: boolean,
+): string[] {
+  return [
+    "run",
+    "-d",
+    ...(keepDatabase
+      ? ["--label", "dev.postil.local-review-retained=true"]
+      : ["--rm"]),
+    "--name",
+    containerName,
+    "-e",
+    "POSTGRES_HOST_AUTH_METHOD=trust",
+    "-p",
+    `127.0.0.1:${port}:5432`,
+    DISPOSABLE_POSTGRES_IMAGE,
+  ];
+}
+
+export function disposableDatabaseCleanupPlan(
+  keepDatabase: boolean,
+  selfStartedContainer: boolean,
+): DisposableDatabaseCleanupPlan {
+  return {
+    dropDatabase: !keepDatabase,
+    stopContainer: selfStartedContainer && !keepDatabase,
+    retainContainer: selfStartedContainer && keepDatabase,
+  };
+}
+
+/**
+ * Start the disposable Postgres container under whichever runtime can create
+ * it, and name that runtime so the caller can stop what it started. Reporting a
+ * version proves only that a client is installed: an image whose OCI runtime
+ * rejects its own configuration passes that check and fails at creation, so the
+ * probe has to be the creation itself. Docker comes first because CI provides
+ * it. A failed attempt leaves nothing running.
+ */
+async function startDisposablePostgres(
+  containerName: string,
+  port: number,
+  keepDatabase: boolean,
+): Promise<string> {
+  const failures: string[] = [];
+  for (const runtime of CONTAINER_RUNTIMES) {
+    try {
+      await run([
+        runtime,
+        ...disposablePostgresRunArgs(containerName, port, keepDatabase),
+      ]);
+      return runtime;
+    } catch (error) {
+      failures.push(`${runtime}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(
+    `no container runtime could start ${DISPOSABLE_POSTGRES_IMAGE}; set POSTIL_TEST_DATABASE_URL to a local Postgres instead\n${failures.join("\n")}`,
+  );
 }
 
 async function createDisposableDatabase(
@@ -677,11 +774,16 @@ async function createDisposableDatabase(
   keepDatabase: boolean,
 ): Promise<DatabaseHandle> {
   let containerName: string | undefined;
+  let containerRuntime: string | undefined;
   let adminUrl = process.env.POSTIL_TEST_DATABASE_URL;
   if (!adminUrl) {
     const port = await freePort();
     containerName = `postil-local-review-${process.pid}-${randomBytes(3).toString("hex")}`;
-    await run(["podman", "run", "-d", "--rm", "--name", containerName, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", `127.0.0.1:${port}:5432`, "postgres:17.2-alpine"]);
+    containerRuntime = await startDisposablePostgres(
+      containerName,
+      port,
+      keepDatabase,
+    );
     adminUrl = `postgresql://postgres@127.0.0.1:${port}/postgres`;
   }
   assertLocalDatabase(adminUrl);
@@ -701,7 +803,11 @@ async function createDisposableDatabase(
   return {
     databaseUrl: databaseUrl.toString(),
     async cleanup() {
-      if (!keepDatabase) {
+      const plan = disposableDatabaseCleanupPlan(
+        keepDatabase,
+        Boolean(containerName && containerRuntime),
+      );
+      if (plan.dropDatabase) {
         const cleanupClient = new Client({ connectionString: adminUrl });
         await cleanupClient.connect().catch(() => undefined);
         await cleanupClient
@@ -711,7 +817,14 @@ async function createDisposableDatabase(
       } else {
         console.log(`local review database retained: ${databaseName}`);
       }
-      if (containerName) await run(["podman", "stop", containerName]).catch(() => undefined);
+      if (plan.stopContainer && containerName && containerRuntime) {
+        await run([containerRuntime, "stop", containerName]).catch(() => undefined);
+      }
+      if (plan.retainContainer && containerName && containerRuntime) {
+        console.log(
+          `local review Postgres retained: runtime=${containerRuntime} container=${containerName}`,
+        );
+      }
     },
   };
 }
@@ -1000,13 +1113,14 @@ Options:
   --repo-path PATH    Git repository containing the local diff. Defaults to cwd.
   --repo OWNER/NAME   Synthetic repository slug exposed by the local fake GitHub API.
   --pr NUMBER         Synthetic pull request number. Defaults to 1.
-  --keep-database     Keep the disposable database for inspection.
+  --keep-database     Keep the database for inspection. A self-started Postgres container remains running.
   --require-clean     Exit 1 when any surviving finding would be posted.
 `);
 }
 
 async function ensureLocalModelCredential(): Promise<void> {
   let openRouterApiKey = process.env.OPENROUTER_API_KEY?.trim() ?? "";
+  const requestedCascade = process.env.REVIEW_MODEL_CASCADE?.trim();
 
   if (!openRouterApiKey) {
     const trustedHome = await resolveTrustedHome();
@@ -1070,9 +1184,13 @@ async function ensureLocalModelCredential(): Promise<void> {
   process.env.POSTIL_HOSTED_MODE = "0";
   process.env.REVIEW_MODEL =
     process.env.POSTIL_LOCAL_REVIEW_MODEL?.trim() || "z-ai/glm-5.2";
-  // The CLI deduplicates the model chain. Repeating the primary model yields
-  // one attempt, while an empty cascade variable would retain built-in defaults.
-  process.env.REVIEW_MODEL_CASCADE = process.env.REVIEW_MODEL;
+  // Ignore inherited provider choices except for the repository-approved
+  // chain used by the required local quality gate. The gate includes the
+  // primary model first, while the CLI variable contains fallback entries.
+  process.env.REVIEW_MODEL_CASCADE =
+    requestedCascade === APPROVED_LOCAL_REVIEW_CASCADE
+      ? APPROVED_LOCAL_REVIEW_FALLBACK
+      : process.env.REVIEW_MODEL;
   process.env.POSTIL_DISABLE_SCORER = "1";
   delete process.env.REVIEW_SCORER_MODEL;
 }

@@ -19,7 +19,11 @@ export const metadata: Metadata = {
 };
 
 const PERMISSIONS = [
-  { scope: "contents", level: "read", note: "Fetch the PR diff at review time." },
+  {
+    scope: "contents",
+    level: "read",
+    note: "Fetch the PR diff at review time.",
+  },
   {
     scope: "pull_requests",
     level: "write",
@@ -52,8 +56,8 @@ export default function SecurityPage() {
           A reviewer should not be able to compromise the repo it reviews.
         </h1>
         <p className="mt-6 max-w-2xl text-lg text-ink-soft">
-          Postil&apos;s design assumes the review pipeline is a high-value target.
-          The principles below are enforced in code: the App cannot push
+          Postil&apos;s design assumes the review pipeline is a high-value
+          target. The principles below are enforced in code: the App cannot push
           code because it never holds write-to-code credentials, and the gate
           cannot silently pass because failure is the default.
         </p>
@@ -89,7 +93,9 @@ export default function SecurityPage() {
                   </tr>
                 ))}
                 <tr>
-                  <td className="py-2 pr-4 font-mono text-xs">contents: write</td>
+                  <td className="py-2 pr-4 font-mono text-xs">
+                    contents: write
+                  </td>
                   <td className="py-2 pr-4 font-semibold text-rust">
                     never requested
                   </td>
@@ -115,9 +121,9 @@ export default function SecurityPage() {
             </p>
             <p className="mt-4">
               The mitigation is architectural: hold the smallest credential set
-              that does the job. Even a full compromise
-              of a Postil installation token cannot push a commit, open a PR, or
-              alter a workflow, because the App never holds that authority.
+              that does the job. Even a full compromise of a Postil installation
+              token cannot push a commit, open a PR, or alter a workflow,
+              because the App never holds that authority.
             </p>
           </div>
         </div>
@@ -131,8 +137,8 @@ export default function SecurityPage() {
         <div className="grid gap-8 md:grid-cols-2">
           <div className="space-y-4 text-ink-soft">
             <p>
-              When the model returns invalid or ungrounded output, Postil retries
-              one JSON repair, then emits a synthetic{" "}
+              When the model returns invalid or ungrounded output, Postil
+              retries one JSON repair, then emits a synthetic{" "}
               <code className="font-mono text-sm">error</code> finding and fails
               the gate. When the worker crashes or a review exceeds its
               ten-minute deadline, a watchdog completes{" "}
@@ -165,8 +171,8 @@ export default function SecurityPage() {
               <li className="flex items-center gap-3">
                 <StatusIcon kind="info" />
                 <span>
-                  <code className="font-mono">postil/review</code> on operational
-                  error: neutral, with the error summary
+                  <code className="font-mono">postil/review</code> on
+                  operational error: neutral, with the error summary
                 </span>
               </li>
               <li className="flex items-center gap-3">
@@ -187,19 +193,30 @@ export default function SecurityPage() {
           <div className="space-y-4 text-ink-soft">
             <p>
               Bring-your-own inference keys are sealed with{" "}
-              <strong>AES-256-GCM</strong> before they touch the database and are
-              decrypted only inside the worker, at the moment a review starts. The
-              settings form is write-only: a stored key can be replaced or
-              removed, never read back out. Keys are never logged and are sent
-              only in the provider authentication headers required by the
-              configured API interface. An optional private-gateway credential
-              is sent in the additional configured header.
+              <strong>AES-256-GCM</strong> before they touch the database and
+              are decrypted only inside the worker, at the moment a review
+              starts. The settings form is write-only: a stored key can be
+              replaced or removed, never read back out. Keys are never logged
+              and are sent only in the provider authentication headers required
+              by the configured API interface. An optional private-gateway
+              credential is sent in the additional configured header.
             </p>
             <p>
               GitHub installation tokens are minted on demand from the App key,
-              held in memory only, and expire within an hour. The App private key
-              is provided via environment configuration and is never written to
-              the database or to logs.
+              held in memory only, and expire within an hour. The App private
+              key is provided via environment configuration and is never written
+              to the database or to logs.
+            </p>
+            <p>
+              PostgreSQL stores only SHA-256 digests of CLI access and refresh
+              tokens. The CLI stores the raw bearer credentials in an owner-only
+              local credentials file. Initial issuance has a 60-second
+              response-recovery window that reconstructs the same pair from
+              server-held key material and immutable identifiers without storing
+              plaintext credentials or creating another token family. Consumed
+              refresh-token digests and revoked access-token digests remain as
+              audit evidence, so a stale refresh credential can revoke its
+              complete session family.
             </p>
           </div>
           <div className="card p-6">
@@ -230,6 +247,18 @@ export default function SecurityPage() {
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
+                <dt>CLI access token</dt>
+                <dd className="text-right font-mono text-xs">
+                  SHA-256 digest in PostgreSQL, 12 hours
+                </dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt>CLI refresh token</dt>
+                <dd className="text-right font-mono text-xs">
+                  SHA-256 digest in PostgreSQL, 180-day inactivity
+                </dd>
+              </div>
+              <div className="flex justify-between gap-4">
                 <dt>Full diff or repository snapshot</dt>
                 <dd className="text-right font-mono text-xs">not persisted</dd>
               </div>
@@ -252,12 +281,11 @@ export default function SecurityPage() {
             access, installations, and billing. The full diff is fetched at
             review time, sent to the applicable model endpoint, and discarded
             with the process. GitHub App BYOK reviews route through the worker
-            to your configured provider. Hosted plans use Postil&apos;s configured
-            provider path.
-            Self-hosted deployments send nothing to us: no telemetry, no
-            license pings, no update checks.
-            There is no full diff cache, embedding index, or repository clone
-            on our infrastructure.
+            to your configured provider. Hosted plans use Postil&apos;s
+            configured provider path. Self-hosted deployments send nothing to
+            us: no telemetry, no license pings, no update checks. There is no
+            full diff cache, embedding index, or repository clone on our
+            infrastructure.
           </p>
           <p className="mt-4">
             The persisted envelope can include a relevant code excerpt in review
@@ -281,19 +309,15 @@ export default function SecurityPage() {
         </div>
       </Section>
 
-      <Section
-        number="05"
-        eyebrow="Disclosure"
-        title="Report a vulnerability."
-      >
+      <Section number="05" eyebrow="Disclosure" title="Report a vulnerability.">
         <div className="grid gap-8 md:grid-cols-2">
           <div className="text-ink-soft">
             <p>
-              We operate coordinated disclosure. Report suspected vulnerabilities
-              privately through GitHub Security Advisories; do not open a public
-              issue or PR for a security report. We aim to acknowledge a report
-              within <strong>5 business days</strong>, keep you updated through
-              remediation, and credit reporters who want it.
+              We operate coordinated disclosure. Report suspected
+              vulnerabilities privately through GitHub Security Advisories; do
+              not open a public issue or PR for a security report. We aim to
+              acknowledge a report within <strong>5 business days</strong>, keep
+              you updated through remediation, and credit reporters who want it.
             </p>
             <p className="mt-4">
               Researchers who report valid issues are listed, with their
@@ -306,7 +330,10 @@ export default function SecurityPage() {
                 security acknowledgments
               </a>
               . Machine-readable contact is published at{" "}
-              <a href="/.well-known/security.txt" className="text-rust underline">
+              <a
+                href="/.well-known/security.txt"
+                className="text-rust underline"
+              >
                 /.well-known/security.txt
               </a>
               .
@@ -372,12 +399,14 @@ export default function SecurityPage() {
           <p className="mt-4">
             Keyless signing means there is no long-lived published key to manage
             or leak: the signature is bound to the certificate identity of the
-            release workflow. When <code className="font-mono text-sm">cosign</code>{" "}
-            is installed, the installer verifies the signature automatically;
-            without it, verification falls back to the checksum. You can also
-            build from source with{" "}
+            release workflow. When{" "}
+            <code className="font-mono text-sm">cosign</code> is installed, the
+            installer verifies the signature automatically; without it,
+            verification falls back to the checksum. You can also build from
+            source with{" "}
             <code className="font-mono text-sm">
-              cargo install --git https://github.com/postil-dev/postil-cli --locked
+              cargo install --git https://github.com/postil-dev/postil-cli
+              --locked
             </code>
             , or cross-check the published SHA-256 on the{" "}
             <a
@@ -391,9 +420,9 @@ export default function SecurityPage() {
           </p>
           <p className="mt-4">
             We do not publish a separate GPG release key. Sigstore keyless
-            signing keeps release identity tied to
-            GitHub OIDC and avoids a static private key that would need storage,
-            rotation, revocation, and out-of-band trust distribution.
+            signing keeps release identity tied to GitHub OIDC and avoids a
+            static private key that would need storage, rotation, revocation,
+            and out-of-band trust distribution.
           </p>
         </div>
       </Section>

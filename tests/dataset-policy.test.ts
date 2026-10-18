@@ -34,11 +34,10 @@ describe("private dataset policy", () => {
     }
   });
 
-  test("public evidence examples are explicitly separate from the private dataset", async () => {
+  test("public evidence examples permit only public source material", async () => {
     const evidence = await readFile(join(root, "src/data/evidence/index.ts"), "utf8");
 
-    expect(evidence).toContain("Public example data only");
-    expect(evidence).toContain("separate from the private 126-PR");
-    expect(evidence).toContain("must not import, summarize, or expose that dataset");
+    expect(evidence).toContain("Public example data only: verifiable reviews from public repositories.");
+    expect(evidence).toContain("Do not import, summarize, or expose nonpublic source material.");
   });
 });

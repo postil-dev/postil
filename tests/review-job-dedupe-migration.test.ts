@@ -13,6 +13,7 @@ describeDb("active review job dedupe migration", () => {
   const pool = new Pool({ connectionString: TEST_URL, max: 8 });
   const payload = {
     installationId: 1,
+    githubRepoId: 99,
     repoFullName: "octo/repo",
     prNumber: 42,
     headSha: "a".repeat(40),
@@ -103,6 +104,65 @@ describeDb("active review job dedupe migration", () => {
       ),
     );
     expect(legacyWrites.flatMap((result) => result.rows)).toHaveLength(1);
+    expect(await activeReviewCount(pool)).toBe(1);
+  });
+
+  test("serializes mixed legacy and stable repository identities", async () => {
+    const migrationDirectory = join(import.meta.dir, "..", "drizzle");
+    const migrations = (await readdir(migrationDirectory))
+      .filter((file) =>
+        file.endsWith(".sql") &&
+        file > "0023_atomic_review_job_dedupe.sql" &&
+        file <= "0048_woozy_tigra.sql"
+      )
+      .sort();
+    for (const migrationFile of migrations) {
+      const sql = await readFile(join(migrationDirectory, migrationFile), "utf8");
+      for (const statement of sql.split("--> statement-breakpoint")) {
+        if (statement.trim()) await pool.query(statement);
+      }
+    }
+
+    const organization = await pool.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name, github_org_id)
+       VALUES ('octo', 'Octo', 7)
+       RETURNING id`,
+    );
+    const installation = await pool.query<{ id: string }>(
+      `INSERT INTO installations (github_installation_id, org_id, account_login, account_type)
+       VALUES (1, $1, 'octo', 'Organization')
+       RETURNING id`,
+      [organization.rows[0]!.id],
+    );
+    await pool.query(
+      `INSERT INTO repositories (installation_id, github_repo_id, full_name)
+       VALUES ($1, 99, 'octo/repo')`,
+      [installation.rows[0]!.id],
+    );
+    await pool.query("UPDATE jobs SET status = 'done' WHERE kind = 'review'");
+
+    const legacyPayload = { ...payload } as Record<string, unknown>;
+    delete legacyPayload.githubRepoId;
+    const writes = await Promise.all([
+      ...Array.from({ length: 6 }, () =>
+        pool.query(
+          `INSERT INTO jobs (kind, payload, status)
+           VALUES ('review', $1, 'queued')
+           RETURNING id`,
+          [JSON.stringify(legacyPayload)],
+        ),
+      ),
+      ...Array.from({ length: 6 }, () =>
+        pool.query(
+          `INSERT INTO jobs (kind, payload, status)
+           VALUES ('review', $1, 'queued')
+           RETURNING id`,
+          [JSON.stringify(payload)],
+        ),
+      ),
+    ]);
+
+    expect(writes.flatMap((result) => result.rows)).toHaveLength(1);
     expect(await activeReviewCount(pool)).toBe(1);
   });
 });

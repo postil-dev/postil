@@ -33,18 +33,18 @@ describe("hosted usage reservation arithmetic", () => {
   test("includes committed and every concurrent active hold", () => {
     expect(
       hasHostedReservationCapacity({
-        committedMicros: 100,
-        activeReservedMicros: 200,
-        requestedMicros: 250,
-        usageLimitMicros: 550,
+        committedMicros: 100n,
+        activeReservedMicros: 200n,
+        requestedMicros: 250n,
+        usageLimitMicros: 550n,
       }),
     ).toBe(true);
     expect(
       hasHostedReservationCapacity({
-        committedMicros: 100,
-        activeReservedMicros: 201,
-        requestedMicros: 250,
-        usageLimitMicros: 550,
+        committedMicros: 100n,
+        activeReservedMicros: 201n,
+        requestedMicros: 250n,
+        usageLimitMicros: 550n,
       }),
     ).toBe(false);
   });
@@ -133,7 +133,11 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
   afterAll(async () => {
     await pool?.end();
     if (adminClient) {
-      await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+      if (process.env.POSTIL_KEEP_TEST_DATABASE === "1") {
+        console.error(`Preserved test database ${databaseName}`);
+      } else {
+        await adminClient.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+      }
       await adminClient.end();
     }
   }, 30_000);
@@ -249,6 +253,51 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       repositoryPrivate: true,
     });
     expect(privateNoPlan).toMatchObject({ allowed: false, reason: "no_entitlement" });
+  });
+
+  test("preserves entitlement and usage arithmetic above the safe integer bound", async () => {
+    const db = drizzle(pool!, { schema });
+    const exactIncludedMicros = 9_007_199_254_740_993n;
+    const exactOverageMicros = 17n;
+    const exactUsageMicros = 9_007_199_254_740_994n;
+    const organization = await pool!.query<{ id: string }>(
+      `INSERT INTO organizations (slug, name)
+       VALUES ('exact-bigint-entitlement', 'Exact bigint entitlement')
+       RETURNING id`,
+    );
+    const exactOrgId = Number(organization.rows[0]!.id);
+    await pool!.query(
+      `INSERT INTO organization_entitlements
+         (org_id, subscription_mode, status, included_usage_micros,
+          overage_hard_cap_micros, updated_by)
+       VALUES ($1, 'hosted', 'active', $2, $3, 'test')`,
+      [
+        exactOrgId,
+        exactIncludedMicros.toString(),
+        exactOverageMicros.toString(),
+      ],
+    );
+    await pool!.query(
+      `INSERT INTO usage_events (org_id, cost_micros, billing_scope)
+       VALUES ($1, $2, 'private_hosted')`,
+      [exactOrgId, exactUsageMicros.toString()],
+    );
+
+    await expect(
+      canProcessRepositoryInference(db, {
+        orgId: exactOrgId,
+        repositoryPrivate: true,
+      }),
+    ).resolves.toMatchObject({
+      allowed: true,
+      reason: "active_subscription",
+      entitlement: {
+        includedUsageMicros: exactIncludedMicros,
+        overageHardCapMicros: exactOverageMicros,
+      },
+      usageMicros: exactUsageMicros,
+      usageLimitMicros: exactIncludedMicros + exactOverageMicros,
+    });
   });
 
   test("a model-started failed review conservatively charges its full hold", async () => {
@@ -680,7 +729,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
       reviewId: Number(row.second_review_id),
       usesByok: false,
     });
-    expect(second).toMatchObject({ allowed: true, committedMicros: 1_000_000 });
+    expect(second).toMatchObject({ allowed: true, committedMicros: 1_000_000n });
   });
 
   test("unpriced hosted response charges one reservation without poisoning later capacity", async () => {
@@ -728,7 +777,7 @@ describeDb("hosted usage reservations on PostgreSQL", () => {
     const second = await reserveHostedRespondSpend(db, {
       orgId: Number(row.org_id), usesByok: false,
     });
-    expect(second).toMatchObject({ allowed: true, committedMicros: 1_000_000 });
+    expect(second).toMatchObject({ allowed: true, committedMicros: 1_000_000n });
   });
 
   test("BYOK respond bypasses hosted reservations", async () => {

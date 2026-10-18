@@ -12,10 +12,14 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Client } from "pg";
 
 import release from "@/data/public-cli-release.json";
 import {
+  disposableDatabaseCleanupPlan,
+  disposablePostgresRunArgs,
   downloadHostedPostilExecutable,
+  paginateLocalPullFiles,
   pullFilesFromDiff,
 } from "../scripts/run-review-locally";
 
@@ -55,6 +59,64 @@ deleted file mode 100644
     { filename: "added.ts", status: "added", changes: 1 },
     { filename: "removed.ts", status: "removed", changes: 1 },
   ]);
+});
+
+test("paginates the local GitHub file manifest at the requested page size", () => {
+  const pullFiles = Array.from({ length: 205 }, (_, index) => ({
+    filename: `file-${index}.ts`,
+    status: "modified" as const,
+    changes: 1,
+  }));
+
+  expect(paginateLocalPullFiles(pullFiles, "100", "1")).toHaveLength(100);
+  expect(paginateLocalPullFiles(pullFiles, "100", "2")).toHaveLength(100);
+  expect(paginateLocalPullFiles(pullFiles, "100", "3")).toEqual(
+    pullFiles.slice(200),
+  );
+  expect(paginateLocalPullFiles(pullFiles, "100", "4")).toEqual([]);
+  expect(paginateLocalPullFiles(pullFiles, null, null)).toEqual(
+    pullFiles.slice(0, 30),
+  );
+  expect(paginateLocalPullFiles(pullFiles, "500", "1")).toEqual(
+    pullFiles.slice(0, 100),
+  );
+  expect(paginateLocalPullFiles(pullFiles, "invalid", "invalid")).toEqual(
+    pullFiles.slice(0, 30),
+  );
+});
+
+test("retains a self-started Postgres container with its database", () => {
+  const retainedArgs = disposablePostgresRunArgs("postil-retained", 55432, true);
+  expect(retainedArgs).not.toContain("--rm");
+  expect(retainedArgs).toContain("dev.postil.local-review-retained=true");
+  expect(disposableDatabaseCleanupPlan(true, true)).toEqual({
+    dropDatabase: false,
+    stopContainer: false,
+    retainContainer: true,
+  });
+});
+
+test("removes a disposable database and self-started container by default", () => {
+  const disposableArgs = disposablePostgresRunArgs(
+    "postil-disposable",
+    55432,
+    false,
+  );
+  expect(disposableArgs).toContain("--rm");
+  expect(disposableArgs).not.toContain("dev.postil.local-review-retained=true");
+  expect(disposableDatabaseCleanupPlan(false, true)).toEqual({
+    dropDatabase: true,
+    stopContainer: true,
+    retainContainer: false,
+  });
+});
+
+test("retains only the database when Postgres is externally managed", () => {
+  expect(disposableDatabaseCleanupPlan(true, false)).toEqual({
+    dropDatabase: false,
+    stopContainer: false,
+    retainContainer: false,
+  });
 });
 
 test("downloads, verifies, and cleans up the authoritative local-review CLI", async () => {
@@ -121,8 +183,12 @@ test("downloads, verifies, and cleans up the authoritative local-review CLI", as
 });
 
 const canRunHarness =
-  Boolean(process.env.POSTIL_TEST_DATABASE_URL) || (await commandSucceeds(["podman", "--version"]));
+  Boolean(process.env.POSTIL_TEST_DATABASE_URL) ||
+  (await commandSucceeds(["docker", "--version"])) ||
+  (await commandSucceeds(["podman", "--version"]));
 const describeHarness = canRunHarness ? describe : describe.skip;
+const testRetentionLifecycle =
+  process.env.POSTIL_RUN_RETENTION_E2E === "1" ? test : test.skip;
 
 describeHarness("scripts/run-review-locally.ts", () => {
   let dir: string;
@@ -164,7 +230,7 @@ console.log("fixture-key");
       /postil\/gate head=[^\s]+ details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
     );
     expect(result.stdout).toMatch(
-      /#1001 success: Postil gate passed\n\s+details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
+      /#1001 success: Merge gate passed\n\s+details=http:\/\/127\.0\.0\.1:\d+\/orgs\/local\/runs\/[0-9a-f-]+/,
     );
     expect(result.stdout).toContain("Review findings:\n  none");
     expect(result.stdout).not.toContain("https://api.github.com");
@@ -213,6 +279,51 @@ console.log("fixture-key");
     });
   }, 120_000);
 
+  testRetentionLifecycle(
+    "keeps a self-started database and container reachable after harness exit",
+    async () => {
+      const repo = await createFixtureRepo("retained-database");
+      const result = await runLocalReview(repo, "0", 0, {
+        args: ["--keep-database"],
+        env: { POSTIL_TEST_DATABASE_URL: "" },
+      });
+      const databaseName = result.stdout.match(
+        /local review database retained: ([a-zA-Z0-9_]+)/,
+      )?.[1];
+      const retained = result.stdout.match(
+        /local review Postgres retained: runtime=(docker|podman) container=([a-zA-Z0-9_.-]+)/,
+      );
+      expect(databaseName).toBeTruthy();
+      expect(retained).toBeTruthy();
+      const runtime = retained?.[1];
+      const containerName = retained?.[2];
+      expect(
+        await runCapture([
+          runtime!,
+          "inspect",
+          "--format",
+          "{{.State.Running}}",
+          containerName!,
+        ]),
+      ).toBe("true");
+      expect(
+        await runCapture([
+          runtime!,
+          "exec",
+          containerName!,
+          "psql",
+          "-U",
+          "postgres",
+          "-d",
+          databaseName!,
+          "-tAc",
+          "SELECT count(*) FROM organizations WHERE slug = 'local'",
+        ]),
+      ).toBe("1");
+    },
+    120_000,
+  );
+
   test("accepts an explicit local-review model override", async () => {
     const repo = await createFixtureRepo("model-override");
 
@@ -223,6 +334,22 @@ console.log("fixture-key");
     const invocation = JSON.parse(await readFile(invocationMarker, "utf8"));
     expect(invocation.model).toBe("openai/gpt-5-mini");
     expect(invocation.cascade).toBe("openai/gpt-5-mini");
+  }, 120_000);
+
+  test("accepts the repository-approved local review fallback chain", async () => {
+    const repo = await createFixtureRepo("approved-model-cascade");
+
+    await runLocalReview(repo, "0", 0, {
+      env: {
+        REVIEW_MODEL_CASCADE: "z-ai/glm-5.2,openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code",
+      },
+    });
+
+    const invocation = JSON.parse(await readFile(invocationMarker, "utf8"));
+    expect(invocation.model).toBe("z-ai/glm-5.2");
+    expect(invocation.cascade).toBe(
+      "openai/gpt-5.6-luna,moonshotai/kimi-k2.7-code",
+    );
   }, 120_000);
 
   test("rejects an installed CLI older than the hosted release", async () => {
@@ -368,39 +495,33 @@ console.log("fixture-key");
     expect(result.stdout).toContain("Local fixture finding");
   }, 120_000);
 
-  test("preserves an operational finding when the local advisory publication is neutral", async () => {
-    const repo = await createFixtureRepo("neutral-advisory");
+  test("preserves an operational finding when the local review check fails", async () => {
+    const repo = await createFixtureRepo("failed-review-check");
 
-    const result = await runLocalReview(repo, "0", 1, {
-      args: ["--require-clean"],
+    const result = await runLocalReview(repo, "0", 2, {
+      args: ["--require-clean", "--keep-database"],
       env: { POSTIL_FAKE_ADVISORY_NEUTRAL: "1" },
     });
 
     expect(result.stdout).toContain(
-      "would complete check-run #1000 as neutral",
+      "would complete check-run #1000 as failure",
     );
-    expect(result.stdout).toContain("Review findings:");
-    expect(result.stdout).toContain(".postil/provider:1");
-    expect(result.stdout).toContain("Local provider unavailable");
-    expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
-    expect(result.stdout).toContain("Gate: passed");
+    await expectRetainedOperationalFailure(result, ".postil/provider");
   }, 120_000);
 
   test("persists a model-output sentinel omitted from the GitHub receipt", async () => {
     const repo = await createFixtureRepo("model-output-sentinel");
 
-    const result = await runLocalReview(repo, "1", 1, {
-      args: ["--require-clean"],
+    const result = await runLocalReview(repo, "1", 2, {
+      args: ["--require-clean", "--keep-database"],
       env: {
         POSTIL_FAKE_ADVISORY_NEUTRAL: "1",
         POSTIL_FAKE_OPERATIONAL_PATH: ".postil/model-output",
       },
     });
 
-    expect(result.stdout).toContain("would complete check-run #1000 as neutral");
-    expect(result.stdout).toContain(".postil/model-output:1");
-    expect(result.stdout).toContain("PR reviews posted to local fake GitHub:\n  none");
-    expect(result.stdout).toContain("Gate: failed");
+    expect(result.stdout).toContain("would complete check-run #1000 as failure");
+    await expectRetainedOperationalFailure(result, ".postil/model-output");
   }, 120_000);
 
   test("base mode uses the exact selected head and serves files from its tree", async () => {
@@ -435,6 +556,23 @@ console.log("fixture-key");
     });
 
     expect(result.stdout).toContain("served_content=working-tree-context");
+  }, 120_000);
+
+  test("serves every pull-request file across bounded GitHub pages", async () => {
+    const repo = await createFixtureRepo("pull-file-pagination");
+    await Promise.all(
+      Array.from({ length: 204 }, (_, index) =>
+        writeFile(join(repo, `file-${index.toString().padStart(3, "0")}.txt`), "changed\n"),
+      ),
+    );
+    await run(["git", "add", "."], repo);
+
+    const result = await runLocalReview(repo, "0", 0, {
+      env: { POSTIL_FAKE_READ_PR_FILES: "1" },
+    });
+
+    expect(result.stdout).toContain("served_pr_files=205");
+    expect(result.stdout).toContain("served_pr_file_pages=4");
   }, 120_000);
 
   test("diff-file mode does not serve a working-tree symlink outside the repository", async () => {
@@ -512,6 +650,43 @@ console.log("fixture-key");
     return commit;
   }
 
+  async function expectRetainedOperationalFailure(
+    result: { stdout: string; stderr: string },
+    path: string,
+  ): Promise<void> {
+    expect(result.stderr).toContain("local review did not complete: job=failed review=failed");
+    expect(result.stdout).not.toContain("Gate: passed");
+    expect(result.stdout).not.toContain("would post PR review");
+    const name = result.stdout.match(/local review database retained: (postil_local_review_\d+_\d+)/)?.[1];
+    expect(name).toBeDefined();
+    let adminUrl = process.env.POSTIL_TEST_DATABASE_URL;
+    if (!adminUrl) {
+      const retained = result.stdout.match(/local review Postgres retained: runtime=(docker|podman) container=(postil-local-review-[\w-]+)/);
+      expect(retained).not.toBeNull();
+      const port = await runCapture([retained![1]!, "port", retained![2]!, "5432/tcp"]);
+      const match = port.match(/^127\.0\.0\.1:(\d+)$/m);
+      expect(match).not.toBeNull();
+      adminUrl = `postgresql://postgres@127.0.0.1:${match![1]}/postgres`;
+    }
+    const endpoint = new URL(adminUrl);
+    endpoint.pathname = `/${name}`;
+    const client = new Client({ connectionString: endpoint.toString() });
+    try {
+      await client.connect();
+      const { rows } = await client.query("SELECT status, envelope, error_message FROM reviews ORDER BY id DESC LIMIT 1");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe("failed");
+      expect(rows[0].error_message).toContain("provider or model output failed");
+      expect(rows[0].envelope.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path, title: "Local provider unavailable" }),
+      ]));
+      const jobs = await client.query("SELECT status FROM jobs WHERE kind = 'review' ORDER BY id DESC LIMIT 1");
+      expect(jobs.rows[0].status).toBe("failed");
+    } finally {
+      await client.end();
+    }
+  }
+
   async function runLocalReview(
     repo: string,
     gateFailing: "0" | "1",
@@ -536,6 +711,7 @@ console.log("fixture-key");
         repo,
         "--repo",
         "local/postil-local",
+        ...(process.env.POSTIL_KEEP_TEST_DATABASE === "1" ? ["--keep-database"] : []),
         ...(options.args ?? []),
       ],
       {
@@ -664,6 +840,22 @@ if (process.env.POSTIL_FAKE_READ_PR_TITLE === "1") {
   const response = await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}\`);
   servedPrTitle = (await response.json()).title;
 }
+let servedPrFiles;
+let servedPrFilePages;
+if (process.env.POSTIL_FAKE_READ_PR_FILES === "1") {
+  servedPrFiles = 0;
+  servedPrFilePages = 0;
+  while (true) {
+    servedPrFilePages += 1;
+    const response = await fetch(
+      \`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}/files?per_page=100&page=\${servedPrFilePages}\`,
+    );
+    const files = await response.json();
+    if (!Array.isArray(files)) throw new Error("pull-request files response is not an array");
+    servedPrFiles += files.length;
+    if (files.length === 0) break;
+  }
+}
 const finding = {
   id: "local-finding-1",
   path: operational ? operationalPath : "app.txt",
@@ -685,6 +877,8 @@ const findings = hasFinding ? [finding] : [];
 const observations = [];
 if (servedContent !== undefined) observations.push(\`served_content=\${servedContent}\`);
 if (servedPrTitle !== undefined) observations.push(\`served_pr_title=\${servedPrTitle}\`);
+if (servedPrFiles !== undefined) observations.push(\`served_pr_files=\${servedPrFiles}\`);
+if (servedPrFilePages !== undefined) observations.push(\`served_pr_file_pages=\${servedPrFilePages}\`);
 const summary = observations.length > 0
   ? observations.join("\\n")
   : (hasFinding ? "Local fixture found an issue." : "Local fixture passed.");
@@ -730,7 +924,7 @@ async function patchCheck(id, conclusion, title, summary) {
     })
   });
 }
-await patchCheck(advisory, operational ? "neutral" : "success", failing || operational ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
+await patchCheck(advisory, operational ? "failure" : "success", failing || operational ? "1 error, 0 warn, 0 info" : "No merge-relevant findings", envelope.summary);
 await patchCheck(gate, failing ? "failure" : "success", failing ? "Merge gate failed" : "Merge gate passed", envelope.summary);
 if (hasFinding && !operational) {
   await fetch(\`\${process.env.GITHUB_API_URL}/repos/\${repo}/pulls/\${pr}/reviews\`, {

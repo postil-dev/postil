@@ -28,10 +28,14 @@ import { getSessionUser } from "@/lib/session";
 import {
   enqueueGateStateSync,
   enqueueLatestGateStateSyncsForOrganization,
+  findDismissibleFindingState,
   findKindBlockingState,
   getReviewApprovalState,
+  hasInFlightReviewForPr,
   hasNewerCompletedReviewForHead,
+  hasNewerReviewForPr,
   insertFindingApproval,
+  lockActiveReviewState,
   lockReviewApprovalState,
   loadReviewForApprovalByPublicId,
   revokeFindingApproval,
@@ -39,7 +43,8 @@ import {
   type ReviewForApproval,
 } from "@/lib/finding-approvals";
 import { getInstallationToken } from "@/lib/github/app-auth";
-import { getPullRequestHeadSha } from "@/lib/github/checks";
+import { loadLiveApprovalActor } from "@/lib/github/approval-actor";
+import { getPullRequestHeadSha, getPullRequestReviewContext } from "@/lib/github/checks";
 import { getRepoConfigProbes } from "@/lib/github/config-probe";
 import {
   enqueueGateEnforcementSweepOnce,
@@ -525,12 +530,176 @@ export async function getGateEnforcementRefreshProgress(
   return { status: status === "failed" ? "failed" : "missing" };
 }
 
-export async function saveOrgSettings(
+/**
+ * Turn the merge gate on or off for the organization. A dedicated action so the
+ * dashboard toggle saves on change; the gate-mode advisory lock, audit event,
+ * and organization-wide gate-state reconciliation match the previous combined
+ * settings save.
+ */
+export async function setOrgGateEnabled(
   _previousState: OrgSettingsActionState | null,
   formData: FormData,
 ): Promise<OrgSettingsActionState> {
   const slug = String(formData.get("slug") ?? "");
   const { orgId, userId } = await requireAdmin(slug);
+  const gateEnabled = String(formData.get("gateEnabled") ?? "") === "on";
+  const db = getDb();
+  const now = new Date();
+  let gateModeChanged = false;
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`postil:gate-mode:${orgId}`}, 0))`,
+    );
+    await tx.execute(sql`
+      SELECT "org_id"
+      FROM "org_settings"
+      WHERE "org_id" = ${orgId}
+      FOR UPDATE
+    `);
+    const current = (
+      await tx
+        .select({ gateEnabled: schema.orgSettings.gateEnabled })
+        .from(schema.orgSettings)
+        .where(eq(schema.orgSettings.orgId, orgId))
+        .limit(1)
+    )[0];
+    gateModeChanged = (current?.gateEnabled ?? false) !== gateEnabled;
+    await tx
+      .insert(schema.orgSettings)
+      .values({ orgId, gateEnabled, updatedAt: now })
+      .onConflictDoUpdate({
+        target: schema.orgSettings.orgId,
+        set: { gateEnabled, updatedAt: now },
+      });
+    if (gateModeChanged) {
+      const event = (
+        await tx
+          .insert(schema.organizationSettingEvents)
+          .values({
+            orgId,
+            setting: "gate_enabled",
+            value: gateEnabled ? "enabled" : "advisory",
+            actorUserId: userId,
+            source: "dashboard",
+          })
+          .returning({ id: schema.organizationSettingEvents.id })
+      )[0];
+      if (!event) throw new Error("gate setting audit event was not recorded");
+      await enqueueLatestGateStateSyncsForOrganization(tx, orgId, event.id);
+    }
+  });
+  if (gateModeChanged) {
+    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
+      triggerQueueDrain("gate-state-sync"),
+    );
+  }
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/settings`);
+  return {
+    status: "success",
+    message: gateEnabled
+      ? "Merge gate on. Blocking findings fail postil/gate."
+      : "Merge gate off. Reviews are advisory.",
+  };
+}
+
+/** Turn shared owner configuration on or off, saving on change. */
+export async function setOrgSharedConfigEnabled(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId, userId } = await requireAdmin(slug);
+  const sharedConfigEnabled = String(formData.get("sharedConfigEnabled") ?? "") === "on";
+  const db = getDb();
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT "org_id"
+      FROM "org_settings"
+      WHERE "org_id" = ${orgId}
+      FOR UPDATE
+    `);
+    const current = (
+      await tx
+        .select({ sharedConfigEnabled: schema.orgSettings.sharedConfigEnabled })
+        .from(schema.orgSettings)
+        .where(eq(schema.orgSettings.orgId, orgId))
+        .limit(1)
+    )[0];
+    const changed = (current?.sharedConfigEnabled ?? true) !== sharedConfigEnabled;
+    await tx
+      .insert(schema.orgSettings)
+      .values({ orgId, sharedConfigEnabled, updatedAt: now })
+      .onConflictDoUpdate({
+        target: schema.orgSettings.orgId,
+        set: { sharedConfigEnabled, updatedAt: now },
+      });
+    if (changed) {
+      await tx.insert(schema.organizationSettingEvents).values({
+        orgId,
+        setting: "shared_config_enabled",
+        value: sharedConfigEnabled ? "enabled" : "disabled",
+        actorUserId: userId,
+        source: "dashboard",
+      });
+    }
+  });
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/settings`);
+  return {
+    status: "success",
+    message: sharedConfigEnabled
+      ? "Shared owner configuration on."
+      : "Shared owner configuration off.",
+  };
+}
+
+/**
+ * Save the organization fallback config texts. Split from the inference save so
+ * the dashboard can save them on change without touching provider settings.
+ */
+export async function saveOrgConfigFallbacks(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId } = await requireAdmin(slug);
+  const configYamlBody = String(formData.get("configYaml") ?? "");
+  const configYaml = configYamlBody.trim().length > 0 ? configYamlBody : null;
+  const guardrailsBody = String(formData.get("guardrailsMd") ?? "");
+  const guardrailsMd = guardrailsBody.trim().length > 0 ? guardrailsBody : null;
+  const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
+  const contentPolicyMd =
+    contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
+  if (configYaml) {
+    try {
+      validateOrgConfigYaml(configYaml);
+    } catch (error) {
+      return {
+        status: "error",
+        message: error instanceof Error ? error.message : "Config YAML is invalid.",
+      };
+    }
+  }
+  const db = getDb();
+  const now = new Date();
+  const values = { configYaml, guardrailsMd, contentPolicyMd, updatedAt: now };
+  await db
+    .insert(schema.orgSettings)
+    .values({ orgId, ...values })
+    .onConflictDoUpdate({ target: schema.orgSettings.orgId, set: values });
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/settings`);
+  return { status: "success", message: "Config fallbacks saved." };
+}
+
+export async function saveOrgInferenceSettings(
+  _previousState: OrgSettingsActionState | null,
+  formData: FormData,
+): Promise<OrgSettingsActionState> {
+  const slug = String(formData.get("slug") ?? "");
+  const { orgId } = await requireAdmin(slug);
 
   const providerMode = String(formData.get("providerMode") ?? "hosted").trim();
   if (providerMode !== "hosted" && providerMode !== "byok") {
@@ -546,27 +715,6 @@ export async function saveOrgSettings(
   const apiAuthHeader = String(formData.get("apiAuthHeader") ?? "").trim();
   const apiAuthValue = String(formData.get("apiAuthValue") ?? "").trim();
   const apiAuthAction = String(formData.get("apiAuthAction") ?? "keep").trim();
-  const configYamlBody = String(formData.get("configYaml") ?? "");
-  const configYaml = configYamlBody.trim().length > 0 ? configYamlBody : null;
-  const guardrailsBody = String(formData.get("guardrailsMd") ?? "");
-  const guardrailsMd = guardrailsBody.trim().length > 0 ? guardrailsBody : null;
-  const contentPolicyBody = String(formData.get("contentPolicyMd") ?? "");
-  const contentPolicyMd =
-    contentPolicyBody.trim().length > 0 ? contentPolicyBody : null;
-  const sharedConfigValues = formData.getAll("sharedConfigEnabled").map(String);
-  const sharedConfigEnabled =
-    sharedConfigValues.length === 0 || sharedConfigValues.includes("on");
-  const gateEnabled = formData.getAll("gateEnabled").map(String).includes("on");
-  if (configYaml) {
-    try {
-      validateOrgConfigYaml(configYaml);
-    } catch (error) {
-      return {
-        status: "error",
-        message: error instanceof Error ? error.message : "Config YAML is invalid.",
-      };
-    }
-  }
 
   const db = getDb();
   const removingByok = providerMode === "hosted" || apiKeyAction === "remove";
@@ -592,14 +740,8 @@ export async function saveOrgSettings(
     apiFormat: removingByok ? "openai-compatible" : apiFormat!,
     model: removingByok ? null : model,
     modelCascade: removingByok ? null : modelCascade,
-    configYaml,
-    guardrailsMd,
-    contentPolicyMd,
-    sharedConfigEnabled,
-    gateEnabled,
     updatedAt: now,
   };
-  let gateModeChanged = false;
 
   // The key is write-only: set when provided, cleared when requested,
   // otherwise left untouched. It is never read back to the form.
@@ -677,13 +819,11 @@ export async function saveOrgSettings(
         .select({
           apiKeyCiphertext: schema.orgSettings.apiKeyCiphertext,
           apiAuthHeaderCiphertext: schema.orgSettings.apiAuthHeaderCiphertext,
-          gateEnabled: schema.orgSettings.gateEnabled,
         })
         .from(schema.orgSettings)
         .where(eq(schema.orgSettings.orgId, orgId))
         .limit(1)
     )[0];
-    gateModeChanged = (currentSettings?.gateEnabled ?? false) !== gateEnabled;
     const activeTrial = Boolean(
       entitlement?.status === "trialing" &&
         entitlement.trialEndsAt &&
@@ -760,33 +900,12 @@ export async function saveOrgSettings(
         throw new Error("The free trial ended before the provider change was saved.");
       }
     }
-    if (gateModeChanged) {
-      const event = (
-        await tx
-          .insert(schema.organizationSettingEvents)
-          .values({
-            orgId,
-            setting: "gate_enabled",
-            value: gateEnabled ? "enabled" : "advisory",
-            actorUserId: userId,
-            source: "dashboard",
-          })
-          .returning({ id: schema.organizationSettingEvents.id })
-      )[0];
-      if (!event) throw new Error("gate setting audit event was not recorded");
-      await enqueueLatestGateStateSyncsForOrganization(tx, orgId, event.id);
-    }
     return null;
   });
   if (modeError) return modeError;
-  if (gateModeChanged) {
-    void import("@/worker/runner").then(({ triggerQueueDrain }) =>
-      triggerQueueDrain("gate-state-sync"),
-    );
-  }
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/settings`);
-  return { status: "success", message: "Organization settings saved." };
+  return { status: "success", message: "Inference settings saved." };
 }
 
 async function assertDashboardReviewApprovable(review: ReviewForApproval): Promise<void> {
@@ -827,10 +946,17 @@ export async function approveFinding(formData: FormData): Promise<void> {
   const user = await getSessionUser();
   if (!user?.githubId) throw new Error("user has no github id");
   await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
     await lockReviewApprovalState(tx, review.id);
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
-    if (!finding || !finding.blocking || finding.activeApproval || finding.latestApproval?.revokedAt) {
+    if (!finding || !finding.blocking || finding.activeApproval || finding.activeDismissal || finding.latestApproval?.revokedAt) {
       throw new Error("that finding is absent, already approved, revoked, or no longer kind-blocking");
     }
     if (finding.severityBlocking) {
@@ -884,7 +1010,14 @@ export async function revokeFinding(formData: FormData): Promise<void> {
   await assertDashboardReviewApprovable(review);
   await requireCurrentReviewHead(review);
   await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
     await lockReviewApprovalState(tx, review.id);
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
     const state = await getReviewApprovalState(tx, review);
     const finding = findKindBlockingState(state, findingId);
     if (!finding?.activeApproval) throw new Error("that finding has no active approval");
@@ -905,4 +1038,192 @@ export async function revokeFinding(formData: FormData): Promise<void> {
   );
   revalidatePath(`/orgs/${slug}`);
   revalidatePath(`/orgs/${slug}/runs/${publicId}`);
+}
+
+export async function dismissFinding(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const publicId = String(formData.get("publicId") ?? "");
+  const findingId = String(formData.get("findingId") ?? "").trim();
+  const reasonTag = String(formData.get("reasonTag") ?? "");
+  const rationale = String(formData.get("rationale") ?? "");
+  if (!(["false-positive", "accepted-risk", "out-of-scope"] as const).includes(reasonTag as never)) {
+    throw new Error("dismissal requires a valid reason tag");
+  }
+  const { orgId } = await requireAdmin(slug);
+  const db = getDb();
+  const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
+  if (!review) throw new Error("review not found in this organization");
+  await assertDashboardReviewApprovable(review);
+  const token = await requireCurrentReviewHead(review);
+  if (await hasInFlightReviewForPr(db, review)) {
+    throw new Error("a review is in progress; re-issue after it completes");
+  }
+  const user = await getSessionUser();
+  if (!user?.githubId) throw new Error("user has no github id");
+  const actor = await loadLiveApprovalActor(
+    review,
+    { id: Number(user.githubId), login: user.login },
+    review.repoFullName,
+    token,
+  );
+  if (!actor || actor.role !== "admin") {
+    throw new Error("GitHub could not verify this account as an active organization admin");
+  }
+  const authorGithubId = review.authorGithubId ?? (
+    await getPullRequestReviewContext(token, review.repoFullName, review.prNumber)
+  ).authorGithubId ?? null;
+  await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
+    await lockReviewApprovalState(tx, review.id);
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    const state = await getReviewApprovalState(tx, review);
+    const finding = findDismissibleFindingState(state, findingId);
+    if (!finding || finding.activeDismissal || finding.activeApproval) {
+      throw new Error("that finding is absent, operational, already dismissed, or has an active approval");
+    }
+    await insertFindingApproval(tx, {
+      reviewId: review.id,
+      findingId,
+      actor,
+      rationale,
+      verb: "dismiss",
+      reasonTag: reasonTag as "false-positive" | "accepted-risk" | "out-of-scope",
+      authorSelfDismissal: authorGithubId === Number(actor.githubId),
+      finding: finding.finding,
+      findingGeneratorModel: review.envelope!.modelUsed,
+      findingScorerModel: review.envelope!.scorerModel,
+      source: "dashboard",
+      binding: {
+        orgId: review.orgId,
+        repositoryId: review.repositoryId,
+        githubInstallationId: review.githubInstallationId,
+        githubRepoId: review.githubRepoId,
+        prNumber: review.prNumber,
+        headSha: review.headSha,
+      },
+    });
+    const nextState = await getReviewApprovalState(tx, review);
+    const gateEnabled = await lockOrganizationGateMode(tx, orgId);
+    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing, gateEnabled);
+    await enqueueGateStateSync(tx, review);
+  });
+  void import("@/worker/runner").then(({ triggerQueueDrain }) => triggerQueueDrain("gate-state-sync"));
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
+}
+
+export interface DismissFindingActionState {
+  status: "idle" | "error" | "success";
+  message: string;
+}
+
+const DISMISSAL_ACTION_ERRORS = new Set([
+  "dismissal requires a valid reason tag",
+  "review not found in this organization",
+  "review must be completed",
+  "review must have an envelope",
+  "review has no gate check-run",
+  "the pull request changed after this review; use the latest review",
+  "a newer completed review exists for this commit",
+  "a newer review exists for this pull request",
+  "a review is in progress; re-issue after it completes",
+  "approval rationale is required",
+  "user has no github id",
+  "GitHub could not verify this account as an active organization admin",
+  "that finding is absent, operational, already dismissed, or has an active approval",
+]);
+
+export async function dismissFindingWithState(
+  _previousState: DismissFindingActionState,
+  formData: FormData,
+): Promise<DismissFindingActionState> {
+  try {
+    await dismissFinding(formData);
+    return { status: "success", message: "Dismissal recorded. The gate update is queued." };
+  } catch (error) {
+    const message = error instanceof Error && DISMISSAL_ACTION_ERRORS.has(error.message)
+      ? error.message
+      : "Dismissal could not be recorded. Refresh the run and try again.";
+    return { status: "error", message };
+  }
+}
+
+export async function revokeFindingDismissal(formData: FormData): Promise<void> {
+  const slug = String(formData.get("slug") ?? "");
+  const publicId = String(formData.get("publicId") ?? "");
+  const findingId = String(formData.get("findingId") ?? "").trim();
+  const { orgId } = await requireAdmin(slug);
+  const db = getDb();
+  const review = await loadReviewForApprovalByPublicId(db, orgId, publicId);
+  if (!review) throw new Error("review not found in this organization");
+  await assertDashboardReviewApprovable(review);
+  const token = await requireCurrentReviewHead(review);
+  const user = await getSessionUser();
+  if (!user?.githubId) throw new Error("user has no github id");
+  const actor = await loadLiveApprovalActor(
+    review,
+    { id: Number(user.githubId), login: user.login },
+    review.repoFullName,
+    token,
+  );
+  if (!actor || actor.role !== "admin") {
+    throw new Error("GitHub could not verify this account as an active organization admin");
+  }
+  await db.transaction(async (tx) => {
+    await lockActiveReviewState(tx, review);
+    await lockReviewApprovalState(tx, review.id);
+    if (await hasInFlightReviewForPr(tx, review)) {
+      throw new Error("a review is in progress; re-issue after it completes");
+    }
+    if (await hasNewerReviewForPr(tx, review)) {
+      throw new Error("a newer review exists for this pull request");
+    }
+    const state = await getReviewApprovalState(tx, review);
+    if (!findDismissibleFindingState(state, findingId)?.activeDismissal) {
+      throw new Error("that finding has no active dismissal");
+    }
+    if (!await revokeFindingApproval(tx, review.id, findingId, actor.userId, "dismiss")) {
+      throw new Error("that finding has no active dismissal");
+    }
+    const nextState = await getReviewApprovalState(tx, review);
+    const gateEnabled = await lockOrganizationGateMode(tx, orgId);
+    await updateStoredEffectiveGate(tx, review.id, nextState.effectiveGate.failing, gateEnabled);
+    await enqueueGateStateSync(tx, review);
+  });
+  void import("@/worker/runner").then(({ triggerQueueDrain }) => triggerQueueDrain("gate-state-sync"));
+  revalidatePath(`/orgs/${slug}`);
+  revalidatePath(`/orgs/${slug}/runs/${publicId}`);
+}
+
+export async function revokeFindingDismissalWithState(
+  _previousState: DismissFindingActionState,
+  formData: FormData,
+): Promise<DismissFindingActionState> {
+  try {
+    await revokeFindingDismissal(formData);
+    return { status: "success", message: "Dismissal revoked. The gate update is queued." };
+  } catch (error) {
+    const known = new Set([
+      "review not found in this organization",
+      "user has no github id",
+      "GitHub could not verify this account as an active organization admin",
+      "a newer review exists for this pull request",
+      "a review is in progress; re-issue after it completes",
+      "the pull request changed after this review; use the latest review",
+      "a newer completed review exists for this commit",
+      "review must be completed",
+      "review must have an envelope",
+      "review has no gate check-run",
+      "that finding has no active dismissal",
+    ]);
+    const message = error instanceof Error && known.has(error.message)
+      ? error.message
+      : "Dismissal could not be revoked. Refresh the run and try again.";
+    return { status: "error", message };
+  }
 }

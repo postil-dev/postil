@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { getDb, schema, type Database } from "@/lib/db";
 import type { ApprovalActor } from "@/lib/finding-approvals";
@@ -19,6 +19,103 @@ interface GithubMembershipResponse {
   role?: string;
   user?: { id?: number; login?: string };
   organization?: { id?: number; login?: string };
+}
+
+export type LiveAdminVerification =
+  | { outcome: "authorized" }
+  | { outcome: "denied" }
+  | { outcome: "unavailable" };
+
+/**
+ * Verify present GitHub administrator authority without writing local users
+ * or membership rows. Feedback observation is authorization-only work.
+ */
+export async function verifyLiveGithubAdmin(
+  review: ApprovalReviewAccount,
+  user: ApprovalGithubUser | undefined,
+  repoFullName: string,
+  installationToken: string,
+  signal?: AbortSignal,
+): Promise<LiveAdminVerification> {
+  if (
+    !user?.id ||
+    !Number.isSafeInteger(user.id) ||
+    user.id <= 0 ||
+    !user.login ||
+    !isGithubLogin(user.login) ||
+    review.orgId == null ||
+    !installationToken
+  ) return { outcome: "unavailable" };
+
+  let organization: { githubId: number | null } | undefined;
+  try {
+    organization = (
+      await getDb()
+        .select({ githubId: schema.organizations.githubOrgId })
+        .from(schema.organizations)
+        .where(eq(schema.organizations.id, review.orgId))
+        .limit(1)
+    )[0];
+  } catch {
+    return { outcome: "unavailable" };
+  }
+  const repoParts = repoFullName.split("/");
+  const ownerLogin = repoParts.length === 2 ? repoParts[0] : undefined;
+  if (
+    !organization?.githubId ||
+    !Number.isSafeInteger(organization.githubId) ||
+    organization.githubId <= 0 ||
+    !ownerLogin ||
+    !isGithubLogin(ownerLogin) ||
+    !repoParts[1]
+  ) return { outcome: "unavailable" };
+
+  if (review.installationAccountType === "User") {
+    return organization.githubId === user.id &&
+      ownerLogin.toLowerCase() === user.login.toLowerCase()
+      ? { outcome: "authorized" }
+      : { outcome: "denied" };
+  }
+  if (review.installationAccountType !== "Organization") return { outcome: "unavailable" };
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBase()}/orgs/${encodeURIComponent(ownerLogin)}/memberships/${encodeURIComponent(user.login)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${installationToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "postil-control-plane",
+        },
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+          : AbortSignal.timeout(10_000),
+      },
+    );
+  } catch {
+    return { outcome: "unavailable" };
+  }
+  if (response.status === 404) return { outcome: "denied" };
+  if (!response.ok) return { outcome: "unavailable" };
+
+  let membership: GithubMembershipResponse;
+  try {
+    membership = (await response.json()) as GithubMembershipResponse;
+  } catch {
+    return { outcome: "unavailable" };
+  }
+  if (
+    membership.user?.id !== user.id ||
+    membership.user.login?.toLowerCase() !== user.login.toLowerCase() ||
+    membership.organization?.id !== organization.githubId ||
+    membership.organization.login?.toLowerCase() !== ownerLogin.toLowerCase()
+  ) return { outcome: "unavailable" };
+  if (membership.state !== "active" || membership.role !== "admin") {
+    return { outcome: "denied" };
+  }
+  return { outcome: "authorized" };
 }
 
 /** Resolve an approval actor from current GitHub ownership or organization membership. */
@@ -67,7 +164,14 @@ export async function loadLiveApprovalActor(
     organization.githubId === user.id &&
     ownerLogin.toLowerCase() === user.login.toLowerCase()
   ) {
-    return persistApprovalActor(db, review.orgId, user.id, user.login, "admin");
+    const actorUserId = await upsertApprovalActorIdentity(
+      db,
+      user.id,
+      user.login,
+    );
+    return actorUserId === undefined
+      ? null
+      : approvalActor(actorUserId, user.id, user.login, "admin");
   }
   if (review.installationAccountType !== "Organization") return null;
 
@@ -89,10 +193,7 @@ export async function loadLiveApprovalActor(
     return null;
   }
 
-  if (response.status === 404) {
-    await removeCachedMembership(db, review.orgId, user.id);
-    return null;
-  }
+  if (response.status === 404) return null;
   if (!response.ok) return null;
 
   let membership: GithubMembershipResponse;
@@ -112,56 +213,32 @@ export async function loadLiveApprovalActor(
   ) {
     return null;
   }
-
-  return persistApprovalActor(db, review.orgId, user.id, user.login, role);
+  const actorUserId = await upsertApprovalActorIdentity(
+    db,
+    user.id,
+    user.login,
+  );
+  return actorUserId === undefined
+    ? null
+    : approvalActor(actorUserId, user.id, user.login, role);
 }
 
-async function persistApprovalActor(
+async function upsertApprovalActorIdentity(
   db: Database,
-  orgId: number,
   githubId: number,
   login: string,
-  role: "member" | "admin",
-): Promise<ApprovalActor> {
-  return db.transaction(async (tx) => {
-    const row = (
-      await tx
-        .insert(schema.users)
-        .values({ githubId, login })
-        .onConflictDoUpdate({
-          target: schema.users.githubId,
-          set: { login },
-        })
-        .returning({ id: schema.users.id })
-    )[0];
-    if (!row) throw new Error("approval actor could not be persisted");
-    await tx
-      .insert(schema.orgMembers)
-      .values({ orgId, userId: row.id, role })
-      .onConflictDoUpdate({
-        target: [schema.orgMembers.orgId, schema.orgMembers.userId],
-        set: { role },
-      });
-    return approvalActor(row.id, githubId, login, role);
-  });
-}
-
-async function removeCachedMembership(
-  db: Database,
-  orgId: number,
-  githubId: number,
-): Promise<void> {
-  const row = (
+): Promise<number | undefined> {
+  const actorUser = (
     await db
-      .select({ id: schema.users.id })
-      .from(schema.users)
-      .where(eq(schema.users.githubId, githubId))
-      .limit(1)
+      .insert(schema.users)
+      .values({ githubId, login })
+      .onConflictDoUpdate({
+        target: schema.users.githubId,
+        set: { login },
+      })
+      .returning({ id: schema.users.id })
   )[0];
-  if (!row) return;
-  await db
-    .delete(schema.orgMembers)
-    .where(and(eq(schema.orgMembers.orgId, orgId), eq(schema.orgMembers.userId, row.id)));
+  return actorUser?.id;
 }
 
 function approvalActor(

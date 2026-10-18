@@ -13,8 +13,8 @@ export function PrivateBillingNotice({
   const nearingCap =
     decision.allowed &&
     decision.usageLimitMicros !== null &&
-    decision.usageLimitMicros > 0 &&
-    decision.usageMicros / decision.usageLimitMicros >= 0.8;
+    decision.usageLimitMicros > 0n &&
+    decision.usageMicros * 5n >= decision.usageLimitMicros * 4n;
   const inGrace = decision.allowed && decision.reason === "past_due_grace";
   if (decision.allowed && !nearingCap && !inGrace) return null;
   if (decision.allowed) {

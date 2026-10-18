@@ -155,4 +155,73 @@ describe("operator alert job", () => {
       ]),
     });
   });
+
+  test("sends a privacy-safe finding feedback digest without an organization link", async () => {
+    await runOperatorAlertJob({
+      event: "finding_feedback_digest",
+      eventKey: "finding-feedback-digest:2026-08-17",
+      orgId: null,
+      orgSlug: null,
+      accountLogin: null,
+      githubOwnerId: null,
+      periodStart: "2026-08-17T00:00:00.000Z",
+      periodEnd: "2026-08-24T00:00:00.000Z",
+      aggregatesTruncated: false,
+      aggregates: [{
+        source: "reaction",
+        suggestedReasonTag: null,
+        reactionContent: "-1",
+        model: "example/model",
+        kind: "risk",
+        severity: "error",
+        count: 2,
+      }],
+    });
+
+    expect(sentInput).toMatchObject({
+      subject: "Postil finding feedback digest: 2026-08-17",
+      content: {
+        title: "Finding feedback digest",
+        details: [{
+          label: "reaction · -1 · example/model · risk · error",
+          value: "2",
+        }],
+      },
+    });
+    expect(sentInput?.content).not.toHaveProperty("action");
+    expect(JSON.stringify(sentInput?.content)).not.toContain("pull-request-author");
+    expect(JSON.stringify(sentInput?.content)).not.toContain("reply body");
+  });
+
+  test("renders every admitted feedback aggregate with labels bounded for email", async () => {
+    const aggregates = Array.from({ length: 20 }, (_, index) => ({
+      source: "reaction" as const,
+      suggestedReasonTag: null,
+      reactionContent: "+1" as const,
+      model: `model-${index}-${"m".repeat(490)}`,
+      kind: `kind-${"k".repeat(90)}`,
+      severity: "warning",
+      count: index + 1,
+    }));
+    await runOperatorAlertJob({
+      event: "finding_feedback_digest",
+      eventKey: "finding-feedback-digest:2026-08-17",
+      orgId: null,
+      orgSlug: null,
+      accountLogin: null,
+      githubOwnerId: null,
+      periodStart: "2026-08-17T00:00:00.000Z",
+      periodEnd: "2026-08-24T00:00:00.000Z",
+      aggregatesTruncated: true,
+      aggregates,
+    });
+
+    const details = (sentInput?.content as { details: Array<{ label: string; value: string }> }).details;
+    expect(details).toHaveLength(20);
+    expect(details.every((detail) => detail.label.length <= 120)).toBe(true);
+    expect(details.map((detail) => detail.value)).toEqual(aggregates.map((aggregate) => String(aggregate.count)));
+    expect(sentInput?.content).toMatchObject({
+      note: expect.stringContaining("Additional aggregate groups are omitted"),
+    });
+  });
 });

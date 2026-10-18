@@ -154,6 +154,30 @@ export async function verifyPostilCliContract(binary: string): Promise<void> {
   }
   assertReviewHelp(help.stdout);
 
+  const configWorkDir = await mkdtemp(join(tmpdir(), "postil-cli-config-contract-"));
+  try {
+    const hostedConfig = await run(binary, ["config"], {
+      cwd: configWorkDir,
+      env: {
+        POSTIL_HOSTED_MODE: "1",
+        POSTIL_PROVISIONAL_HOSTED_ROSTER: "1",
+        XDG_CONFIG_HOME: join(configWorkDir, "config"),
+      },
+    });
+    if (
+      hostedConfig.exitCode !== 0 ||
+      !hostedConfig.stdout.split("\n").includes(
+        `model.name: ${release.hostedCliDefaultModel}`,
+      )
+    ) {
+      throw new Error(
+        `postil hosted default model mismatch: expected ${release.hostedCliDefaultModel}`,
+      );
+    }
+  } finally {
+    await rm(configWorkDir, { force: true, recursive: true });
+  }
+
   let rejectCheckCompletion = false;
   let rejectFileFetch = false;
   let registeredPlan = false;

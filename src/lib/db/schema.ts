@@ -11,6 +11,8 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -55,6 +57,19 @@ export const findingApprovalRole = pgEnum("finding_approval_role", [
 export const findingApprovalSource = pgEnum("finding_approval_source", [
   "github",
   "dashboard",
+]);
+export const findingApprovalVerb = pgEnum("finding_approval_verb", [
+  "approve",
+  "dismiss",
+]);
+
+/** One durable switch shared by every web and worker process. */
+export const reviewFeedbackControl = pgTable("review_feedback_control", {
+  id: integer("id").primaryKey().default(1),
+  mode: text("mode").notNull().default("disabled"),
+}, (table) => [
+  check("review_feedback_control_singleton", sql`${table.id} = 1`),
+  check("review_feedback_control_mode", sql`${table.mode} IN ('inherit', 'enabled', 'disabled')`),
 ]);
 
 export const users = pgTable("users", {
@@ -160,13 +175,15 @@ export type GateEnforcementEvidence = {
     available: boolean;
     requiredStatusChecksPresent: boolean;
     exactMatch: boolean;
-    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+    match?:
+      "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
   };
   activeRules: {
     available: boolean;
     pagesRead: number;
     exactMatch: boolean;
-    match?: "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
+    match?:
+      "exact_app" | "any_source" | "foreign_app" | "unknown_identity" | "none";
   };
 };
 
@@ -184,10 +201,15 @@ export const repositoryGateEnforcement = pgTable(
     checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
     lastSuccessfulAt: timestamp("last_successful_at", { withTimezone: true }),
     lastError: text("last_error"),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
-    index("repository_gate_enforcement_status_checked_idx").on(t.status, t.checkedAt),
+    index("repository_gate_enforcement_status_checked_idx").on(
+      t.status,
+      t.checkedAt,
+    ),
     check(
       "repository_gate_enforcement_status_check",
       sql`${t.status} IN ('required', 'not_required', 'unknown')`,
@@ -278,7 +300,9 @@ export const reviews = pgTable(
       .references(() => repositories.id, { onDelete: "cascade" }),
     sourceOrgId: bigint("source_org_id", { mode: "number" }),
     sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
-    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", {
+      mode: "number",
+    }),
     sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
     sourceRepoFullName: text("source_repo_full_name"),
     prNumber: integer("pr_number").notNull(),
@@ -304,6 +328,14 @@ export const reviews = pgTable(
     gateSyncLeaseExpiresAt: timestamp("gate_sync_lease_expires_at", {
       withTimezone: true,
     }),
+    publicationLifecycleReconciledAt: timestamp(
+      "publication_lifecycle_reconciled_at",
+      { withTimezone: true },
+    ),
+    publicationLifecycleRequiredAt: timestamp(
+      "publication_lifecycle_required_at",
+      { withTimezone: true },
+    ),
     queuedAt: timestamp("queued_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -317,13 +349,18 @@ export const reviews = pgTable(
     index("reviews_running_started_at_idx")
       .on(t.startedAt)
       .where(sql`${t.status} = 'running'`),
+    index("reviews_publication_lifecycle_pending_idx")
+      .on(t.finishedAt)
+      .where(
+        sql`${t.status} = 'completed' AND ${t.publicationLifecycleRequiredAt} IS NOT NULL AND ${t.publicationLifecycleReconciledAt} IS NULL`,
+      ),
     check(
       "reviews_trigger_source_check",
-      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun')`,
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'finding_feedback')`,
     ),
     check(
       "reviews_trigger_context_check",
-      sql`(${t.triggerSource} = 'unknown' AND (${t.triggerContext} IS NULL OR ${t.triggerContext} = '{"source":"unknown"}'::jsonb)) OR (${t.triggerSource} <> 'unknown' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'webhookDeliveryId', 'webhookEvent', 'webhookAction', 'sourceCommentId', 'sourceUrl', 'requestedByGithubId', 'requestedByLogin', 'checkName']::text[] = '{}'::jsonb AND ${t.triggerContext}->>'source' = ${t.triggerSource} AND jsonb_typeof(${t.triggerContext}->'webhookDeliveryId') = 'string' AND COALESCE(length(btrim(${t.triggerContext}->>'webhookDeliveryId')), 0) > 0 AND length(${t.triggerContext}->>'webhookDeliveryId') <= 200 AND ((${t.triggerSource} = 'automatic_pull_request' AND ${t.triggerContext}->>'webhookEvent' = 'pull_request') OR (${t.triggerSource} = 'requested_review' AND ${t.triggerContext}->>'webhookEvent' IN ('issue_comment', 'pull_request_review_comment')) OR (${t.triggerSource} = 'github_check_rerun' AND ${t.triggerContext}->>'webhookEvent' IN ('check_run', 'check_suite'))) AND (NOT ${t.triggerContext} ? 'webhookAction' OR (jsonb_typeof(${t.triggerContext}->'webhookAction') = 'string' AND length(${t.triggerContext}->>'webhookAction') <= 100)) AND (NOT ${t.triggerContext} ? 'sourceCommentId' OR (jsonb_typeof(${t.triggerContext}->'sourceCommentId') = 'number' AND (${t.triggerContext}->>'sourceCommentId')::numeric = trunc((${t.triggerContext}->>'sourceCommentId')::numeric) AND (${t.triggerContext}->>'sourceCommentId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'sourceUrl' OR (jsonb_typeof(${t.triggerContext}->'sourceUrl') = 'string' AND length(${t.triggerContext}->>'sourceUrl') <= 2048 AND ${t.triggerContext}->>'sourceUrl' ~* '^https://github[.]com([/?#]|$)')) AND (NOT ${t.triggerContext} ? 'requestedByGithubId' OR (jsonb_typeof(${t.triggerContext}->'requestedByGithubId') = 'number' AND (${t.triggerContext}->>'requestedByGithubId')::numeric = trunc((${t.triggerContext}->>'requestedByGithubId')::numeric) AND (${t.triggerContext}->>'requestedByGithubId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'requestedByLogin' OR (jsonb_typeof(${t.triggerContext}->'requestedByLogin') = 'string' AND length(${t.triggerContext}->>'requestedByLogin') <= 100)) AND (NOT ${t.triggerContext} ? 'checkName' OR (jsonb_typeof(${t.triggerContext}->'checkName') = 'string' AND length(${t.triggerContext}->>'checkName') <= 200)))`,
+      sql`(${t.triggerSource} = 'finding_feedback' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'feedbackDigest']::text[] = '{}'::jsonb AND COALESCE(${t.triggerContext}->>'source', '') = 'finding_feedback' AND jsonb_typeof(${t.triggerContext}->'feedbackDigest') = 'string' AND COALESCE(${t.triggerContext}->>'feedbackDigest', '') ~ '^[a-f0-9]{64}$') OR (${t.triggerSource} = 'unknown' AND (${t.triggerContext} IS NULL OR ${t.triggerContext} = '{"source":"unknown"}'::jsonb)) OR (${t.triggerSource} <> 'unknown' AND ${t.triggerContext} IS NOT NULL AND jsonb_typeof(${t.triggerContext}) = 'object' AND ${t.triggerContext} - ARRAY['source', 'webhookDeliveryId', 'webhookEvent', 'webhookAction', 'sourceCommentId', 'sourceUrl', 'requestedByGithubId', 'requestedByLogin', 'checkName']::text[] = '{}'::jsonb AND ${t.triggerContext}->>'source' = ${t.triggerSource} AND jsonb_typeof(${t.triggerContext}->'webhookDeliveryId') = 'string' AND COALESCE(length(btrim(${t.triggerContext}->>'webhookDeliveryId')), 0) > 0 AND length(${t.triggerContext}->>'webhookDeliveryId') <= 200 AND ((${t.triggerSource} = 'automatic_pull_request' AND ${t.triggerContext}->>'webhookEvent' = 'pull_request') OR (${t.triggerSource} = 'requested_review' AND ${t.triggerContext}->>'webhookEvent' IN ('issue_comment', 'pull_request_review_comment')) OR (${t.triggerSource} = 'github_check_rerun' AND ${t.triggerContext}->>'webhookEvent' IN ('check_run', 'check_suite'))) AND (NOT ${t.triggerContext} ? 'webhookAction' OR (jsonb_typeof(${t.triggerContext}->'webhookAction') = 'string' AND length(${t.triggerContext}->>'webhookAction') <= 100)) AND (NOT ${t.triggerContext} ? 'sourceCommentId' OR (jsonb_typeof(${t.triggerContext}->'sourceCommentId') = 'number' AND (${t.triggerContext}->>'sourceCommentId')::numeric = trunc((${t.triggerContext}->>'sourceCommentId')::numeric) AND (${t.triggerContext}->>'sourceCommentId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'sourceUrl' OR (jsonb_typeof(${t.triggerContext}->'sourceUrl') = 'string' AND length(${t.triggerContext}->>'sourceUrl') <= 2048 AND ${t.triggerContext}->>'sourceUrl' ~* '^https://github[.]com([/?#]|$)')) AND (NOT ${t.triggerContext} ? 'requestedByGithubId' OR (jsonb_typeof(${t.triggerContext}->'requestedByGithubId') = 'number' AND (${t.triggerContext}->>'requestedByGithubId')::numeric = trunc((${t.triggerContext}->>'requestedByGithubId')::numeric) AND (${t.triggerContext}->>'requestedByGithubId')::numeric BETWEEN 1 AND 9007199254740991)) AND (NOT ${t.triggerContext} ? 'requestedByLogin' OR (jsonb_typeof(${t.triggerContext}->'requestedByLogin') = 'string' AND length(${t.triggerContext}->>'requestedByLogin') <= 100)) AND (NOT ${t.triggerContext} ? 'checkName' OR (jsonb_typeof(${t.triggerContext}->'checkName') = 'string' AND length(${t.triggerContext}->>'checkName') <= 200)))`,
     ),
   ],
 );
@@ -340,6 +377,7 @@ export const reviewPublicationReceipts = pgTable(
       .references(() => reviews.id, { onDelete: "cascade" }),
     receiptVersion: integer("receipt_version"),
     receiptId: text("receipt_id"),
+    publicationChannel: text("publication_channel"),
     githubReviewId: text("github_review_id"),
     observedAt: timestamp("observed_at", { withTimezone: true })
       .notNull()
@@ -348,7 +386,7 @@ export const reviewPublicationReceipts = pgTable(
   (t) => [
     check(
       "review_publication_receipts_identity_check",
-      sql`(${t.receiptVersion} IS NULL AND ${t.receiptId} IS NULL) OR (${t.receiptVersion} = 1 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200)`,
+      sql`(${t.receiptVersion} IS NULL AND ${t.receiptId} IS NULL AND ${t.publicationChannel} IS NULL) OR (${t.receiptVersion} = 1 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200 AND (${t.publicationChannel} IS NULL OR ${t.publicationChannel} = 'reviewComments')) OR (${t.receiptVersion} = 2 AND length(btrim(${t.receiptId})) BETWEEN 1 AND 200 AND ${t.publicationChannel} IS NOT NULL AND ${t.publicationChannel} IN ('reviewComments', 'checkAnnotations'))`,
     ),
     check(
       "review_publication_receipts_github_review_id_check",
@@ -436,7 +474,9 @@ export const largeReviewAttempts = pgTable(
     model: text("model").notNull(),
     state: text("state").notNull(),
     leaseId: uuid("lease_id").notNull(),
-    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+    }).notNull(),
     responseStatus: integer("response_status"),
     responseHeaders: jsonb("response_headers").$type<Record<string, string>>(),
     responseBody: text("response_body"),
@@ -463,7 +503,10 @@ export const largeReviewAttempts = pgTable(
       "large_review_attempts_request_check",
       sql`${t.requestSha256} ~ '^[0-9a-f]{64}$' AND ${t.batchIdentity} ~ '^[0-9a-f]{64}$'`,
     ),
-    check("large_review_attempts_attempt_check", sql`${t.attempt} BETWEEN 1 AND 10`),
+    check(
+      "large_review_attempts_attempt_check",
+      sql`${t.attempt} BETWEEN 1 AND 10`,
+    ),
     check(
       "large_review_attempts_state_check",
       sql`${t.state} IN ('pending', 'completed')`,
@@ -494,29 +537,131 @@ export const findingPublications = pgTable(
     initialState: text("initial_state").notNull(),
     currentState: text("current_state").notNull(),
     githubCommentId: text("github_comment_id"),
-    lifecycleObservedAt: timestamp("lifecycle_observed_at", { withTimezone: true })
+    lifecycleObservedAt: timestamp("lifecycle_observed_at", {
+      withTimezone: true,
+    })
       .notNull()
       .defaultNow(),
   },
   (t) => [
-    uniqueIndex("finding_publications_review_finding_idx").on(t.reviewId, t.findingId),
+    uniqueIndex("finding_publications_review_finding_idx").on(
+      t.reviewId,
+      t.findingId,
+    ),
     index("finding_publications_comment_idx").on(t.githubCommentId),
-    index("finding_publications_stable_finding_idx").on(t.findingId, t.stableIdentity),
+    index("finding_publications_stable_finding_idx").on(
+      t.findingId,
+      t.stableIdentity,
+    ),
     check(
       "finding_publications_finding_id_check",
       sql`length(btrim(${t.findingId})) BETWEEN 1 AND 500`,
     ),
     check(
       "finding_publications_initial_state_check",
-      sql`${t.initialState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
+      sql`${t.initialState} IN ('inline', 'fileComment', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'unknown')`,
     ),
     check(
       "finding_publications_current_state_check",
-      sql`${t.currentState} IN ('inline', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
+      sql`${t.currentState} IN ('inline', 'fileComment', 'checkAnnotation', 'summaryOnly', 'carried', 'resolved', 'suppressed', 'inlineRejected', 'outdated', 'deleted', 'unknown')`,
     ),
     check(
       "finding_publications_github_comment_id_check",
       sql`${t.githubCommentId} IS NULL OR ${t.githubCommentId} ~ '^[1-9][0-9]{0,19}$'`,
+    ),
+    check(
+      "finding_publications_file_comment_identity_check",
+      sql`(${t.initialState} <> 'fileComment' AND ${t.currentState} <> 'fileComment') OR ${t.githubCommentId} IS NOT NULL`,
+    ),
+  ],
+);
+
+/** Immutable feedback attached to a published finding, never a gate decision. */
+export const findingFeedback = pgTable(
+  "finding_feedback",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    findingPublicationId: bigint("finding_publication_id", { mode: "number" })
+      .notNull()
+      .references(() => findingPublications.id, { onDelete: "cascade" }),
+    source: text("source", { enum: ["reply", "reaction"] }).notNull(),
+    sourceGithubCommentId: bigint("source_github_comment_id", {
+      mode: "number",
+    }),
+    sourceGithubReactionId: bigint("source_github_reaction_id", {
+      mode: "number",
+    }),
+    reactionContent: text("reaction_content", { enum: ["+1", "-1", "unknown"] }),
+    body: text("body"),
+    actorGithubId: bigint("actor_github_id", { mode: "number" }).notNull(),
+    actorLoginSnapshot: text("actor_login_snapshot").notNull(),
+    prAuthorGithubId: bigint("pr_author_github_id", {
+      mode: "number",
+    }).notNull(),
+    prAuthorLoginSnapshot: text("pr_author_login_snapshot").notNull(),
+    actorIsPrAuthor: boolean("actor_is_pr_author").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    sourceDeliveryId: text("source_delivery_id"),
+    suggestedReasonTag: text("suggested_reason_tag"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("finding_feedback_publication_observed_idx").on(
+      t.findingPublicationId,
+      t.observedAt,
+    ),
+    uniqueIndex("finding_feedback_github_reply_idx")
+      .on(t.sourceGithubCommentId)
+      .where(sql`${t.source} = 'reply'`),
+    uniqueIndex("finding_feedback_github_reaction_idx")
+      .on(t.sourceGithubReactionId)
+      .where(sql`${t.source} = 'reaction'`),
+    check(
+      "finding_feedback_source_check",
+      sql`${t.source} IN ('reply', 'reaction')`,
+    ),
+    check(
+      "finding_feedback_identity_check",
+      sql`(${t.source} = 'reply' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NULL AND ${t.reactionContent} IS NULL AND ${t.body} IS NOT NULL AND length(btrim(${t.body})) BETWEEN 1 AND 65535 AND length(btrim(${t.sourceDeliveryId})) BETWEEN 1 AND 200) OR (${t.source} = 'reaction' AND ${t.sourceGithubCommentId} IS NOT NULL AND ${t.sourceGithubCommentId} BETWEEN 1 AND 9007199254740991 AND ${t.sourceGithubReactionId} IS NOT NULL AND ${t.sourceGithubReactionId} BETWEEN 1 AND 9007199254740991 AND ${t.reactionContent} IS NOT NULL AND ${t.reactionContent} IN ('+1', '-1', 'unknown') AND ${t.body} IS NULL AND ${t.sourceDeliveryId} IS NULL)`,
+    ),
+    check(
+      "finding_feedback_actor_check",
+      sql`${t.actorGithubId} BETWEEN 1 AND 9007199254740991 AND length(btrim(${t.actorLoginSnapshot})) BETWEEN 1 AND 100 AND ${t.prAuthorGithubId} BETWEEN 1 AND 9007199254740991 AND length(btrim(${t.prAuthorLoginSnapshot})) BETWEEN 1 AND 100 AND ${t.actorIsPrAuthor} = (${t.actorGithubId} = ${t.prAuthorGithubId})`,
+    ),
+    check(
+      "finding_feedback_suggested_reason_check",
+      sql`${t.suggestedReasonTag} IS NULL OR ${t.suggestedReasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope')`,
+    ),
+  ],
+);
+
+/** Durable scheduling state for feedback observation, separate from publication lifecycle. */
+export const findingFeedbackReconciliations = pgTable(
+  "finding_feedback_reconciliations",
+  {
+    findingPublicationId: bigint("finding_publication_id", { mode: "number" })
+      .primaryKey()
+      .references(() => findingPublications.id, { onDelete: "cascade" }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextReconcileAt: timestamp("next_reconcile_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    lastSuccessfulAt: timestamp("last_successful_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("finding_feedback_reconcile_due_idx").on(t.nextReconcileAt),
+    check(
+      "finding_feedback_reconcile_attempt_count_check",
+      sql`${t.attemptCount} >= 0`,
     ),
   ],
 );
@@ -535,6 +680,16 @@ export const findingApprovals = pgTable(
     actorGithubId: text("actor_github_id").notNull(),
     actorLoginSnapshot: text("actor_login_snapshot").notNull(),
     actorRoleSnapshot: findingApprovalRole("actor_role_snapshot").notNull(),
+    verb: findingApprovalVerb("verb").notNull().default("approve"),
+    reasonTag: text("reason_tag"),
+    authorSelfDismissal: boolean("author_self_dismissal")
+      .notNull()
+      .default(false),
+    findingKind: text("finding_kind"),
+    findingSeverity: text("finding_severity"),
+    findingConfidence: real("finding_confidence"),
+    findingGeneratorModel: text("finding_model"),
+    findingScorerModel: text("finding_scorer_model"),
     rationale: text("rationale").notNull(),
     source: findingApprovalSource("source").notNull(),
     sourceCommentId: uuid("source_comment_id"),
@@ -548,11 +703,15 @@ export const findingApprovals = pgTable(
     sourcePrNumber: integer("source_pr_number"),
     sourceHeadSha: text("source_head_sha"),
     sourceWebhookDeliveryId: text("source_webhook_delivery_id"),
-    sourceGithubCommentId: bigint("source_github_comment_id", { mode: "number" }),
+    sourceGithubCommentId: bigint("source_github_comment_id", {
+      mode: "number",
+    }),
     sourceCommentKind: text("source_comment_kind"),
     sourceBindingState: text("source_binding_state", {
       enum: ["exact", "legacy"],
-    }).notNull().default("exact"),
+    })
+      .notNull()
+      .default("exact"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -582,6 +741,10 @@ export const findingApprovals = pgTable(
       sql`length(btrim(${t.rationale})) > 0`,
     ),
     check(
+      "finding_approvals_dismissal_check",
+      sql`(${t.verb} = 'approve' AND ${t.reasonTag} IS NULL AND ${t.authorSelfDismissal} = false AND ${t.findingKind} IS NULL AND ${t.findingSeverity} IS NULL AND ${t.findingConfidence} IS NULL AND ${t.findingGeneratorModel} IS NULL AND ${t.findingScorerModel} IS NULL) OR (${t.verb} = 'dismiss' AND ${t.reasonTag} IS NOT NULL AND ${t.reasonTag} IN ('false-positive', 'accepted-risk', 'out-of-scope') AND ${t.findingKind} IS NOT NULL AND ${t.findingSeverity} IS NOT NULL AND ${t.findingConfidence} IS NOT NULL AND ${t.findingConfidence} BETWEEN 0 AND 1 AND ${t.findingGeneratorModel} IS NOT NULL)`,
+    ),
+    check(
       "finding_approvals_binding_check",
       sql`(${t.sourceBindingState} = 'legacy' AND ${t.sourceOrgId} IS NULL AND ${t.sourceRepositoryId} IS NULL AND ${t.sourceGithubInstallationId} IS NULL AND ${t.sourceGithubRepoId} IS NULL AND ${t.sourcePrNumber} IS NULL AND ${t.sourceHeadSha} IS NULL) OR (${t.sourceBindingState} = 'exact' AND ${t.sourceOrgId} > 0 AND ${t.sourceRepositoryId} > 0 AND ${t.sourceGithubInstallationId} > 0 AND ${t.sourceGithubRepoId} > 0 AND ${t.sourcePrNumber} > 0 AND length(btrim(${t.sourceHeadSha})) BETWEEN 1 AND 200)`,
     ),
@@ -591,6 +754,27 @@ export const findingApprovals = pgTable(
     ),
   ],
 );
+
+/** Durable polling deadlines independent of GitHub App event subscriptions. */
+export const reviewFeedbackPolls = pgTable("review_feedback_polls", {
+  githubRepoId: bigint("github_repo_id", { mode: "number" }).notNull(),
+  prNumber: integer("pr_number").notNull(),
+  nextPollAt: timestamp("next_poll_at", { withTimezone: true }).notNull(),
+  lastError: text("last_error"),
+}, (t) => [primaryKey({ columns: [t.githubRepoId, t.prNumber] })]);
+
+/** Admission receipts prevent identical human evidence from spending more than once. */
+export const reviewFeedbackRequests = pgTable("review_feedback_requests", {
+  githubRepoId: bigint("github_repo_id", { mode: "number" }).notNull(),
+  prNumber: integer("pr_number").notNull(),
+  headSha: text("head_sha").notNull(),
+  digest: text("digest").notNull(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.githubRepoId, t.prNumber, t.headSha, t.digest] }),
+  index("review_feedback_requests_org_created_idx").on(t.orgId, t.createdAt),
+]);
 
 export const reviewLogs = pgTable(
   "review_logs",
@@ -660,7 +844,7 @@ export const usageEvents = pgTable(
     ),
     check(
       "usage_events_trigger_source_check",
-      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'github_mention')`,
+      sql`${t.triggerSource} IN ('unknown', 'automatic_pull_request', 'requested_review', 'github_check_rerun', 'finding_feedback', 'github_mention')`,
     ),
   ],
 );
@@ -735,12 +919,12 @@ export const organizationEntitlements = pgTable(
     periodStartsAt: timestamp("period_starts_at", { withTimezone: true }),
     periodEndsAt: timestamp("period_ends_at", { withTimezone: true }),
     /** Allowance and cap use USD micros so sub-cent model calls remain exact. */
-    includedUsageMicros: bigint("included_usage_micros", { mode: "number" })
+    includedUsageMicros: bigint("included_usage_micros", { mode: "bigint" })
       .notNull()
-      .default(0),
+      .default(sql`0`),
     overageHardCapMicros: bigint("overage_hard_cap_micros", {
-      mode: "number",
-    }).default(0),
+      mode: "bigint",
+    }).default(sql`0`),
     /** Rolling-deploy compatibility; new entitlement checks read the micros fields. */
     includedUsageCents: integer("included_usage_cents").notNull().default(0),
     overageHardCapCents: integer("overage_hard_cap_cents").default(0),
@@ -809,6 +993,224 @@ export const organizationEntitlements = pgTable(
     check(
       "organization_entitlements_updated_by_nonempty",
       sql`length(btrim(${t.updatedBy})) > 0`,
+    ),
+  ],
+);
+
+/** Durable dark lifecycle state for entitlement-bound hosted provider keys. */
+export const hostedProviderKeys = pgTable(
+  "hosted_provider_keys",
+  {
+    createIntentId: uuid("create_intent_id").primaryKey(),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    state: text("state").notNull(),
+    providerKeyName: text("provider_key_name").notNull().unique(),
+    providerKeyHash: text("provider_key_hash"),
+    conflictingProviderKeyHash: text("conflicting_provider_key_hash"),
+    sealedRuntimeKey: bytea("sealed_runtime_key"),
+    entitlementPeriodStartsAt: timestamp("entitlement_period_starts_at", {
+      withTimezone: true,
+    }).notNull(),
+    entitlementPeriodEndsAt: timestamp("entitlement_period_ends_at", {
+      withTimezone: true,
+    }).notNull(),
+    entitlementUpdatedAt: timestamp("entitlement_updated_at", {
+      withTimezone: true,
+    }).notNull(),
+    limitMicros: bigint("limit_micros", { mode: "bigint" }).notNull(),
+    createAttemptedAt: timestamp("create_attempted_at", {
+      withTimezone: true,
+    }),
+    createOutcome: text("create_outcome"),
+    revocationRequestedAt: timestamp("revocation_requested_at", {
+      withTimezone: true,
+    }),
+    revokeAttemptedAt: timestamp("revoke_attempted_at", {
+      withTimezone: true,
+    }),
+    revokeOutcome: text("revoke_outcome"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    reconciliationRequiredAt: timestamp("reconciliation_required_at", {
+      withTimezone: true,
+    }),
+    leaseId: uuid("lease_id"),
+    leaseKind: text("lease_kind"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (t) => [
+    uniqueIndex("hosted_provider_keys_provider_key_hash_unique")
+      .on(t.providerKeyHash)
+      .where(sql`${t.providerKeyHash} IS NOT NULL`),
+    uniqueIndex("hosted_provider_keys_entitlement_binding_unique")
+      .on(
+        t.orgId,
+        t.entitlementPeriodStartsAt,
+        t.entitlementPeriodEndsAt,
+        t.limitMicros,
+      )
+      .where(sql`${t.state} NOT IN ('revoked', 'cancelled')`),
+    uniqueIndex("hosted_provider_keys_active_org_unique")
+      .on(t.orgId)
+      .where(sql`${t.state} = 'active'`),
+    uniqueIndex("hosted_provider_keys_runtime_org_unique")
+      .on(t.orgId)
+      .where(sql`${t.sealedRuntimeKey} IS NOT NULL`),
+    index("hosted_provider_keys_reconciliation_idx").on(
+      t.state,
+      t.reconciliationRequiredAt,
+    ),
+    check(
+      "hosted_provider_keys_state_check",
+      sql`${t.state} IN ('provisioning', 'activating', 'active', 'rejected', 'orphaned', 'revocation_pending', 'revoked', 'cancelled')`,
+    ),
+    check(
+      "hosted_provider_keys_provider_key_name_nonempty",
+      sql`length(btrim(${t.providerKeyName})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_provider_key_hash_nonempty",
+      sql`${t.providerKeyHash} IS NULL OR length(btrim(${t.providerKeyHash})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_conflicting_hash_nonempty",
+      sql`${t.conflictingProviderKeyHash} IS NULL OR length(btrim(${t.conflictingProviderKeyHash})) > 0`,
+    ),
+    check(
+      "hosted_provider_keys_entitlement_period_check",
+      sql`${t.entitlementPeriodEndsAt} > ${t.entitlementPeriodStartsAt}`,
+    ),
+    check(
+      "hosted_provider_keys_limit_exact_range",
+      sql`${t.limitMicros} > 0 AND ${t.limitMicros} <= 2251799813685247`,
+    ),
+    check(
+      "hosted_provider_keys_create_outcome_check",
+      sql`${t.createOutcome} IS NULL OR ${t.createOutcome} IN ('created', 'rejected', 'rate_limited', 'ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')`,
+    ),
+    check(
+      "hosted_provider_keys_revoke_outcome_check",
+      sql`${t.revokeOutcome} IS NULL OR ${t.revokeOutcome} IN ('ambiguous', 'rejected', 'disabled', 'absent')`,
+    ),
+    check(
+      "hosted_provider_keys_lease_shape",
+      sql`(
+        ${t.leaseId} IS NULL
+        AND ${t.leaseKind} IS NULL
+        AND ${t.leaseExpiresAt} IS NULL
+      ) OR (
+        ${t.leaseId} IS NOT NULL
+        AND ${t.leaseKind} IN ('create', 'revoke')
+        AND ${t.leaseExpiresAt} IS NOT NULL
+      )`,
+    ),
+    check(
+      "hosted_provider_keys_lease_state",
+      sql`${t.leaseId} IS NULL OR (
+        (${t.leaseKind} = 'create' AND ${t.state} IN ('provisioning', 'activating', 'orphaned'))
+        OR (${t.leaseKind} = 'revoke' AND ${t.state} = 'revocation_pending')
+      )`,
+    ),
+    check(
+      "hosted_provider_keys_lifecycle_shape",
+      sql`(
+        ${t.state} = 'provisioning'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createOutcome} IS NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'activating'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} = 'created'
+        AND ${t.reconciliationRequiredAt} IS NOT NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'active'
+        AND ${t.sealedRuntimeKey} IS NOT NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} = 'created'
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'rejected'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} = 'rejected'
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'orphaned'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.createOutcome} IN ('ambiguous', 'name_present', 'name_not_unique', 'credential_persistence_failed', 'intent_changed', 'ownership_conflict')
+        AND ${t.reconciliationRequiredAt} IS NOT NULL
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+        AND (
+          (${t.createOutcome} = 'ownership_conflict' AND ${t.providerKeyHash} IS NULL AND ${t.conflictingProviderKeyHash} IS NOT NULL)
+          OR (${t.createOutcome} <> 'ownership_conflict' AND ${t.conflictingProviderKeyHash} IS NULL)
+        )
+      ) OR (
+        ${t.state} = 'revocation_pending'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} IN ('created', 'ambiguous', 'credential_persistence_failed')
+        AND ${t.revocationRequestedAt} IS NOT NULL
+        AND ${t.reconciliationRequiredAt} IS NOT NULL
+        AND ${t.revokedAt} IS NULL
+      ) OR (
+        ${t.state} = 'revoked'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NOT NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND ${t.createAttemptedAt} IS NOT NULL
+        AND ${t.createOutcome} IN ('created', 'ambiguous', 'credential_persistence_failed')
+        AND ${t.revocationRequestedAt} IS NOT NULL
+        AND ${t.revokeOutcome} IN ('disabled', 'absent')
+        AND ${t.revokedAt} IS NOT NULL
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.leaseId} IS NULL
+      ) OR (
+        ${t.state} = 'cancelled'
+        AND ${t.sealedRuntimeKey} IS NULL
+        AND ${t.providerKeyHash} IS NULL
+        AND ${t.conflictingProviderKeyHash} IS NULL
+        AND (
+          (${t.createAttemptedAt} IS NULL AND ${t.createOutcome} IS NULL)
+          OR (${t.createAttemptedAt} IS NOT NULL AND ${t.createOutcome} = 'rate_limited')
+        )
+        AND ${t.revocationRequestedAt} IS NULL
+        AND ${t.revokeOutcome} IS NULL
+        AND ${t.revokedAt} IS NULL
+        AND ${t.reconciliationRequiredAt} IS NULL
+        AND ${t.leaseId} IS NULL
+      )`,
     ),
   ],
 );
@@ -906,9 +1308,7 @@ export const customerNotificationReads = pgTable(
     userId: bigint("user_id", { mode: "number" })
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    readAt: timestamp("read_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    readAt: timestamp("read_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex("customer_notification_reads_event_user_idx").on(
@@ -983,16 +1383,23 @@ export const customerNotificationEmailDeliveryEvents = pgTable(
   ],
 );
 
-/** One immutable trial grant per GitHub owner, with the initiating identity for abuse controls. */
+/**
+ * One immutable trial grant per organization, keyed so a second attempt for the
+ * same organization inserts nothing. The initiating identity is recorded for
+ * attribution and future abuse controls, not as a limit.
+ */
 export const selfServiceTrialGrants = pgTable(
   "self_service_trial_grants",
   {
-    orgId: bigint("org_id", { mode: "number" })
-      .primaryKey(),
-    initiatedByGithubId: bigint("initiated_by_github_id", { mode: "number" }).notNull(),
+    orgId: bigint("org_id", { mode: "number" }).primaryKey(),
+    initiatedByGithubId: bigint("initiated_by_github_id", {
+      mode: "number",
+    }).notNull(),
     requestedMode: text("requested_mode").notNull(),
     grantedMode: text("granted_mode").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (t) => [
     index("self_service_trial_grants_actor_created_idx").on(
@@ -1261,7 +1668,7 @@ export const operatorAlertDeliveries = pgTable(
     index("operator_alert_deliveries_org_created_idx").on(t.orgId, t.createdAt),
     check(
       "operator_alert_deliveries_event_check",
-      sql`${t.event} IN ('trial_started', 'trial_expired', 'installation_removed', 'subscription_started', 'subscription_past_due', 'subscription_paused', 'subscription_canceled', 'billing_anomaly')`,
+      sql`${t.event} IN ('trial_started', 'trial_expired', 'installation_removed', 'subscription_started', 'subscription_past_due', 'subscription_paused', 'subscription_canceled', 'billing_anomaly', 'finding_feedback_digest')`,
     ),
     check(
       "operator_alert_deliveries_status_check",
@@ -1270,6 +1677,67 @@ export const operatorAlertDeliveries = pgTable(
     check(
       "operator_alert_deliveries_event_key_nonempty",
       sql`length(btrim(${t.eventKey})) > 0`,
+    ),
+  ],
+);
+
+/** Append-only iLert alert events delivered to authenticated operators. */
+export const ilertAlertEvents = pgTable(
+  "ilert_alert_events",
+  {
+    sequence: bigint("sequence", { mode: "bigint" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    eventId: uuid("event_id").notNull(),
+    alertId: text("alert_id").notNull(),
+    eventType: text("event_type").notNull(),
+    status: text("status").notNull(),
+    priority: text("priority").notNull(),
+    summary: text("summary").notNull(),
+    details: text("details").notNull(),
+    alertSourceId: bigint("alert_source_id", { mode: "bigint" }).notNull(),
+    alertSourceName: text("alert_source_name").notNull(),
+    reportTime: timestamp("report_time", { withTimezone: true }).notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    payloadSha256: text("payload_sha256").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("ilert_alert_events_event_id_idx").on(t.eventId),
+    index("ilert_alert_events_alert_sequence_idx").on(t.alertId, t.sequence),
+    check(
+      "ilert_alert_events_alert_id_check",
+      sql`${t.alertId} ~ '^[1-9][0-9]{0,63}$'`,
+    ),
+    check(
+      "ilert_alert_events_event_type_check",
+      sql`length(${t.eventType}) <= 64 AND ${t.eventType} ~ '^alert-[a-z]+(-[a-z]+)*$'`,
+    ),
+    check(
+      "ilert_alert_events_status_check",
+      sql`${t.status} IN ('PENDING', 'ACCEPTED', 'RESOLVED')`,
+    ),
+    check(
+      "ilert_alert_events_priority_check",
+      sql`${t.priority} IN ('HIGH', 'LOW')`,
+    ),
+    check(
+      "ilert_alert_events_summary_check",
+      sql`length(${t.summary}) BETWEEN 1 AND 512`,
+    ),
+    check(
+      "ilert_alert_events_details_check",
+      sql`length(${t.details}) BETWEEN 0 AND 8192`,
+    ),
+    check(
+      "ilert_alert_events_source_name_check",
+      sql`length(${t.alertSourceName}) BETWEEN 1 AND 256`,
+    ),
+    check(
+      "ilert_alert_events_payload_sha256_check",
+      sql`${t.payloadSha256} ~ '^[0-9a-f]{64}$'`,
     ),
   ],
 );
@@ -1311,11 +1779,11 @@ export const hostedUsageReservations = pgTable(
     ),
     check(
       "hosted_usage_reservations_operation_check",
-      sql`${t.operation} IN ('review', 'respond')`,
+      sql`${t.operation} IN ('review', 'respond', 'cli_gateway')`,
     ),
     check(
       "hosted_usage_reservations_operation_reference_check",
-      sql`(${t.operation} = 'review' AND ${t.reviewId} IS NOT NULL) OR (${t.operation} = 'respond' AND ${t.reviewId} IS NULL)`,
+      sql`(${t.operation} = 'review' AND ${t.reviewId} IS NOT NULL) OR (${t.operation} IN ('respond', 'cli_gateway') AND ${t.reviewId} IS NULL)`,
     ),
     check(
       "hosted_usage_reservations_reserved_positive",
@@ -1441,7 +1909,7 @@ export const serviceHeartbeats = pgTable(
   (t) => [
     check(
       "service_heartbeats_component_check",
-      sql`${t.component} IN ('worker', 'monitor')`,
+      sql`${t.component} IN ('worker', 'monitor', 'monitor-heartbeat-delivery')`,
     ),
     check(
       "service_heartbeats_instance_nonempty",
@@ -1460,6 +1928,8 @@ export const privateMonitorState = pgTable(
     lastStartedAt: timestamp("last_started_at", { withTimezone: true }),
     lastCompletedAt: timestamp("last_completed_at", { withTimezone: true }),
     lastError: text("last_error"),
+    /** Bounded reason the latest external dead-man heartbeat ping was rejected, or null after an accepted ping. */
+    heartbeatDeliveryError: text("heartbeat_delivery_error"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1510,12 +1980,16 @@ export const privateMonitorIncidents = pgTable(
     severity: text("severity").notNull(),
     summary: text("summary").notNull(),
     detail: text("detail").notNull(),
+    /** Evidence captured when the incident last opened; resolution never overwrites it. */
+    openedDetail: text("opened_detail"),
     state: text("state").notNull().default("open"),
     occurrenceCount: integer("occurrence_count").notNull().default(1),
-    firstDetectedAt: timestamp("first_detected_at", { withTimezone: true })
-      .notNull(),
-    lastDetectedAt: timestamp("last_detected_at", { withTimezone: true })
-      .notNull(),
+    firstDetectedAt: timestamp("first_detected_at", {
+      withTimezone: true,
+    }).notNull(),
+    lastDetectedAt: timestamp("last_detected_at", {
+      withTimezone: true,
+    }).notNull(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     pendingNotificationKey: text("pending_notification_key"),
     pendingNotificationKind: text("pending_notification_kind"),
@@ -1529,12 +2003,18 @@ export const privateMonitorIncidents = pgTable(
     }),
     lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true }),
     lastNotificationError: text("last_notification_error"),
+    lastNotificationKey: text("last_notification_key"),
+    lastDeliveryReceipt: jsonb("last_delivery_receipt"),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (t) => [
-    index("private_monitor_incidents_state_updated_idx").on(t.state, t.updatedAt),
+    check("private_monitor_delivery_receipt_bound", sql`("last_delivery_receipt" IS NULL AND "last_notification_key" IS NULL) OR ("last_delivery_receipt" IS NOT NULL AND "last_notification_key" IS NOT NULL AND length("last_notification_key") BETWEEN 1 AND 512 AND jsonb_typeof("last_delivery_receipt") = 'object' AND octet_length("last_delivery_receipt"::text) <= 2048)`),
+    index("private_monitor_incidents_state_updated_idx").on(
+      t.state,
+      t.updatedAt,
+    ),
     index("private_monitor_incidents_notification_idx")
       .on(t.notificationAvailableAt, t.notificationLeaseExpiresAt)
       .where(sql`${t.pendingNotificationKey} IS NOT NULL`),
@@ -1561,6 +2041,75 @@ export const privateMonitorIncidents = pgTable(
     check(
       "private_monitor_incidents_text_nonempty",
       sql`length(btrim(${t.key})) > 0 AND length(btrim(${t.group})) > 0 AND length(btrim(${t.summary})) > 0`,
+    ),
+  ],
+);
+
+/**
+ * Append-only incident transitions. The current-state row above loses its
+ * failing evidence when a check recovers, so past alerts read from here.
+ */
+export const privateMonitorIncidentEvents = pgTable(
+  "private_monitor_incident_events",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    key: text("key").notNull(),
+    group: text("group").notNull(),
+    severity: text("severity").notNull(),
+    transition: text("transition").notNull(),
+    summary: text("summary").notNull(),
+    detail: text("detail").notNull(),
+    occurrenceCount: integer("occurrence_count").notNull(),
+    firstDetectedAt: timestamp("first_detected_at", {
+      withTimezone: true,
+    }).notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("private_monitor_incident_events_occurred_idx").on(t.occurredAt),
+    check(
+      "private_monitor_incident_events_transition_check",
+      sql`${t.transition} IN ('opened', 'resolved')`,
+    ),
+    check(
+      "private_monitor_incident_events_severity_check",
+      sql`${t.severity} IN ('warning', 'critical')`,
+    ),
+    check(
+      "private_monitor_incident_events_text_nonempty",
+      sql`length(btrim(${t.key})) > 0 AND length(btrim(${t.group})) > 0 AND length(btrim(${t.summary})) > 0 AND ${t.occurrenceCount} > 0`,
+    ),
+  ],
+);
+
+/**
+ * Every failed check attempt within a monitoring pass, including attempts a
+ * retry recovered, so flapping probes are visible without opening an incident.
+ */
+export const privateMonitorCheckFailures = pgTable(
+  "private_monitor_check_failures",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    runId: bigint("run_id", { mode: "number" }).notNull(),
+    key: text("key").notNull(),
+    attempt: integer("attempt").notNull(),
+    recovered: boolean("recovered").notNull(),
+    detail: text("detail").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index("private_monitor_check_failures_observed_idx").on(t.observedAt),
+    check(
+      "private_monitor_check_failures_attempt_check",
+      sql`${t.attempt} > 0`,
+    ),
+    check(
+      "private_monitor_check_failures_key_nonempty",
+      sql`length(btrim(${t.key})) > 0`,
     ),
   ],
 );
@@ -1596,6 +2145,9 @@ export const jobs = pgTable(
     index("jobs_running_locked_at_idx")
       .on(t.lockedAt)
       .where(sql`${t.status} = 'running'`),
+    index("jobs_running_org_concurrency_idx")
+      .on(t.kind, sql`(${t.payload}->>'sourceOrgId')`)
+      .where(sql`${t.status} = 'running'`),
   ],
 );
 
@@ -1605,7 +2157,9 @@ export const privateWorkerRehearsals = pgTable(
   {
     nonce: uuid("nonce").primaryKey(),
     state: text("state").notNull().default("armed"),
-    operatorGithubId: bigint("operator_github_id", { mode: "number" }).notNull(),
+    operatorGithubId: bigint("operator_github_id", {
+      mode: "number",
+    }).notNull(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
@@ -1706,7 +2260,9 @@ export const respondDeliveries = pgTable(
     ),
     sourceOrgId: bigint("source_org_id", { mode: "number" }),
     sourceInstallationId: bigint("source_installation_id", { mode: "number" }),
-    sourceGithubInstallationId: bigint("source_github_installation_id", { mode: "number" }),
+    sourceGithubInstallationId: bigint("source_github_installation_id", {
+      mode: "number",
+    }),
     sourceGithubRepoId: bigint("source_github_repo_id", { mode: "number" }),
     repoFullName: text("repo_full_name").notNull(),
     issueNumber: integer("issue_number").notNull(),
@@ -1798,6 +2354,164 @@ export const sessions = pgTable("sessions", {
     .defaultNow(),
 });
 
+/**
+ * Bearer credential `postil login` mints for the CLI gateway. Unlike
+ * `sessions`, the secret is hashed at rest: this credential lives in a file on
+ * developer machines and travels in Authorization headers, so the row must
+ * stay useless to an attacker who only reads the database.
+ */
+export const cliTokens = pgTable(
+  "cli_tokens",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    tokenSha256: bytea("token_sha256").notNull(),
+    userId: bigint("user_id", { mode: "number" })
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    // Access tokens issued by older CLI versions deliberately leave this null.
+    // Session-aware tokens use it so one logout can revoke their whole family.
+    refreshSessionId: bigint("refresh_session_id", {
+      mode: "number",
+    }).references(() => cliRefreshSessions.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("cli_tokens_token_sha256_idx").on(t.tokenSha256),
+    // Supports listing and bulk-revoking an organization's tokens newest
+    // first. The gateway's hourly cap counts admitted requests in
+    // `hosted_usage_reservations`, not logins, so it does not read this index.
+    index("cli_tokens_org_created_idx").on(t.orgId, t.createdAt),
+    index("cli_tokens_refresh_session_idx").on(t.refreshSessionId),
+    check("cli_tokens_scope_check", sql`${t.scope} IN ('inference')`),
+  ],
+);
+
+/**
+ * A CLI login family. Its expiration is an inactivity deadline that advances
+ * only when a refresh token is successfully rotated.
+ */
+export const cliRefreshSessions = pgTable(
+  "cli_refresh_sessions",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    userId: bigint("user_id", { mode: "number" })
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    orgId: bigint("org_id", { mode: "number" })
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("cli_refresh_sessions_expiry_idx").on(t.expiresAt),
+    check(
+      "cli_refresh_sessions_expiry_check",
+      sql`${t.expiresAt} > ${t.createdAt}`,
+    ),
+  ],
+);
+
+/**
+ * A one-time opaque refresh credential. Only its SHA-256 digest reaches the
+ * database; `consumedAt` also makes reuse detectable without retaining raw
+ * token material.
+ */
+export const cliRefreshTokens = pgTable(
+  "cli_refresh_tokens",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    tokenSha256: bytea("token_sha256").notNull(),
+    sessionId: bigint("session_id", { mode: "number" })
+      .notNull()
+      .references(() => cliRefreshSessions.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("cli_refresh_tokens_token_sha256_idx").on(t.tokenSha256),
+    uniqueIndex("cli_refresh_tokens_current_session_idx")
+      .on(t.sessionId)
+      .where(sql`${t.consumedAt} IS NULL`),
+    index("cli_refresh_tokens_session_idx").on(t.sessionId),
+    check(
+      "cli_refresh_tokens_expiry_check",
+      sql`${t.expiresAt} > ${t.createdAt}`,
+    ),
+    check(
+      "cli_refresh_tokens_consumed_after_created_check",
+      sql`${t.consumedAt} IS NULL OR ${t.consumedAt} >= ${t.createdAt}`,
+    ),
+  ],
+);
+
+/**
+ * RFC 8628-inspired device authorization used by `postil login`. The CLI
+ * polls this row by device code while the operator approves or denies it in
+ * the browser at `/cli/authorize`, so the flow works over SSH and in
+ * containers where no localhost redirect is reachable.
+ */
+export const cliDeviceAuthorizations = pgTable(
+  "cli_device_authorizations",
+  {
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
+    deviceCodeSha256: bytea("device_code_sha256").notNull(),
+    userCode: text("user_code").notNull(),
+    status: text("status").notNull().default("pending"),
+    userId: bigint("user_id", { mode: "number" }).references(() => users.id, {
+      onDelete: "set null",
+    }),
+    orgId: bigint("org_id", { mode: "number" }).references(
+      () => organizations.id,
+      { onDelete: "set null" },
+    ),
+    tokenId: bigint("token_id", { mode: "number" }).references(
+      () => cliTokens.id,
+      { onDelete: "set null" },
+    ),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    pollCount: integer("poll_count").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("cli_device_authorizations_device_code_sha256_idx").on(
+      t.deviceCodeSha256,
+    ),
+    uniqueIndex("cli_device_authorizations_user_code_idx").on(t.userCode),
+    check(
+      "cli_device_authorizations_status_check",
+      sql`${t.status} IN ('pending', 'approved', 'denied', 'claimed')`,
+    ),
+  ],
+);
+
 /** Per-org review configuration and write-only BYOK provider settings. */
 export const orgSettings = pgTable("org_settings", {
   orgId: bigint("org_id", { mode: "number" })
@@ -1850,7 +2564,9 @@ export const orgSettings = pgTable("org_settings", {
 export const organizationSettingEvents = pgTable(
   "organization_setting_events",
   {
-    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    id: bigint("id", { mode: "number" })
+      .primaryKey()
+      .generatedAlwaysAsIdentity(),
     orgId: bigint("org_id", { mode: "number" })
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),

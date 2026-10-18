@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { lintMigrationSources, type MigrationSource } from "@/lib/migration-lint";
+import {
+  lintMigrationSources,
+  type MigrationSource,
+} from "@/lib/migration-lint";
 
 const LEGACY_UNSAFE_INDEXES = [
   "drizzle/0001_org_indexes_and_constraints.sql:1",
@@ -12,6 +15,61 @@ const LEGACY_UNSAFE_INDEXES = [
 ];
 
 describe("migration lint", () => {
+  test("validates complete finding dismissal audit rows", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0048_woozy_tigra.sql"),
+      "utf8",
+    );
+    expect(migration).toContain('NEW."reason_tag" IS NULL OR');
+    expect(migration).toContain(
+      'ADD COLUMN "verb" "finding_approval_verb" DEFAULT \'approve\' NOT NULL',
+    );
+    expect(migration).toContain('"reason_tag" IS NOT NULL');
+    expect(migration).toContain('"finding_confidence" IS NOT NULL');
+    expect(migration).toContain('"finding_kind" IS NULL');
+    expect(migration).toContain(
+      'VALIDATE CONSTRAINT "finding_approvals_dismissal_check"',
+    );
+    expect(migration).toContain("jsonb_set");
+    expect(migration).toContain(
+      'LOCK TABLE "jobs" IN SHARE ROW EXCLUSIVE MODE',
+    );
+    expect(migration).toContain('to_jsonb("repositories"."github_repo_id")');
+    expect(migration).toContain('"repositories"."github_repo_id" IS NOT NULL');
+    expect(migration).not.toContain(
+      'to_jsonb("repositories"."github_repo_id"::text)',
+    );
+    expect(migration).toContain(
+      "jsonb_typeof(\"jobs\".\"payload\"->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()",
+    );
+    expect(migration).toContain("PERFORM pg_advisory_xact_lock");
+    expect(migration).toContain(
+      "legacy active review repository identity could not be resolved",
+    );
+    expect(migration).toContain("NEW.payload := jsonb_set");
+    expect(migration).toContain("to_jsonb(repository_identity::bigint)");
+    expect(
+      migration.indexOf(
+        "CREATE OR REPLACE FUNCTION suppress_duplicate_active_review_job()",
+      ),
+    ).toBeLessThan(
+      migration.indexOf('UPDATE "jobs"\nSET "payload" = jsonb_set'),
+    );
+    expect(migration).toContain(
+      "jsonb_typeof(NEW.payload->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "jsonb_typeof(existing.payload->'githubRepoId') = 'number'",
+    );
+    expect(migration).toContain(
+      "NEW.payload->>'githubRepoId' ~ '^[1-9][0-9]*$'",
+    );
+    expect(migration).toContain(") IS NOT TRUE");
+  });
+
   test("rejects non-concurrent indexes on existing tables", () => {
     const findings = lintMigrationSources([
       {
@@ -29,8 +87,10 @@ describe("migration lint", () => {
         path: "drizzle/0002_add_widget_name_idx.sql",
         line: 1,
         table: "widgets",
-        statement: 'CREATE INDEX "widgets_name_idx" ON "widgets" USING btree ("name");',
-        message: 'CREATE INDEX on existing table "widgets" must use CREATE INDEX CONCURRENTLY',
+        statement:
+          'CREATE INDEX "widgets_name_idx" ON "widgets" USING btree ("name");',
+        message:
+          'CREATE INDEX on existing table "widgets" must use CREATE INDEX CONCURRENTLY',
       },
     ]);
   });
@@ -56,15 +116,19 @@ describe("migration lint", () => {
         path: "drizzle/0002_add_widget_name_idx.sql",
         line: 1,
         table: "public.widgets",
-        statement: 'CREATE INDEX "public"."widgets_name_idx" ON "public"."widgets" USING btree ("name");',
-        message: 'CREATE INDEX on existing table "public.widgets" must use CREATE INDEX CONCURRENTLY',
+        statement:
+          'CREATE INDEX "public"."widgets_name_idx" ON "public"."widgets" USING btree ("name");',
+        message:
+          'CREATE INDEX on existing table "public.widgets" must use CREATE INDEX CONCURRENTLY',
       },
       {
         path: "drizzle/0003_add_widget_slug_idx.sql",
         line: 1,
         table: "public.widgets",
-        statement: 'CREATE UNIQUE INDEX IF NOT EXISTS public.widgets_slug_idx ON public.widgets ("slug");',
-        message: 'CREATE INDEX on existing table "public.widgets" must use CREATE INDEX CONCURRENTLY',
+        statement:
+          'CREATE UNIQUE INDEX IF NOT EXISTS public.widgets_slug_idx ON public.widgets ("slug");',
+        message:
+          'CREATE INDEX on existing table "public.widgets" must use CREATE INDEX CONCURRENTLY',
       },
     ]);
   });
@@ -140,10 +204,15 @@ describe("migration lint", () => {
 
   test("keeps new migration timestamps after all historical migrations", async () => {
     const journal = JSON.parse(
-      await readFile(join(import.meta.dir, "..", "drizzle", "meta", "_journal.json"), "utf8"),
+      await readFile(
+        join(import.meta.dir, "..", "drizzle", "meta", "_journal.json"),
+        "utf8",
+      ),
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
 
-    const historicalInversions = new Map([["0007_finding_approvals", 1783774995964]]);
+    const historicalInversions = new Map([
+      ["0007_finding_approvals", 1783774995964],
+    ]);
     let latestTimestamp = 0;
 
     for (const [index, entry] of journal.entries.entries()) {
@@ -152,42 +221,122 @@ describe("migration lint", () => {
       if (historicalTimestamp !== undefined) {
         expect(entry.when).toBe(historicalTimestamp);
       } else {
-        expect(entry.when, `${entry.tag} must sort after every preceding migration`).toBeGreaterThan(
-          latestTimestamp,
-        );
+        expect(
+          entry.when,
+          `${entry.tag} must sort after every preceding migration`,
+        ).toBeGreaterThan(latestTimestamp);
       }
       latestTimestamp = Math.max(latestTimestamp, entry.when);
     }
   });
 
+  test("assigns each migration number only once", async () => {
+    const migrationsDir = join(import.meta.dir, "..", "drizzle");
+    const migrationNumbers = (await readdir(migrationsDir))
+      .map((file) => file.match(/^(\d+)_.*\.sql$/)?.[1])
+      .filter((number): number is string => number !== undefined);
+    const journal = JSON.parse(
+      await readFile(join(migrationsDir, "meta", "_journal.json"), "utf8"),
+    ) as { entries: Array<{ idx: number; tag: string }> };
+    const journalIndexes = journal.entries.map((entry) => entry.idx);
+    const journalNumbers = journal.entries
+      .map((entry) => entry.tag.match(/^(\d+)_/)?.[1])
+      .filter((number): number is string => number !== undefined);
+
+    expect(new Set(migrationNumbers).size).toBe(migrationNumbers.length);
+    expect(new Set(journalIndexes).size).toBe(journalIndexes.length);
+    expect(new Set(journalNumbers).size).toBe(journalNumbers.length);
+  });
+
+  test("finding feedback migration keeps source identities and rows immutable", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0050_harsh_warpath.sql"),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TABLE "finding_feedback"');
+    expect(migration).toContain('"finding_publication_id" bigint NOT NULL');
+    expect(migration).toContain("\"source\" IN ('reply', 'reaction')");
+    expect(migration).toContain(
+      "\"suggested_reason_tag\" IN ('false-positive', 'accepted-risk', 'out-of-scope')",
+    );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "finding_feedback_github_reply_idx"',
+    );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "finding_feedback_github_reaction_idx"',
+    );
+    expect(migration).toContain(
+      'CREATE TRIGGER "finding_feedback_guard_immutable"',
+    );
+  });
+
+  test("finding feedback reaction migration keeps reconciliation separate and reaction content closed", async () => {
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0055_finding_feedback_reactions.sql"),
+      "utf8",
+    );
+    expect(migration).toContain('CREATE TABLE "finding_feedback_reconciliations"');
+    expect(migration).toContain('"reaction_content" text');
+    expect(migration).toContain("IN ('+1', '-1', 'unknown')");
+    expect(migration).toContain('"source_github_comment_id" IS NOT NULL');
+    expect(migration).toContain('"source_github_reaction_id" IS NOT NULL');
+    expect(migration).toContain('"reaction_content" IS NOT NULL');
+    expect(migration).toContain('DROP CONSTRAINT "finding_feedback_identity_check"');
+    expect(migration).not.toContain('UPDATE "reviews"');
+    expect(migration).not.toContain('UPDATE "finding_publications"');
+  });
+
   test("finding approvals migration enforces active uniqueness and non-empty rationale", async () => {
-    const migration = await readFile(join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"), "utf8");
+    const migration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0007_finding_approvals.sql"),
+      "utf8",
+    );
 
     expect(migration).toContain('CREATE TABLE "finding_approvals"');
     expect(migration).toContain('"source_comment_id" uuid');
-    expect(migration).toContain('CONSTRAINT "finding_approvals_rationale_nonempty" CHECK');
-    expect(migration).toContain('length(btrim("finding_approvals"."rationale")) > 0');
-    expect(migration).toContain('CREATE UNIQUE INDEX "finding_approvals_active_idx"');
+    expect(migration).toContain(
+      'CONSTRAINT "finding_approvals_rationale_nonempty" CHECK',
+    );
+    expect(migration).toContain(
+      'length(btrim("finding_approvals"."rationale")) > 0',
+    );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "finding_approvals_active_idx"',
+    );
     expect(migration).toContain('"review_id","finding_id"');
     expect(migration).toContain('"revoked_at" IS NULL');
-    expect(migration).not.toContain('UPDATE "reviews" SET "engine_gate_failing" = "gate_failing"');
+    expect(migration).not.toContain(
+      'UPDATE "reviews" SET "engine_gate_failing" = "gate_failing"',
+    );
   });
 
   test("review job dedupe migration serializes queued and running work", async () => {
     const migration = await readFile(
-      join(import.meta.dir, "..", "drizzle", "0023_atomic_review_job_dedupe.sql"),
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0023_atomic_review_job_dedupe.sql",
+      ),
       "utf8",
     );
 
-    expect(migration).toContain('CREATE FUNCTION "suppress_duplicate_active_review_job"');
+    expect(migration).toContain(
+      'CREATE FUNCTION "suppress_duplicate_active_review_job"',
+    );
     expect(migration).toContain("pg_advisory_xact_lock");
     expect(migration).toContain("\"payload\"->>'repoFullName'");
     expect(migration).toContain("\"payload\"->>'prNumber'");
     expect(migration).toContain("\"payload\"->>'headSha'");
     expect(migration).toContain("\"kind\" = 'review'");
     expect(migration).toContain("\"status\" IN ('queued', 'running')");
-    expect(migration).toContain('CREATE TRIGGER "jobs_suppress_duplicate_active_review_trigger"');
-    expect(migration).toContain('BEFORE INSERT OR UPDATE OF "kind", "payload", "status"');
+    expect(migration).toContain(
+      'CREATE TRIGGER "jobs_suppress_duplicate_active_review_trigger"',
+    );
+    expect(migration).toContain(
+      'BEFORE INSERT OR UPDATE OF "kind", "payload", "status"',
+    );
     expect(migration).toContain("row_number() OVER");
     expect(migration).toContain("duplicate_position > 1");
     expect(migration).toContain("SET \"status\" = 'failed'");
@@ -196,22 +345,33 @@ describe("migration lint", () => {
 
   test("webhook cutover serializes durable source dedupe without blocking indexes", async () => {
     const migration = await readFile(
-      join(import.meta.dir, "..", "drizzle", "0025_activate_durable_webhook_inbox.sql"),
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0025_activate_durable_webhook_inbox.sql",
+      ),
       "utf8",
     );
-    expect(migration).toContain('CREATE FUNCTION "suppress_duplicate_webhook_source_job"');
+    expect(migration).toContain(
+      'CREATE FUNCTION "suppress_duplicate_webhook_source_job"',
+    );
     expect(migration).toContain(
       '("payload" IS NULL) IS DISTINCT FROM ("completed_at" IS NOT NULL)',
     );
     expect(migration).toContain(
-      "jsonb_build_object('deliveryId', \"delivery\".\"delivery_id\")",
+      'jsonb_build_object(\'deliveryId\', "delivery"."delivery_id")',
     );
-    expect(migration).toContain("\"job\".\"kind\" = 'webhook-dispatch'");
+    expect(migration).toContain('"job"."kind" = \'webhook-dispatch\'');
     expect(migration).toContain("pg_advisory_xact_lock");
     expect(migration).toContain("NEW.\"payload\"->>'sourceDeliveryId'");
-    expect(migration).toContain('CREATE TRIGGER "jobs_suppress_duplicate_webhook_source_trigger"');
+    expect(migration).toContain(
+      'CREATE TRIGGER "jobs_suppress_duplicate_webhook_source_trigger"',
+    );
     expect(migration).toContain('BEFORE INSERT ON "jobs"');
-    expect(migration).not.toContain('BEFORE INSERT OR UPDATE OF "kind", "payload" ON "jobs"');
+    expect(migration).not.toContain(
+      'BEFORE INSERT OR UPDATE OF "kind", "payload" ON "jobs"',
+    );
     expect(migration).not.toContain("CREATE UNIQUE INDEX");
   });
 
@@ -224,17 +384,71 @@ describe("migration lint", () => {
       join(import.meta.dir, "..", "scripts", "ensure-operational-indexes.ts"),
       "utf8",
     );
+    const releasePreparationScript = await readFile(
+      join(import.meta.dir, "..", "scripts", "run-release-migrations.ts"),
+      "utf8",
+    );
     const packageJson = JSON.parse(
       await readFile(join(import.meta.dir, "..", "package.json"), "utf8"),
     ) as { scripts: Record<string, string> };
 
+    const organizationConcurrencyMigration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0049_worker_org_concurrency.sql"),
+      "utf8",
+    );
+    const publicationLifecycleMigration = await readFile(
+      join(import.meta.dir, "..", "drizzle", "0058_amused_wolverine.sql"),
+      "utf8",
+    );
+    const publicationLifecycleRepairMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0059_publication_lifecycle_nonblocking_triggers.sql",
+      ),
+      "utf8",
+    );
+
     expect(migration).toContain('CREATE TABLE "release_steps"');
     expect(migration).not.toContain("CREATE INDEX");
+    expect(organizationConcurrencyMigration).not.toContain("CREATE INDEX");
+    expect(publicationLifecycleMigration).toContain(
+      "postil_stage_gate_sync_until_publication_lifecycle_activation",
+    );
+    expect(publicationLifecycleMigration).toContain(
+      "pg_advisory_xact_lock",
+    );
+    expect(publicationLifecycleMigration).not.toContain('UPDATE "reviews"');
+    expect(publicationLifecycleMigration).toContain(
+      "OLD.status IS DISTINCT FROM 'completed'",
+    );
+    expect(publicationLifecycleMigration).toContain(
+      'UPDATE "jobs"\nSET "run_after" = \'infinity\'::timestamptz',
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_terminate_backend",
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_advisory_lock(",
+    );
+    expect(publicationLifecycleRepairMigration).not.toContain(
+      "pg_advisory_unlock(",
+    );
+    expect(publicationLifecycleRepairMigration).toContain(
+      "hashtextextended('postil:publication-lifecycle-release-v2', 0)",
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx"',
+    );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_running_started_at_idx"',
     );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_locked_at_idx"',
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "jobs_running_org_concurrency_idx"',
     );
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "webhook_deliveries_completed_at_idx"',
@@ -256,7 +470,68 @@ describe("migration lint", () => {
       'CREATE TABLE IF NOT EXISTS "release_steps"',
     );
     expect(releaseScript).toContain("INSERT INTO release_steps");
-    expect(packageJson.scripts["release:prepare"]).toContain("operational:indexes");
+    expect(packageJson.scripts["release:prepare"]).toBe(
+      "bun run db:migrate:release",
+    );
+    expect(releasePreparationScript).toContain(
+      '["bun", "run", "operational:indexes"]',
+    );
+    expect(releasePreparationScript).toContain(
+      '["bun", "run", "notifications:quiesce"]',
+    );
+  });
+
+  test("CLI refresh sessions add only family-scoped credentials", async () => {
+    const migration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0051_refreshable_cli_sessions.sql",
+      ),
+      "utf8",
+    );
+    const releaseScript = await readFile(
+      join(import.meta.dir, "..", "scripts", "ensure-operational-indexes.ts"),
+      "utf8",
+    );
+
+    expect(migration).toContain('CREATE TABLE "cli_refresh_sessions"');
+    expect(migration).toContain('CREATE TABLE "cli_refresh_tokens"');
+    expect(migration).toContain('"token_sha256" "bytea" NOT NULL');
+    expect(migration).toContain('"consumed_at" timestamp with time zone');
+    expect(migration).toContain('ADD COLUMN "refresh_session_id" bigint');
+    expect(migration).toContain(
+      "cli_tokens_refresh_session_id_cli_refresh_sessions_id_fk",
+    );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "cli_refresh_tokens_token_sha256_idx"',
+    );
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "cli_refresh_tokens_current_session_idx"',
+    );
+    expect(migration).toContain('WHERE "consumed_at" IS NULL');
+    expect(migration).not.toContain("DELETE FROM");
+    expect(migration).not.toContain("DROP TABLE");
+    expect(migration).not.toContain(
+      'CREATE INDEX "cli_tokens_refresh_session_idx"',
+    );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "cli_tokens_refresh_session_idx"',
+    );
+    const selfHosted = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "src",
+        "app",
+        "docs",
+        "self-hosted",
+        "page.tsx",
+      ),
+      "utf8",
+    );
+    expect(selfHosted).toContain("bun run operational:indexes");
   });
 
   test("BYOK provider migration preserves legacy rows and constrains new fields", async () => {
@@ -275,7 +550,9 @@ describe("migration lint", () => {
 
 async function readDrizzleMigrations(): Promise<MigrationSource[]> {
   const dir = join(import.meta.dir, "..", "drizzle");
-  const files = (await readdir(dir)).filter((file) => file.endsWith(".sql")).sort();
+  const files = (await readdir(dir))
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
 
   return Promise.all(
     files.map(async (file) => ({
