@@ -1,5 +1,11 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 
+import {
+  appendPreparedReceiptBatch,
+  prepareClosedJobReceipts,
+  prepareReviewObservation,
+  transactionReceiptClient,
+} from "@/lib/job-attempt-receipts";
 import { getDb, getPool, schema } from "@/lib/db";
 import { scheduleCustomerNotificationEmailJobs } from "@/lib/customer-notification-email";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
@@ -34,6 +40,7 @@ export async function watchdogPass(
   const stuck = await db
     .select({
       id: schema.reviews.id,
+      originClaimReceiptId: schema.reviews.originClaimReceiptId,
       publicId: schema.reviews.publicId,
       headSha: schema.reviews.headSha,
       startedAt: schema.reviews.startedAt,
@@ -106,6 +113,11 @@ export async function watchdogPass(
         },
         maxAttempts: 5,
       });
+      if (review.originClaimReceiptId) {
+        const client = transactionReceiptClient(tx);
+        const events = await prepareReviewObservation(client, review.id, "failed");
+        await appendPreparedReceiptBatch(client, events);
+      }
       return true;
     });
     if (claimed) killed += 1;
@@ -126,65 +138,78 @@ export async function watchdogPass(
   // an ambiguous check-run can remain absent forever, so cleanup honors its
   // declared retry budget in both the runner and watchdog recovery paths.
   const pool = getPool();
-  await pool.query(
-    `WITH updated AS (
-       UPDATE jobs
-       SET status = CASE
-             WHEN kind = 'review'
-                  AND NOT payload ? 'recoveryReviewId'
-                  AND jsonb_typeof(payload -> $2) = 'object'
-               THEN 'failed'::job_status
-             WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
-                  OR (kind = 'review' AND payload ? 'recoveryReviewId')
-                  OR attempts < max_attempts
-               THEN 'queued'::job_status
-             ELSE 'failed'::job_status
-           END,
-           locked_at = NULL, locked_by = NULL, run_after = now(),
-           last_error = CASE
-             WHEN kind = 'review'
-                  AND NOT payload ? 'recoveryReviewId'
-                  AND jsonb_typeof(payload -> $2) = 'object'
-               THEN concat_ws(
-                 ' ', NULLIF(last_error, ''),
-                 '[watchdog: failed stuck job and retained newer review]'
-               )
-             ELSE COALESCE(last_error, '') ||
-               CASE
-                 WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
-                      OR (kind = 'review' AND payload ? 'recoveryReviewId')
-                      OR attempts < max_attempts
-                   THEN ' [watchdog: requeued stuck job]'
-                 ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
-               END
-           END
-       WHERE status = 'running' AND locked_at < $1
-         AND NOT EXISTS (
-           SELECT 1
-             FROM private_worker_rehearsals rehearsal
-            WHERE rehearsal.job_id = jobs.id
-              AND rehearsal.state = 'awaiting_replacement'
-         )
-       RETURNING id, kind, status, payload, max_attempts
-     )
-     INSERT INTO jobs (kind, payload, max_attempts)
-     SELECT
-       'review',
-       payload -> $2,
-       max_attempts
-     FROM updated
-     WHERE kind = 'review'
-       AND status = 'failed'
-       AND jsonb_typeof(payload -> $2) = 'object'
-     UNION ALL
-     SELECT
-       'respond-failure-comment',
-       payload || jsonb_build_object('respondJobId', id),
-       5
-     FROM updated
-     WHERE kind = 'respond' AND status = 'failed'`,
-    [cutoff, COALESCED_REVIEW_PAYLOAD_KEY],
-  );
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query(`SELECT id::text FROM jobs
+      WHERE status = 'running' AND locked_at < $1 ORDER BY id FOR UPDATE`, [cutoff]);
+    await client.query(
+      `WITH updated AS (
+         UPDATE jobs
+         SET status = CASE
+               WHEN kind = 'review'
+                    AND NOT payload ? 'recoveryReviewId'
+                    AND jsonb_typeof(payload -> $2) = 'object'
+                 THEN 'failed'::job_status
+               WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+                    OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                    OR attempts < max_attempts
+                 THEN 'queued'::job_status
+               ELSE 'failed'::job_status
+             END,
+             locked_at = NULL, locked_by = NULL, run_after = now(),
+             last_error = CASE
+               WHEN kind = 'review'
+                    AND NOT payload ? 'recoveryReviewId'
+                    AND jsonb_typeof(payload -> $2) = 'object'
+                 THEN concat_ws(
+                   ' ', NULLIF(last_error, ''),
+                   '[watchdog: failed stuck job and retained newer review]'
+                 )
+               ELSE COALESCE(last_error, '') ||
+                 CASE
+                   WHEN kind IN ('gate-state-sync', 'webhook-dispatch', 'webhook-comment', 'github-reaction')
+                        OR (kind = 'review' AND payload ? 'recoveryReviewId')
+                        OR attempts < max_attempts
+                     THEN ' [watchdog: requeued stuck job]'
+                   ELSE ' [watchdog: failed stuck job after retry budget exhausted]'
+                 END
+             END
+         WHERE status = 'running' AND locked_at < $1
+           AND NOT EXISTS (
+             SELECT 1
+               FROM private_worker_rehearsals rehearsal
+              WHERE rehearsal.job_id = jobs.id
+                AND rehearsal.state = 'awaiting_replacement'
+           )
+         RETURNING id, kind, status, payload, max_attempts
+       )
+       INSERT INTO jobs (kind, payload, max_attempts)
+       SELECT
+         'review',
+         payload -> $2,
+         max_attempts
+       FROM updated
+       WHERE kind = 'review'
+         AND status = 'failed'
+         AND jsonb_typeof(payload -> $2) = 'object'
+       UNION ALL
+       SELECT
+         'respond-failure-comment',
+         payload || jsonb_build_object('respondJobId', id),
+         5
+       FROM updated
+       WHERE kind = 'respond' AND status = 'failed'`,
+      [cutoff, COALESCED_REVIEW_PAYLOAD_KEY],
+    );
+
+    const events = await prepareClosedJobReceipts(client, locked.rows.map((r) => r.id));
+    await appendPreparedReceiptBatch(client, events);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
 
   await reconcileOperatorAlertDeliveries(db);
   const expiredTrials = await sweepExpiredSelfServiceTrials(db, now);

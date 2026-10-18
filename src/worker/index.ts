@@ -12,6 +12,7 @@ import {
 import { runWebhookRedeliveryPass } from "@/lib/github/webhook-redelivery";
 import {
   claimJob,
+  type ClaimedJob,
   enqueueGateEnforcementSweepOnce,
   pruneCompletedWebhookDeliveries,
   requeueJobsOwnedBy,
@@ -75,6 +76,7 @@ let wakeHeartbeat: (() => void) | undefined;
 let activeWebhookRedeliveryController: AbortController | undefined;
 const activeRuns = new Set<Promise<unknown>>();
 const activeControllers = new Map<number, AbortController>();
+const activeClaimLeases = new Map<string, ClaimedJob>();
 const requeueableReviewIds = new Set<number>();
 let pendingClaims = 0;
 
@@ -141,6 +143,7 @@ async function claimLoop(slot: number): Promise<void> {
           "worker stopped before starting the claim",
           [job.kind],
           [job.id],
+          [job],
         );
         return;
       }
@@ -170,11 +173,13 @@ async function claimLoop(slot: number): Promise<void> {
     );
     activeRuns.add(run);
     activeControllers.set(job.id, controller);
+    activeClaimLeases.set(job.receiptClaim?.jobId ?? String(job.id), job);
     try {
       await run;
     } finally {
       activeRuns.delete(run);
       activeControllers.delete(job.id);
+      activeClaimLeases.delete(job.receiptClaim?.jobId ?? String(job.id));
       requeueableReviewIds.delete(job.id);
     }
   }
@@ -216,6 +221,7 @@ async function shutdown(signal: string): Promise<void> {
           "worker shutdown interrupted the claim",
           ["review"],
           activeReviewJobIds,
+          [...activeClaimLeases.values()],
         ).catch((error) => {
           console.error(`failed to requeue shutdown claims: ${redactSecrets(error)}`);
           return 0;

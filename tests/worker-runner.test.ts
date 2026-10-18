@@ -870,7 +870,9 @@ describe("drainQueueOnce", () => {
   });
 
   test("processes no more than maxJobs", async () => {
-    jobs.push(reviewJob(1), reviewJob(2));
+    const first = reviewJob(1);
+    first.receiptClaim = Object.freeze({ jobId: "1", receiptId: String(Date.now()) });
+    jobs.push(first, reviewJob(2));
 
     const drained = await drainQueueOnce("test-drain", {
       maxJobs: 1,
@@ -883,7 +885,7 @@ describe("drainQueueOnce", () => {
     expect(reviewTiming).toEqual({
       queuedAt: new Date("2026-07-10T12:00:00.000Z"),
       startedAt: new Date("2026-07-10T12:00:05.000Z"),
-      lease: expect.objectContaining({ id: 1, lockedBy: "test" }),
+      lease: expect.objectContaining({ id: 1, lockedBy: "test", receiptClaim: first.receiptClaim }),
     });
     expect(reviewProcessGroup).toBe("web");
   });

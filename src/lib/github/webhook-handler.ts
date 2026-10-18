@@ -8,6 +8,11 @@ import {
   enqueueCustomerNotification,
   installationRemovedNotification,
 } from "@/lib/customer-notifications";
+import {
+  appendPreparedReceiptBatch,
+  prepareReviewObservation,
+  transactionReceiptClient,
+} from "@/lib/job-attempt-receipts";
 import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { requireEnv } from "@/lib/env";
 import { getInstallationToken } from "@/lib/github/app-auth";
@@ -514,6 +519,7 @@ async function completeRunningReviewsForRemovedRepos(
   const stuck = await db
     .select({
       id: schema.reviews.id,
+      originClaimReceiptId: schema.reviews.originClaimReceiptId,
       publicId: schema.reviews.publicId,
       advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
       gateCheckRunId: schema.reviews.gateCheckRunId,
@@ -549,10 +555,18 @@ async function completeRunningReviewsForRemovedRepos(
     return;
   }
   for (const review of stuck) {
-    await db
-      .update(schema.reviews)
-      .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
-      .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")));
+    const update = async (tx: Database) => {
+      const rows = await tx.update(schema.reviews)
+        .set({ status: "failed", errorMessage: message, finishedAt: new Date() })
+        .where(and(eq(schema.reviews.id, review.id), eq(schema.reviews.status, "running")))
+        .returning({ id: schema.reviews.id });
+      if (rows.length && review.originClaimReceiptId) {
+        const client = transactionReceiptClient(tx);
+        await appendPreparedReceiptBatch(client, await prepareReviewObservation(client, review.id, "failed"));
+      }
+    };
+    if (review.originClaimReceiptId) await db.transaction((tx) => update(tx as Database));
+    else await update(db);
     await failCheckRuns(
       token,
       review.repoFullName,

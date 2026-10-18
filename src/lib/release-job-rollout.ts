@@ -1,5 +1,11 @@
 import type { Pool } from "pg";
 
+import {
+  appendPreparedReceiptBatch,
+  claimEvent,
+  lockReceiptClaim,
+  type ReviewClaimLease,
+} from "@/lib/job-attempt-receipts";
 import { HOSTED_REVIEW_UNAVAILABLE_MESSAGE } from "@/lib/review-outcome";
 
 export const RELEASE_V1_JOB_KINDS = [
@@ -258,7 +264,7 @@ export async function deactivateHostedInferenceRelease(
 /** Atomically park a claimed hosted review until a verified managed release activates. */
 export async function deferHostedReviewForRelease(
   pool: Pool,
-  job: { id: number; lockedBy: string },
+  job: { id: number; lockedBy: string; lockedAt?: Date; receiptClaim?: ReviewClaimLease["receiptClaim"] },
   releaseSha: string,
 ): Promise<"deferred" | "released"> {
   const normalized = normalizedReleaseSha(releaseSha);
@@ -269,6 +275,11 @@ export async function deferHostedReviewForRelease(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [HOSTED_INFERENCE_LOCK],
     );
+    const claim = job.receiptClaim ? await lockReceiptClaim(client, job as ReviewClaimLease) : null;
+    if (job.receiptClaim && !claim?.owned) {
+      await client.query("ROLLBACK");
+      throw new Error("hosted review release deferral lost its queue claim");
+    }
     const active = await client.query<{ active: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
@@ -290,10 +301,15 @@ export async function deferHostedReviewForRelease(
               END
         WHERE id = $1 AND kind = 'review'
           AND status = 'running' AND locked_by = $2`,
-      [job.id, job.lockedBy, activated, normalized],
+      [job.receiptClaim?.jobId ?? job.id, job.lockedBy, activated, normalized],
     );
     if ((updated.rowCount ?? 0) !== 1) {
       throw new Error("hosted review release deferral lost its queue claim");
+    }
+    if (job.receiptClaim) {
+      await client.query("UPDATE jobs SET active_claim_receipt_id = NULL WHERE id = $1::bigint", [job.receiptClaim.jobId]);
+      await appendPreparedReceiptBatch(client, [claimEvent(job.receiptClaim.jobId,
+        Number(claim!.attempts), job.receiptClaim.receiptId, "queue_closed", "deferred")]);
     }
     await client.query("COMMIT");
     return activated ? "released" : "deferred";

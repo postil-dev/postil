@@ -1,6 +1,14 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Database } from "@/lib/db";
+import {
+  appendPreparedReceiptBatch,
+  claimEvent,
+  lockReceiptClaim,
+  prepareReviewObservation,
+  transactionReceiptClient,
+  type ReviewClaimLease,
+} from "@/lib/job-attempt-receipts";
 import { schema } from "@/lib/db";
 import { checkRunExternalId } from "@/lib/github/checks";
 import { reviewDetailsUrl } from "@/lib/oauth";
@@ -33,6 +41,7 @@ export async function claimPausedHostedReview(
     repoFullName: string;
     orgSlug?: string | null;
     checkRunsMayExist?: boolean;
+    reviewClaim?: ReviewClaimLease;
   },
   finishedAt = new Date(),
 ): Promise<{
@@ -42,6 +51,10 @@ export async function claimPausedHostedReview(
   gateCheckExternalId: string;
 } | null> {
   return db.transaction(async (tx) => {
+    const client = transactionReceiptClient(tx);
+    const lease = publication.reviewClaim;
+    const job = lease?.receiptClaim ? await lockReceiptClaim(client, lease) : null;
+    if (lease?.receiptClaim && !job?.owned) return null;
     const claimKey = `postil:unavailable-review:${values.repositoryId}:${values.prNumber}:${values.headSha}`;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${claimKey}, 0))`);
     const existing = await tx
@@ -63,6 +76,7 @@ export async function claimPausedHostedReview(
         id: schema.reviews.id,
         publicId: schema.reviews.publicId,
         headSha: schema.reviews.headSha,
+        originClaimReceiptId: schema.reviews.originClaimReceiptId,
         advisoryCheckRunId: schema.reviews.advisoryCheckRunId,
         gateCheckRunId: schema.reviews.gateCheckRunId,
       })
@@ -107,6 +121,7 @@ export async function claimPausedHostedReview(
       .insert(schema.reviews)
       .values({
         ...values,
+        originClaimReceiptId: lease?.receiptClaim?.receiptId ?? null,
         status: "failed",
         errorMessage: HOSTED_REVIEW_UNAVAILABLE_MESSAGE,
         finishedAt,
@@ -136,6 +151,17 @@ export async function claimPausedHostedReview(
       runAfter: new Date(finishedAt.getTime() + 30_000),
       maxAttempts: 5,
     });
+    const events = [];
+    for (const row of active) {
+      if (row.originClaimReceiptId) events.push(...await prepareReviewObservation(client, row.id, "cancelled"));
+    }
+    if (lease?.receiptClaim) {
+      events.push(claimEvent(lease.receiptClaim.jobId, Number(job!.attempts), lease.receiptClaim.receiptId,
+        "review_bound", "bound", String(review.id), review.publicId));
+      events.push(claimEvent(lease.receiptClaim.jobId, Number(job!.attempts), lease.receiptClaim.receiptId,
+        "review_observed", "failed", String(review.id), review.publicId));
+    }
+    await appendPreparedReceiptBatch(client, events);
     return { ...review, advisoryCheckExternalId, gateCheckExternalId };
   });
 }
