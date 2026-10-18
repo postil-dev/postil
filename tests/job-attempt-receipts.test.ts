@@ -523,10 +523,10 @@ describe.skipIf(!port)("production receipt ownership APIs on PostgreSQL", () => 
     }
   });
   afterAll(async () => { await pool?.end(); });
-  async function start(payload: Record<string, unknown> = {}): Promise<ClaimedJob> {
+  async function start(payload: Record<string, unknown> = {}, kind = "review"): Promise<ClaimedJob> {
     await rows("UPDATE jobs SET run_after='infinity' WHERE status='queued'");
-    const [j] = await rows("INSERT INTO jobs(kind,payload,max_attempts) VALUES('review',$1,5) RETURNING id::text", [payload]);
-    const c = await claimJob(pool, "reused-worker", ["review"]);
+    const [j] = await rows("INSERT INTO jobs(kind,payload,max_attempts) VALUES($2,$1,5) RETURNING id::text", [payload, kind]);
+    const c = await claimJob(pool, "reused-worker", [kind]);
     expect(c?.receiptClaim?.jobId).toBe(j.id);
     expect(Object.isFrozen(c!.receiptClaim)).toBe(true);
     return c!;
@@ -546,8 +546,8 @@ describe.skipIf(!port)("production receipt ownership APIs on PostgreSQL", () => 
       publicationReceipt: { version: 1 as const, receiptId: randomUUID(), findings: [] } };
   }
   async function replace(c: ClaimedJob) {
-    expect(await requeueJobsOwnedBy(pool, c.lockedBy, "fixture interruption", ["review"], [c.id], [c])).toBe(1);
-    const next = await claimJob(pool, c.lockedBy, ["review"]);
+    expect(await requeueJobsOwnedBy(pool, c.lockedBy, "fixture interruption", [c.kind], [c.id], [c])).toBe(1);
+    const next = await claimJob(pool, c.lockedBy, [c.kind]);
     expect(next!.attempts).toBe(c.attempts);
     expect(next!.receiptClaim!.receiptId).not.toBe(c.receiptClaim!.receiptId);
     return next!;
@@ -555,8 +555,8 @@ describe.skipIf(!port)("production receipt ownership APIs on PostgreSQL", () => 
   const pointers = (c: ClaimedJob) => rows(`SELECT active_claim_receipt_id::text, staged_review_id::text,
     payload, status, attempts, locked_by, locked_at FROM jobs WHERE id=$1::bigint`, [c.receiptClaim!.jobId]);
 
-  async function losingSpend(stageFirst = false) {
-    const a = await start(); const review = (await insertReviewForClaim(database, values(), a))!;
+  async function losingSpend(stageFirst = false, kind = "review") {
+    const a = await start({}, kind); const review = (await insertReviewForClaim(database, values(), a))!;
     const [org] = await rows("INSERT INTO organizations(name,slug) VALUES($1,$2) RETURNING id", ["Receipt fixture", randomUUID()]);
     const [reservation] = await rows(`INSERT INTO hosted_usage_reservations(org_id,review_id,reserved_micros,expires_at)
       VALUES($1,$2,1000,now()+interval '1 hour') RETURNING id`, [org.id, review.id]);
@@ -1056,6 +1056,91 @@ describe.skipIf(!port)("production receipt ownership APIs on PostgreSQL", () => 
     expect(await rows("SELECT id FROM jobs WHERE payload=$1::jsonb", [JSON.stringify(pending)])).toHaveLength(1);
     expect(await rows("SELECT outcome FROM job_attempt_receipts WHERE claim_receipt_id=$1 AND event_kind='queue_closed'", [c.receiptClaim!.receiptId]))
       .toEqual([{ outcome: "coalesced" }]);
+  });
+
+  test("both review kinds fence generated same-label reclaims and preserve receipt kinds", async () => {
+    for (const kind of ["review", "review-feedback"]) {
+      for (let seed = 0; seed < 6; seed++) {
+        let a = await start({}, kind);
+        for (let step = 0; step < 4; step++) {
+          const operation = (seed * 7 + step * 3) % 4;
+          if (operation === 0) await continueClaimedJob(pool, a, { fixture: randomUUID() });
+          else if (operation === 1) await retryJobIndefinitely(pool, a, randomUUID());
+          else if (operation === 2) await failJob(pool, a, randomUUID());
+          else await requeueJobsOwnedBy(pool, a.lockedBy, randomUUID(), [kind], [a.id], [a]);
+          await rows("UPDATE jobs SET run_after=now() WHERE id=$1", [a.id]);
+          const b = (await claimJob(pool, a.lockedBy, [kind]))!;
+          expect(b.receiptClaim!.receiptId).not.toBe(a.receiptClaim!.receiptId);
+          expect(b.lockedBy).toBe(a.lockedBy);
+          const before = await pointers(b);
+          expect(await completeJob(pool, a)).toBe("lost");
+          expect(await pointers(b)).toEqual(before);
+          expect(await rows(`SELECT job_kind FROM job_attempt_receipts WHERE claim_receipt_id=$1
+            AND event_kind='queue_closed'`, [a.receiptClaim!.receiptId])).toEqual([{ job_kind: kind }]);
+          a = b;
+        }
+        expect(await completeJob(pool, a)).toBe("done");
+        expect(await rows("SELECT DISTINCT job_kind FROM job_attempt_receipts WHERE job_id=$1", [a.id]))
+          .toEqual([{ job_kind: kind }]);
+      }
+    }
+  });
+
+  test("both review kinds preserve losing-stage rollback, own usage once and genuine recovery", async () => {
+    for (const kind of ["review", "review-feedback"]) {
+      for (const first of [false, true]) {
+        const x = await losingSpend(first, kind); const before = await pointers(x.b);
+        if (!first) x.input.envelope.modelIncidents = [{ phase: "review", category: "providerError", recovered: true, recovery: "fallback" }];
+        await rows(`CREATE FUNCTION fixture_reject_kind_stage() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN IF NEW.event_kind='review_observed' THEN RAISE EXCEPTION 'fixture kind stage rejection'; END IF;
+          RETURN NEW; END $$`);
+        await rows("CREATE TRIGGER fixture_reject_kind_stage BEFORE INSERT ON job_attempt_receipts FOR EACH ROW EXECUTE FUNCTION fixture_reject_kind_stage()");
+        try {
+          if (!first) {
+            let rejection: unknown;
+            try { await stageReviewCompletionCandidate(database, x.input, null); } catch (error) { rejection = error; }
+            expect(String((rejection as { cause?: Error })?.cause)).toContain("fixture kind stage rejection");
+            expect((await spendState(x.review.id)).usage_count).toBe(0);
+            expect((await rows("SELECT envelope FROM reviews WHERE id=$1", [x.review.id]))[0].envelope).toBeNull();
+            expect(await pointers(x.b)).toEqual(before);
+          }
+        } finally {
+          await rows("DROP TRIGGER fixture_reject_kind_stage ON job_attempt_receipts");
+          await rows("DROP FUNCTION fixture_reject_kind_stage()");
+        }
+        const results = await Promise.all([0, 1].map(() => stageReviewCompletionCandidate(database, x.input, null)));
+        expect(results.every(r => r.staged && r.claimOwned === false)).toBe(true);
+        expect(await completeJob(pool, x.a)).toBe("lost");
+        expect(await pointers(x.b)).toEqual(before);
+        if (first) {
+          expect((await finalizeStagedReviewCompletionWithGateMode(database, { reviewId: x.review.id,
+            reviewClaim: x.b, usage: x.spend.usage, hostedUsageReservationId: x.spend.reservationId,
+            usageAccountingComplete: true }, null)).completed).toBe(true);
+        }
+        expect(await spendState(x.review.id)).toEqual({ status: "reconciled", actual_micros: "7", usage_count: 1, cost: "7" });
+        expect(await rows("SELECT DISTINCT job_kind FROM job_attempt_receipts WHERE job_id=$1", [x.b.id]))
+          .toEqual([{ job_kind: kind }]);
+        expect(await completeJob(pool, x.b)).toBe("done");
+      }
+      const c = await start({}, kind);
+      await deferHostedReviewForRelease(pool, c, randomBytes(20).toString("hex"));
+      expect(await rows("SELECT job_kind,outcome FROM job_attempt_receipts WHERE claim_receipt_id=$1 AND event_kind='queue_closed'", [c.receiptClaim!.receiptId]))
+        .toEqual([{ job_kind: kind, outcome: "deferred" }]);
+      const d = await start({ installationId: 101, sourceInstallationId: 102, sourceOrgId: 103,
+        githubRepoId: 104, repoFullName: "fixture/repository", prNumber: 1 }, kind);
+      expect(await cancelPullRequestPublication(pool, { installationId: 101, sourceInstallationId: 102,
+        sourceOrgId: 103, githubRepoId: 104, repoFullName: "fixture/repository", prNumber: 1 })).toBe(1);
+      expect(await rows("SELECT job_kind,outcome FROM job_attempt_receipts WHERE claim_receipt_id=$1 AND event_kind='queue_closed'", [d.receiptClaim!.receiptId]))
+        .toEqual([{ job_kind: kind, outcome: "cancelled" }]);
+      const unavailable = await start({}, kind);
+      const review = await claimPausedHostedReview(database, { ...values(), authorGithubId: null, authorLogin: null,
+        sinceSha: null, triggerSource: "unknown", triggerContext: { source: "unknown" }, queuedAt: new Date(), startedAt: new Date() },
+      { installationId: 1, repoFullName: "fixture/repository", reviewClaim: unavailable });
+      expect(review).not.toBeNull();
+      expect(await rows("SELECT DISTINCT job_kind FROM job_attempt_receipts WHERE review_id=$1", [review!.id]))
+        .toEqual([{ job_kind: kind }]);
+      expect(await completeJob(pool, unavailable)).toBe("done");
+    }
   });
 
   test("existing unavailable-review path atomically binds its finite failure observation", async () => {

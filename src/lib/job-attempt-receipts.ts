@@ -188,8 +188,10 @@ export async function lockReceiptClaim(client: ReceiptClient, lease: ReviewClaim
 
 export function claimEvent(jobId: string, ordinal: number, claimId: string | null,
   eventKind: PreparedReceipt["eventKind"], outcome: PreparedReceipt["outcome"],
-  reviewId: string | null = null, reviewPublicId: string | null = null): PreparedReceipt {
-  return { jobId, ordinal, jobKind: "review", claimId, reviewId, reviewPublicId,
+  reviewId: string | null = null, reviewPublicId: string | null = null,
+  jobKind: string = "review"): PreparedReceipt {
+  if (jobKind !== "review" && jobKind !== "review-feedback") throw new Error("invalid receipt job kind");
+  return { jobId, ordinal, jobKind, claimId, reviewId, reviewPublicId,
     eventKind, outcome, phase: null, category: null, recovered: null, recovery: null };
 }
 
@@ -213,7 +215,8 @@ export async function transitionReceiptClaim<T extends string>(
       await client.query("UPDATE jobs SET active_claim_receipt_id = NULL WHERE id = $1::bigint",
         [lease.receiptClaim!.jobId]);
       await appendPreparedReceiptBatch(client, [claimEvent(lease.receiptClaim!.jobId,
-        Number(row.attempts), lease.receiptClaim!.receiptId, "queue_closed", outcome(result))]);
+        Number(row.attempts), lease.receiptClaim!.receiptId, "queue_closed", outcome(result),
+        null, null, String(row.kind))]);
     }
     if (ownsTransaction) await client.query("COMMIT");
     return result;
@@ -227,7 +230,7 @@ export async function transitionReceiptClaim<T extends string>(
 export async function prepareReviewObservation(client: ReceiptClient, reviewId: number,
   outcome: PreparedReceipt["outcome"], lease?: ReviewClaimLease): Promise<PreparedReceipt[]> {
   const result = await client.query(`SELECT b.claim_receipt_id::text, b.job_id::text,
-      b.ordinal, b.review_id::text, b.review_public_id::text
+      b.ordinal, b.job_kind, b.review_id::text, b.review_public_id::text
     FROM job_attempt_receipts b JOIN reviews r ON r.id = b.review_id
     WHERE b.event_kind = 'review_bound' AND r.id = $1::bigint
       AND b.claim_receipt_id = COALESCE($2::bigint, r.origin_claim_receipt_id)
@@ -237,7 +240,8 @@ export async function prepareReviewObservation(client: ReceiptClient, reviewId: 
           AND o.review_id = r.id AND o.outcome = $3)`,
   [String(reviewId), lease?.receiptClaim?.receiptId ?? null, outcome]);
   return result.rows.map((r) => claimEvent(String(r.job_id), Number(r.ordinal),
-    String(r.claim_receipt_id), "review_observed", outcome, String(r.review_id), String(r.review_public_id)));
+    String(r.claim_receipt_id), "review_observed", outcome, String(r.review_id), String(r.review_public_id),
+    String(r.job_kind)));
 }
 
 export interface ReceiptSourceBinding {
@@ -365,7 +369,7 @@ export async function readAdmittedReceiptPage(
 export async function prepareClosedJobReceipts(client: ReceiptClient,
   jobIds: readonly string[], outcome?: PreparedReceipt["outcome"]): Promise<PreparedReceipt[]> {
   if (!jobIds.length) return [];
-  const result = await client.query(`SELECT j.id::text, j.status, c.ordinal, c.receipt_id::text
+  const result = await client.query(`SELECT j.id::text, j.status, c.ordinal, c.job_kind, c.receipt_id::text
     FROM jobs j JOIN job_attempt_receipts c ON c.receipt_id = j.active_claim_receipt_id
     WHERE j.id = ANY($1::bigint[]) AND j.status <> 'running' AND c.event_kind = 'claim'
       AND NOT EXISTS (SELECT 1 FROM job_attempt_receipts x
@@ -374,5 +378,6 @@ export async function prepareClosedJobReceipts(client: ReceiptClient,
   if (result.rows.length) await client.query(`UPDATE jobs SET active_claim_receipt_id = NULL
     WHERE id = ANY($1::bigint[])`, [result.rows.map((r) => r.id)]);
   return result.rows.map((r) => claimEvent(String(r.id), Number(r.ordinal), String(r.receipt_id),
-    "queue_closed", outcome ?? (r.status === "queued" ? "retry" : r.status === "failed" ? "failed" : "cancelled")));
+    "queue_closed", outcome ?? (r.status === "queued" ? "retry" : r.status === "failed" ? "failed" : "cancelled"),
+    null, null, String(r.job_kind)));
 }

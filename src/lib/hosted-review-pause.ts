@@ -157,9 +157,9 @@ export async function claimPausedHostedReview(
     }
     if (lease?.receiptClaim) {
       events.push(claimEvent(lease.receiptClaim.jobId, Number(job!.attempts), lease.receiptClaim.receiptId,
-        "review_bound", "bound", String(review.id), review.publicId));
+        "review_bound", "bound", String(review.id), review.publicId, String(job!.kind)));
       events.push(claimEvent(lease.receiptClaim.jobId, Number(job!.attempts), lease.receiptClaim.receiptId,
-        "review_observed", "failed", String(review.id), review.publicId));
+        "review_observed", "failed", String(review.id), review.publicId, String(job!.kind)));
     }
     await appendPreparedReceiptBatch(client, events);
     return { ...review, advisoryCheckExternalId, gateCheckExternalId };

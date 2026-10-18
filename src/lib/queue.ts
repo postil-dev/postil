@@ -240,7 +240,7 @@ export async function cancelPullRequestPublication(
 ): Promise<number> {
   const run = async (client: Pick<Pool, "query">, qualified: boolean) => {
     if (qualified) await client.query(`SELECT id FROM jobs
-      WHERE status IN ('queued', 'running') AND kind = 'review'
+      WHERE status IN ('queued', 'running') AND kind IN ('review', 'review-feedback')
         AND payload->>'installationId' = $1 AND payload->>'sourceInstallationId' = $2
         AND payload->>'sourceOrgId' = $3 AND payload->>'githubRepoId' = $4
         AND lower(payload->>'repoFullName') = lower($5)
@@ -1124,7 +1124,7 @@ export async function claimNextJob(
     ) {
       throw new Error("claimed job returned incomplete candidate data");
     }
-    const receipts = row.kind === "review" && (await client.query(
+    const receipts = (row.kind === "review" || row.kind === FEEDBACK_REVIEW_JOB_KIND) && (await client.query(
       "SELECT to_regclass('job_attempt_receipts') IS NOT NULL AS available",
     )).rows[0]?.available === true;
     if (receipts) {
@@ -1143,7 +1143,7 @@ export async function claimNextJob(
     let receiptClaim: ReceiptClaim | undefined;
     if (receipts) {
       const [receiptId] = await appendPreparedReceiptBatch(client,
-        [claimEvent(row.id, row.attempts + 1, null, "claim", "started")]);
+        [claimEvent(row.id, row.attempts + 1, null, "claim", "started", null, null, row.kind)]);
       await client.query("UPDATE jobs SET active_claim_receipt_id = $2::bigint WHERE id = $1::bigint", [row.id, receiptId]);
       receiptClaim = Object.freeze({ jobId: row.id, receiptId: receiptId! });
     }

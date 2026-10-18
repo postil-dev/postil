@@ -286,7 +286,7 @@ export async function stageReviewCompletionCandidate(
         for (const incident of gateTruth.envelope.modelIncidents ?? []) {
           events.push({ ...claimEvent(lease.receiptClaim.jobId, events[0]!.ordinal,
             lease.receiptClaim.receiptId, "incident", "observed", String(input.reviewId),
-            events[0]!.reviewPublicId), phase: incident.phase, category: incident.category,
+            events[0]!.reviewPublicId, events[0]!.jobKind), phase: incident.phase, category: incident.category,
           recovered: incident.recovered, recovery: incident.recovery ?? null });
         }
       }
@@ -498,7 +498,7 @@ export async function insertReviewForClaim(db: Database,
     if (!review) throw new Error("review insert returned no row");
     await appendPreparedReceiptBatch(client, [claimEvent(lease.receiptClaim!.jobId,
       Number(job.attempts), lease.receiptClaim!.receiptId, "review_bound", "bound",
-      review.receiptReviewId, review.publicId)]);
+      review.receiptReviewId, review.publicId, String(job.kind))]);
     return review;
   });
 }
@@ -523,7 +523,7 @@ export async function bindStagedReviewClaim(db: Database, reviewId: number, leas
     if (!existing.rows.length) {
       await appendPreparedReceiptBatch(client, [claimEvent(lease.receiptClaim!.jobId,
         Number(job.attempts), lease.receiptClaim!.receiptId, "review_bound", "bound",
-        String(reviewId), String(review.public_id))]);
+        String(reviewId), String(review.public_id), String(job.kind))]);
     }
     return true;
   });

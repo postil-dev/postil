@@ -1714,7 +1714,8 @@ async function deferHostedJobForRelease(
     if (job.receiptClaim) {
       await client.query("UPDATE jobs SET active_claim_receipt_id = NULL WHERE id = $1::bigint", [job.receiptClaim.jobId]);
       await appendPreparedReceiptBatch(client, [claimEvent(job.receiptClaim.jobId,
-        Number(claim!.attempts), job.receiptClaim.receiptId, "queue_closed", "deferred")]);
+        Number(claim!.attempts), job.receiptClaim.receiptId, "queue_closed", "deferred",
+        null, null, String(claim!.kind))]);
     }
     await client.query("COMMIT");
     return activated ? "released" : "deferred";
