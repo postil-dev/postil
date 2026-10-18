@@ -130,12 +130,27 @@ tar -xzf "$tmp/$archive" -C "$tmp"
 chmod +x "$tmp/postil"
 
 # Install, falling back to sudo only if the target dir is not writable.
+install_binary='source=$1
+bin=$2
+[ -s "$source" ]
+[ -x "$source" ]
+stage=$(mktemp -d "$bin/.postil.XXXXXX")
+trap '"'"'status=$?; rm -rf "$stage" || echo "install.sh: staging cleanup failed: $stage" >&2; exit "$status"'"'"' 0
+trap '"'"'exit 129'"'"' HUP
+trap '"'"'exit 130'"'"' INT
+trap '"'"'exit 143'"'"' TERM
+mv "$source" "$stage/postil"
+[ -s "$stage/postil" ]
+[ -x "$stage/postil" ]
+[ ! -d "$bin/postil" ] || { echo "install.sh: destination is a directory" >&2; exit 1; }
+mv -f "$stage/postil" "$bin/postil"
+'
 if [ -w "$BIN_DIR" ] || mkdir -p "$BIN_DIR" 2>/dev/null && [ -w "$BIN_DIR" ]; then
-    mv "$tmp/postil" "$BIN_DIR/postil"
+    sh -eu -c "$install_binary" install.sh "$tmp/postil" "$BIN_DIR"
 elif have sudo; then
     echo "Elevating to install into ${BIN_DIR} ..."
     sudo mkdir -p "$BIN_DIR"
-    sudo mv "$tmp/postil" "$BIN_DIR/postil"
+    sudo sh -eu -c "$install_binary" install.sh "$tmp/postil" "$BIN_DIR"
 else
     err "cannot write to ${BIN_DIR}; re-run with --bin-dir <writable path>"
 fi
