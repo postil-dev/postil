@@ -201,7 +201,6 @@ export async function readGitHubReviewFeedback(
           thread.comments?.pageInfo?.hasNextPage !== false || !Array.isArray(comments)) {
         throw new Error("review feedback published thread is incomplete");
       }
-      if (threads.length >= 20) throw new Error("review feedback exceeds 20 published threads");
       const replies: ObservedFeedbackThread["comments"] = [];
       for (const comment of comments.slice(1)) {
         const author = human(comment.author);
