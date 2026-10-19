@@ -409,6 +409,15 @@ describe("migration lint", () => {
       ),
       "utf8",
     );
+    const ilertCanaryAlertKeyMigration = await readFile(
+      join(
+        import.meta.dir,
+        "..",
+        "drizzle",
+        "0064_ilert_canary_alert_key.sql",
+      ),
+      "utf8",
+    );
 
     expect(migration).toContain('CREATE TABLE "release_steps"');
     expect(migration).not.toContain("CREATE INDEX");
@@ -438,6 +447,12 @@ describe("migration lint", () => {
     expect(publicationLifecycleRepairMigration).toContain(
       "hashtextextended('postil:publication-lifecycle-release-v2', 0)",
     );
+    expect(ilertCanaryAlertKeyMigration).not.toContain("CREATE INDEX");
+    // Validating the check would scan the live table under its exclusive lock.
+    expect(ilertCanaryAlertKeyMigration).toMatch(
+      /ADD CONSTRAINT "ilert_alert_events_alert_key_check" CHECK \(.*\) NOT VALID;\s*$/,
+    );
+    expect(ilertCanaryAlertKeyMigration).not.toContain("VALIDATE CONSTRAINT");
     expect(releaseScript).toContain(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS "reviews_publication_lifecycle_pending_idx"',
     );
@@ -462,6 +477,12 @@ describe("migration lint", () => {
     expect(releaseScript).toContain(
       'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "finding_approvals_github_delivery_idx"',
     );
+    expect(releaseScript).toContain(
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "ilert_alert_events_canary_observation_idx"',
+    );
+    expect(releaseScript).toContain(
+      'columns: ["alert_key", "event_type", "alert_source_id"]',
+    );
     expect(releaseScript).toContain("!state.indisvalid || !state.indisready");
     expect(releaseScript).toContain("DROP INDEX CONCURRENTLY IF EXISTS");
     expect(releaseScript).toContain("pg_try_advisory_lock($1, $2)");
@@ -478,6 +499,13 @@ describe("migration lint", () => {
     );
     expect(releasePreparationScript).toContain(
       '["bun", "run", "notifications:quiesce"]',
+    );
+    expect(
+      releasePreparationScript.indexOf('["bun", "run", "db:migrate"]'),
+    ).toBeLessThan(
+      releasePreparationScript.indexOf(
+        '["bun", "run", "operational:indexes"]',
+      ),
     );
   });
 

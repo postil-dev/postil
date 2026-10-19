@@ -1,10 +1,20 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
+
+import { CANARY_FINALIZER_BUDGETS } from "../scripts/reconcile-ilert-alert-stream";
 
 let queryCount = 0;
 let queryImpl: (text: string) => Promise<unknown>;
@@ -192,6 +202,736 @@ describe("/api/health/monitor", () => {
 });
 
 describe("production monitor workflow", () => {
+  test("owns a bounded, accurately disclosed iLert webhook reconciliation canary", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: Record<
+        string,
+        {
+          if?: string;
+          name?: string;
+          needs?: string | string[];
+          outputs?: Record<string, string>;
+          "timeout-minutes"?: number;
+          steps?: Array<{
+            "continue-on-error"?: boolean;
+            env?: Record<string, string>;
+            id?: string;
+            if?: string;
+            name?: string;
+            run?: string;
+            "timeout-minutes"?: number;
+            uses?: string;
+            with?: Record<string, string>;
+          }>;
+        }
+      >;
+    };
+    expect(source).toContain("reconcile_alert_stream:");
+    expect(source).toContain(
+      "description: Reconcile the iLert webhook action and send then resolve a HIGH-priority production test alert; it can invoke the escalation path; cannot be combined with test_alert",
+    );
+    const architecture = await readFile(
+      new URL("../ARCHITECTURE.md", import.meta.url),
+      "utf8",
+    );
+    expect(architecture).toContain(
+      "HIGH-priority production test alert that can invoke the escalation path",
+    );
+    expect(architecture).toContain(
+      "A `cleaned` handoff means the\nprimary canary also proves the exact persisted `alert-resolved` receiver event.",
+    );
+    expect(architecture).toContain(
+      "A cleaned handoff still performs this\nmanagement sweep to resolve a delayed Event API duplicate.",
+    );
+    expect(source).toContain(
+      "but this job still sweeps iLert management inventory for a delayed Event",
+    );
+    expect(source).toContain(
+      "      test_alert:\n        description: Send a HIGH-priority test alert only after production checks pass, then attempt to resolve it; it can invoke the escalation path; cannot be combined with reconcile_alert_stream",
+    );
+    expect(source).toContain("POSTIL_ILERT_CANARY_RUN_ATTEMPT");
+    const alertStream = workflow.jobs["alert-stream"];
+    expect(alertStream?.needs).toEqual(["deployment-trust", "smoke", "release-recovery"]);
+    const setupAndSecretLoadBudgetMinutes = 5;
+    const runnerHeadroomMinutes = 8;
+    expect(alertStream?.name).toBe("Reconcile and verify iLert webhook delivery");
+    expect(alertStream?.if).toBe(
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && inputs.reconcile_alert_stream == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+    );
+    expect(alertStream?.outputs).toMatchObject({
+      "alert-submitted": "${{ steps.canary.outputs.alert_submitted }}",
+      "producer-attempt": "${{ steps.canary.outputs.producer_attempt }}",
+    });
+    expect(alertStream?.steps?.map((step) => step.name)).toContain(
+      "Preview iLert alert-stream reconciliation",
+    );
+    expect(alertStream?.steps?.map((step) => step.name)).toContain(
+      "Reconcile and verify the attempt-specific iLert webhook canary",
+    );
+    const preview = alertStream?.steps?.find(
+      (step) => step.name === "Preview iLert alert-stream reconciliation",
+    );
+    const canary = alertStream?.steps?.find(
+      (step) => step.name === "Reconcile and verify the attempt-specific iLert webhook canary",
+    );
+    const alertStreamSetupSteps = (alertStream?.steps ?? []).slice(0, 5);
+    expect(alertStreamSetupSteps.map((step) => step["timeout-minutes"])).toEqual([1, 1, 1, 1, 1]);
+    expect(alertStreamSetupSteps.reduce(
+      (total, step) => total + (step["timeout-minutes"] ?? 0),
+      0,
+    )).toBe(setupAndSecretLoadBudgetMinutes);
+    expect(boundedStepMinutes(preview)).toBe(7);
+    expect(boundedStepMinutes(canary)).toBe(13);
+    expect(canary?.env).toMatchObject({
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
+      POSTIL_ILERT_RECEIVER_ORIGIN: "https://postil.dev",
+    });
+    const inJobFinalizer = alertStream?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the current iLert canary before job exit",
+    );
+    const cleanupIndex = alertStream?.steps?.indexOf(inJobFinalizer!) ?? -1;
+    const canaryIndex = alertStream?.steps?.indexOf(canary!) ?? -1;
+    expect(cleanupIndex).toBeGreaterThan(canaryIndex);
+    expect(boundedStepMinutes(inJobFinalizer)).toBe(4);
+    expect(inJobFinalizer?.if).toBe(
+      "${{ always() && steps.canary.outcome != 'skipped' }}",
+    );
+    expect(alertStream?.["timeout-minutes"]).toBeGreaterThanOrEqual(
+      setupAndSecretLoadBudgetMinutes +
+        (alertStream?.steps ?? []).reduce(
+          (total, step) => total + boundedStepMinutes(step),
+          0,
+        ) +
+        runnerHeadroomMinutes,
+    );
+    expect(alertStream?.["timeout-minutes"]! - (
+      setupAndSecretLoadBudgetMinutes +
+      (alertStream?.steps ?? []).slice(0, cleanupIndex).reduce(
+        (total, step) => total + boundedStepMinutes(step),
+        0,
+      )
+    )).toBeGreaterThanOrEqual(boundedStepMinutes(inJobFinalizer) + runnerHeadroomMinutes);
+    expect(inJobFinalizer?.run).not.toContain(" --canary");
+    expect(inJobFinalizer?.env).toMatchObject({
+      POSTIL_ILERT_CANARY_ALERT_SUBMITTED: "${{ steps.canary.outputs.alert_submitted }}",
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
+    });
+    const finalizer = workflow.jobs["alert-stream-finalize"];
+    expect(finalizer?.needs).toEqual(["deployment-trust", "alert-stream"]);
+    expect(finalizer?.["timeout-minutes"]).toBe(11);
+    expect(finalizer?.if).toBe(
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && inputs.reconcile_alert_stream == true && needs.alert-stream.result != 'skipped' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+    );
+    expect(finalizer?.name).toBe("Finalize iLert webhook canary cleanup");
+    const finalizerCleanup = finalizer?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
+    );
+    expect(finalizerCleanup?.run).toContain("timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary");
+    const finalizerCleanupIndex = finalizer?.steps?.indexOf(finalizerCleanup!) ?? -1;
+    const finalizerSetupSteps = (finalizer?.steps ?? []).slice(0, finalizerCleanupIndex);
+    const finalizerSetupBudgetMinutes = finalizerSetupSteps.reduce(
+      (total, step) => total + (step["timeout-minutes"] ?? 0),
+      0,
+    );
+    const finalizerHeadroomMinutes = 2;
+    expect(finalizerCleanupIndex).toBe((finalizer?.steps?.length ?? 0) - 1);
+    expect(finalizerSetupSteps).toHaveLength(4);
+    expect(finalizerSetupSteps.map((step) => step["timeout-minutes"])).toEqual([1, 1, 1, 1]);
+    expect(finalizerSetupBudgetMinutes).toBe(4);
+    expect(boundedStepMinutes(finalizerCleanup)).toBe(4);
+    expect(
+      finalizerSetupBudgetMinutes +
+        boundedStepMinutes(finalizerCleanup) +
+        finalizerHeadroomMinutes,
+    ).toBeLessThan(finalizer?.["timeout-minutes"] ?? 0);
+    expect(finalizer?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
+    )?.env).toMatchObject({
+      POSTIL_ILERT_CANARY_ALERT_SUBMITTED:
+        "${{ needs.alert-stream.outputs.alert-submitted }}",
+      POSTIL_ILERT_CANARY_RUN_ATTEMPT:
+        "${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}",
+      POSTIL_ILERT_CANARY_SWEEP_ATTEMPT: "${{ github.run_attempt }}",
+      POSTIL_ILERT_CANARY_RUN_ID: "${{ github.run_id }}",
+    });
+    const finalizerAttempt = finalizer?.steps?.find(
+      (step) => step.name === "Resolve and stabilize the reconstructible iLert canary",
+    )?.env?.POSTIL_ILERT_CANARY_RUN_ATTEMPT;
+    expect(resolveFinalizerAttempt(finalizerAttempt, "1", "2")).toBe("1");
+    expect(resolveFinalizerAttempt(finalizerAttempt, "", "2")).toBe("2");
+    for (const job of [alertStream, finalizer]) {
+      expect(job?.steps?.find((step) => step.uses?.startsWith("actions/checkout@"))?.with)
+        .toMatchObject({ ref: "${{ github.sha }}" });
+    }
+    const expectScopedSecretLoads = (
+      job: typeof alertStream,
+      expectedSecrets: string[],
+    ) => {
+      const scopedSecretLoads = job?.steps?.filter((step) => step.with?.["secret-name"]);
+      expect(scopedSecretLoads?.map((step) => step.with?.["secret-name"])).toEqual(expectedSecrets);
+      expect(scopedSecretLoads?.every((step) =>
+        step.uses === "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db" &&
+        typeof step.with?.["secret-path"] === "string",
+      )).toBe(true);
+    };
+    expectScopedSecretLoads(alertStream, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY", "POSTIL_ILERT_WEBHOOK_SECRET"]);
+    expectScopedSecretLoads(finalizer, ["ILERT_API_KEY", "ILERT_INTEGRATION_KEY"]);
+    for (const job of [alertStream, finalizer]) {
+      const managementLoad = job?.steps?.find((step) =>
+        step.with?.["secret-name"] === "ILERT_API_KEY"
+      );
+      expect(managementLoad?.with?.["identity-id"])
+        .toBe("${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}");
+    }
+    expect(finalizer?.steps?.filter((step) => step.with?.["secret-name"])
+      .every((step) => step.if === undefined)).toBe(true);
+    expect(workflow.jobs.notify?.if).toBe(
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || (inputs.test_alert == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+    );
+    const notifySecret = workflow.jobs.notify?.steps?.find(
+      (step) => step.name === "Load required iLert integration secret from Infisical",
+    );
+    expect(notifySecret).toMatchObject({
+      uses: "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db",
+      with: {
+        "secret-name": "ILERT_INTEGRATION_KEY",
+        "secret-path": "/postil",
+      },
+    });
+    expect(notifySecret).not.toHaveProperty("continue-on-error");
+    expect(workflow.jobs.notify?.steps?.find((step) => step.name === "Send ilert event"))
+      .toMatchObject({
+        uses: "./.github/actions/ilert-event",
+        with: { "require-delivery": true },
+      });
+    expect(workflow.jobs.resolve?.if).toBe(
+      "${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) && inputs.test_alert != true }}",
+    );
+  });
+
+  test("finalizes only a successful manual test alert after notification settles", async () => {
+    const workflow = parse(await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    )) as {
+      jobs: Record<string, {
+        if?: string;
+        needs?: string[];
+        "timeout-minutes"?: number;
+        steps: Array<{
+          name?: string;
+          uses?: string;
+          "timeout-minutes"?: number;
+          with?: Record<string, unknown>;
+        }>;
+      }>;
+    };
+    const notify = workflow.jobs.notify!;
+    const finalizer = workflow.jobs["resolve-test-alert"]!;
+    expect(finalizer.needs).toEqual(["deployment-trust", "smoke", "release-recovery", "notify"]);
+    expect(finalizer.if).toBe(
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.test_alert == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success' }}",
+    );
+    expect(finalizer.if).not.toContain("needs.notify.result == 'success'");
+    expect(finalizer["timeout-minutes"]).toBe(5);
+    expect(finalizer.steps.map((step) => step["timeout-minutes"])).toEqual([1, 1, 2]);
+    const secretLoad = (job: typeof notify) => job.steps.find(
+      (step) => step.with?.["secret-name"] === "ILERT_INTEGRATION_KEY",
+    );
+    expect(secretLoad(finalizer)).toEqual(secretLoad(notify));
+    expect(finalizer.steps.filter((step) => step.with?.["secret-name"])).toHaveLength(1);
+    const notification = notify.steps.find((step) => step.name === "Send ilert event")!;
+    const resolution = finalizer.steps.find((step) => step.name === "Resolve ilert test alert")!;
+    expect(notification.with?.["alert-key"]).toContain("postil-production-monitor-test");
+    expect(resolution).toMatchObject({
+      uses: "./.github/actions/ilert-event",
+      with: {
+        "event-type": "RESOLVE",
+        "alert-key": "postil-production-monitor-test",
+        "require-delivery": true,
+      },
+    });
+    expect(resolution.with?.["alert-key"]).not.toBe("postil-production-monitor");
+    expect(workflow.jobs.resolve!.if).toContain("inputs.test_alert != true");
+  });
+
+  test("routes manual test alerts only when their own resolver can run", async () => {
+    const workflow = parse(await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    )) as {
+      jobs: Record<string, {
+        if: string;
+        steps: Array<{ name?: string; with?: Record<string, string> }>;
+      }>;
+    };
+    const alertKey = workflow.jobs.notify!.steps.find((step) =>
+      step.name === "Send ilert event"
+    )!.with!["alert-key"];
+    expect(alertKey).toBeDefined();
+    for (const [smoke, release, notification, resolution, key] of [
+      ["cancelled", "success", false, false, null],
+      ["failure", "success", true, false, "postil-production-monitor"],
+      ["success", "failure", true, false, "postil-release-recovery"],
+      ["success", "cancelled", true, false, "postil-release-recovery"],
+      ["cancelled", "failure", true, false, "postil-release-recovery"],
+      ["success", "success", true, true, "postil-production-monitor-test"],
+    ] as const) {
+      const context = {
+        needs: {
+          deploymentTrust: { outputs: { trusted: "true" } },
+          smoke: { result: smoke },
+          releaseRecovery: { result: release },
+        },
+        inputs: { test_alert: true },
+        github: { event_name: "workflow_dispatch", ref: "refs/heads/main" },
+      };
+      const sends = evaluateMonitorExpression(workflow.jobs.notify!.if, context);
+      const resolves = evaluateMonitorExpression(
+        workflow.jobs["resolve-test-alert"]!.if,
+        context,
+      );
+      expect(sends).toBe(notification);
+      expect(resolves).toBe(resolution);
+      expect(sends ? evaluateMonitorExpression(alertKey!, context) : null).toBe(key);
+    }
+  });
+
+  test("resolves an accepted test alert after its response is lost without closing production", async () => {
+    const workflow = parse(await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    )) as {
+      jobs: Record<string, { steps: Array<{ name?: string; with?: Record<string, string | boolean> }> }>;
+    };
+    const action = parse(await readFile(
+      new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+      "utf8",
+    )) as { runs: { steps: Array<{ run: string }> } };
+    const notification = workflow.jobs.notify!.steps.find((step) => step.name === "Send ilert event")!;
+    const resolution = workflow.jobs["resolve-test-alert"]!.steps.find(
+      (step) => step.name === "Resolve ilert test alert",
+    )!;
+    const workingDirectory = mkdtempSync(join(tmpdir(), "postil-test-alert-"));
+    const eventsFile = join(workingDirectory, "events.ndjson");
+    const integrationIdentity = randomUUID();
+    const testKey = resolution.with!["alert-key"] as string;
+    const notificationKey = notification.with!["alert-key"] as string;
+    expect(notificationKey).toContain(testKey);
+    const curl = join(workingDirectory, "curl");
+    writeFileSync(curl, `#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+  if [[ "$argument" == @* ]]; then payload="\${argument#@}"; fi
+done
+jq -c . "$payload" >> "${eventsFile}"
+if jq -e '.eventType == "ALERT"' "$payload" >/dev/null; then
+  printf '500'
+else
+  printf '202'
+fi
+`);
+    chmodSync(curl, 0o700);
+    const runEvent = (eventType: string, summary: string, alertKey: string, required: boolean) =>
+      spawnSync("bash", ["-c", action.runs.steps[0]!.run], {
+        cwd: workingDirectory,
+        env: {
+          ...process.env,
+          PATH: `${workingDirectory}:${process.env.PATH ?? ""}`,
+          GITHUB_STEP_SUMMARY: join(workingDirectory, "summary"),
+          RUNNER_TEMP: workingDirectory,
+          ILERT_INTEGRATION_KEY: integrationIdentity,
+          EVENT_TYPE: eventType,
+          SUMMARY: summary,
+          ALERT_KEY: alertKey,
+          DETAILS: "",
+          PRIORITY: "HIGH",
+          REQUIRE_DELIVERY: String(required),
+        },
+        encoding: "utf8",
+      });
+    try {
+      const alert = runEvent("ALERT", "Postil production monitor test alert", testKey, true);
+      expect(alert.status).toBe(1);
+      const resolved = runEvent(
+        String(resolution.with!["event-type"]),
+        String(resolution.with!["summary"]),
+        testKey,
+        resolution.with!["require-delivery"] === true,
+      );
+      expect(resolved.status).toBe(0);
+      const events = (await readFile(eventsFile, "utf8")).trim().split("\n").map(
+        (line) => JSON.parse(line) as { integrationKey: string; eventType: string; alertKey: string },
+      );
+      expect(events.map(({ eventType, alertKey }) => ({ eventType, alertKey }))).toEqual([
+        { eventType: "ALERT", alertKey: testKey },
+        { eventType: "RESOLVE", alertKey: testKey },
+      ]);
+      expect(events.every((event) => event.integrationKey === integrationIdentity)).toBe(true);
+      const openAlerts = new Set(["postil-production-monitor"]);
+      for (const event of events) {
+        if (event.eventType === "ALERT") openAlerts.add(event.alertKey);
+        if (event.eventType === "RESOLVE") openAlerts.delete(event.alertKey);
+      }
+      expect([...openAlerts]).toEqual(["postil-production-monitor"]);
+    } finally {
+      rmSync(workingDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("fits finalizer cleanup inside GitHub's cancellation grace", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
+    };
+    const cleanupCommands = ["alert-stream", "alert-stream-finalize"].map((jobName) =>
+      workflow.jobs[jobName]?.steps.find((step) =>
+        step.run?.includes("--finalize-canary")
+      )?.run
+    );
+    expect(CANARY_FINALIZER_BUDGETS.discoveryMs +
+      CANARY_FINALIZER_BUDGETS.terminalValidationMs +
+      CANARY_FINALIZER_BUDGETS.cleanupMs).toBe(CANARY_FINALIZER_BUDGETS.operationMs);
+    expect(CANARY_FINALIZER_BUDGETS.shellMs - CANARY_FINALIZER_BUDGETS.operationMs)
+      .toBeGreaterThanOrEqual(30_000);
+    expect(CANARY_FINALIZER_BUDGETS.cancellationGraceMs - CANARY_FINALIZER_BUDGETS.shellMs)
+      .toBeGreaterThanOrEqual(60_000);
+    expect(cleanupCommands).toEqual([
+      "timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary",
+      "timeout 4m bun run scripts/reconcile-ilert-alert-stream.ts --finalize-canary",
+    ]);
+    expect(boundedStepMinutes({ run: cleanupCommands[0] }) * 60_000)
+      .toBe(CANARY_FINALIZER_BUDGETS.shellMs);
+  });
+
+  test("prevents non-main manual dispatches from loading production credentials or local actions", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: Record<string, {
+        if?: string;
+        steps?: Array<{
+          env?: Record<string, string>;
+          uses?: string;
+          with?: Record<string, string>;
+        }>;
+      }>;
+    };
+    const protectedJobs = Object.entries(workflow.jobs).filter(([, job]) =>
+      JSON.stringify(job).includes("secrets.") ||
+      job.steps?.some((step) =>
+        step.uses?.startsWith("Infisical/secrets-action@") ||
+        step.uses === "./.github/actions/ilert-event"
+      )
+    );
+    expect(protectedJobs.map(([name]) => name).sort()).toEqual([
+      "alert-stream",
+      "alert-stream-finalize",
+      "canary-orphan-sweep",
+      "notify",
+      "release-recovery",
+      "resolve",
+      "resolve-release-recovery",
+      "resolve-test-alert",
+      "smoke",
+    ]);
+    for (const [name, job] of protectedJobs) {
+      expect(job.if).toContain("github.ref == 'refs/heads/main'");
+      if (name !== "resolve-test-alert") {
+        expect(job.if).toContain("github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'");
+      }
+    }
+
+    const deploySource = await readFile(
+      new URL("../.github/workflows/deploy.yml", import.meta.url),
+      "utf8",
+    );
+    const deploy = parse(deploySource) as {
+      on: Record<string, unknown>;
+      jobs: Record<string, { if?: string }>;
+    };
+    expect(Object.keys(deploy.on)).toEqual(["workflow_dispatch"]);
+    expect(Object.keys(deploy.jobs)).toEqual(["deploy"]);
+    expect(deploy.jobs.deploy!.if).toContain("github.event_name == 'workflow_dispatch'");
+  });
+
+  test("accepts deploy workflow runs only from the main deployment branch", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      on: {
+        workflow_run: {
+          branches: string[];
+          types: string[];
+          workflows: string[];
+        };
+      };
+    };
+    expect(workflow.on.workflow_run).toEqual({
+      workflows: ["deploy"],
+      types: ["completed"],
+      branches: ["main"],
+    });
+  });
+
+  test("gives every required iLert delivery a bounded end-to-end budget", async () => {
+    const [workflowSource, actionSource] = await Promise.all([
+      readFile(new URL("../.github/workflows/production-monitor.yml", import.meta.url), "utf8"),
+      readFile(new URL("../.github/actions/ilert-event/action.yml", import.meta.url), "utf8"),
+    ]);
+    const workflow = parse(workflowSource) as {
+      jobs: Record<string, {
+        "timeout-minutes": number;
+        steps: Array<{
+          name?: string;
+          uses?: string;
+          "timeout-minutes"?: number;
+          with?: Record<string, string | boolean>;
+        }>;
+      }>;
+    };
+    const retryMaxTime = /--retry-max-time\s+(\d+)/u.exec(actionSource);
+    const requestMaxTime = /--max-time\s+(\d+)/u.exec(actionSource);
+    const connectTimeout = /--connect-timeout\s+(\d+)/u.exec(actionSource);
+    const retryDelay = /--retry-delay\s+(\d+)/u.exec(actionSource);
+    const retryCount = /--retry\s+(\d+)/u.exec(actionSource);
+    expect(retryMaxTime?.[1]).toBeDefined();
+    expect(requestMaxTime?.[1]).toBeDefined();
+    expect(connectTimeout?.[1]).toBeDefined();
+    expect(retryDelay?.[1]).toBeDefined();
+    expect(retryCount?.[1]).toBeDefined();
+    const requestMaxSeconds = Number(requestMaxTime?.[1]);
+    const retryMaxSeconds = Number(retryMaxTime?.[1]);
+    const retryDelaySeconds = Number(retryDelay?.[1]);
+    const retryAttempts = Number(retryCount?.[1]);
+    expect(Number(connectTimeout?.[1])).toBeLessThanOrEqual(requestMaxSeconds);
+    expect(retryMaxSeconds).toBeLessThanOrEqual(45);
+    expect(retryMaxSeconds).toBeGreaterThan(retryDelaySeconds * retryAttempts);
+
+    const requiredDeliveries = Object.entries(workflow.jobs).flatMap(([name, job]) =>
+      job.steps
+        .filter((step) =>
+          step.uses === "./.github/actions/ilert-event" &&
+          step.with?.["require-delivery"] === true
+        )
+        .map((delivery) => ({ delivery, job, name }))
+    );
+    expect(requiredDeliveries.map(({ name }) => name).sort()).toEqual([
+      "notify",
+      "resolve",
+      "resolve-release-recovery",
+      "resolve-test-alert",
+    ]);
+
+    // retry-max-time includes failed requests and retry delays, but curl may
+    // start one final max-time request immediately before that timer expires.
+    const curlWorstCaseSeconds = retryMaxSeconds + requestMaxSeconds;
+    const shellOverheadSeconds = 15;
+    const minimumDeliveryHeadroomSeconds = 30;
+    for (const { delivery, job } of requiredDeliveries) {
+      expect(delivery?.with?.["require-delivery"]).toBe(true);
+      expect(delivery["timeout-minutes"]! * 60 - curlWorstCaseSeconds - shellOverheadSeconds)
+        .toBeGreaterThanOrEqual(minimumDeliveryHeadroomSeconds);
+      expect(job.steps.every((step) => (step["timeout-minutes"] ?? 0) > 0)).toBe(true);
+      const totalStepBudgetMinutes = job.steps.reduce(
+        (total, step) => total + step["timeout-minutes"]!,
+        0,
+      );
+      expect(job["timeout-minutes"] - totalStepBudgetMinutes).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  test("schedules a bounded management-only sweep for interrupted canary cleanup", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: {
+        "canary-orphan-sweep": {
+          if: string;
+          "timeout-minutes": number;
+          steps: Array<{
+            env?: Record<string, string>;
+            name?: string;
+            "timeout-minutes"?: number;
+            uses?: string;
+            with?: Record<string, string>;
+            run?: string;
+          }>;
+        };
+      };
+    };
+    const sweep = workflow.jobs["canary-orphan-sweep"];
+    expect(sweep.if).toBe(
+      "${{ needs.deployment-trust.outputs.trusted == 'true' && vars.POSTIL_ILERT_CANARY_SWEEP_ENABLED == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.reconcile_alert_stream != true && inputs.test_alert != true)) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
+    );
+    expect(sweep["timeout-minutes"]).toBe(21);
+    const managementLoad = sweep.steps.find(
+      (step) => step.name === "Load iLert management secret from Infisical",
+    );
+    expect(managementLoad).toMatchObject({
+      uses: "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db",
+      with: {
+        "identity-id": "${{ secrets.INFISICAL_ILERT_MACHINE_IDENTITY_ID }}",
+        "secret-name": "ILERT_API_KEY",
+        "secret-path": "/",
+      },
+    });
+    expect(sweep.steps.some((step) => step.with?.["secret-name"] === "ILERT_INTEGRATION_KEY"))
+      .toBe(false);
+    const recovery = sweep.steps.find(
+      (step) => step.name === "Resolve and verify orphaned iLert canaries",
+    );
+    expect(recovery?.run).toBe(
+      "timeout 14m bun run scripts/reconcile-ilert-alert-stream.ts --sweep-canary-orphans",
+    );
+    expect(recovery?.env).toEqual({
+      POSTIL_ILERT_ALERT_SOURCE_ID: "${{ vars.POSTIL_ILERT_ALERT_SOURCE_ID }}",
+    });
+  });
+
+  test("resolves a production failure after manual success and scheduled success", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: {
+        resolve: {
+          if: string;
+          steps: Array<{
+            "continue-on-error"?: boolean;
+            if?: string;
+            id?: string;
+            name?: string;
+            uses?: string;
+            with?: Record<string, string>;
+          }>;
+        };
+      };
+    };
+    const resolve = workflow.jobs.resolve;
+    expect(resolve.if).toBe(
+      "${{ needs.deployment-trust.outputs.trusted == 'true' && needs.smoke.result == 'success' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name != 'workflow_dispatch' || inputs.reconcile_alert_stream != true) && inputs.test_alert != true }}",
+    );
+    expect(resolve.steps.some((step) => step.name === "Check whether the previous run failed")).toBe(false);
+    expect(resolve.steps.find((step) => step.name === "Load iLert integration secret from Infisical")).toMatchObject({
+      uses: "Infisical/secrets-action@6cd3f7c0e4cc0d2395ee4ef414eb6eeb5d3e73db",
+      with: {
+        "secret-name": "ILERT_INTEGRATION_KEY",
+        "secret-path": "/postil",
+      },
+    });
+    expect(resolve.steps.find((step) => step.name === "Load iLert integration secret from Infisical"))
+      .not.toHaveProperty("continue-on-error");
+    expect(resolve.steps.find((step) => step.name === "Resolve ilert alert")).toMatchObject({
+      uses: "./.github/actions/ilert-event",
+      with: { "require-delivery": true },
+    });
+  });
+
+  test("keeps release-recovery resolution delivery-required", async () => {
+    const source = await readFile(
+      new URL("../.github/workflows/production-monitor.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(source) as {
+      jobs: {
+        "resolve-release-recovery": {
+          steps: Array<{
+            name?: string;
+            uses?: string;
+            with?: Record<string, string | boolean>;
+          }>;
+        };
+      };
+    };
+    expect(workflow.jobs["resolve-release-recovery"].steps.find(
+      (step) => step.name === "Resolve ilert release recovery alert",
+    )).toMatchObject({
+      uses: "./.github/actions/ilert-event",
+      with: { "require-delivery": true },
+    });
+  });
+
+  test("keeps the iLert management credential outside application environment files", async () => {
+    const [compose, environmentExample] = await Promise.all([
+      readFile(new URL("../docker-compose.yml", import.meta.url), "utf8"),
+      readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    ]);
+    expect(environmentExample).not.toContain("ILERT_API_KEY=");
+    expect(compose).not.toContain("ILERT_API_KEY");
+  });
+
+  test("routine iLert resolve safely no-ops when its optional key is absent", async () => {
+    const source = await readFile(
+      new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+      "utf8",
+    );
+    const action = parse(source) as {
+      runs: { steps: Array<{ name?: string; run?: string }> };
+    };
+    const run = action.runs.steps.find((step) => step.name === "Send event")?.run;
+    expect(run).toBeDefined();
+    const result = spawnSync("bash", ["-c", run!], {
+      encoding: "utf8",
+      env: {
+        ALERT_KEY: "test-alert",
+        DETAILS: "",
+        EVENT_TYPE: "RESOLVE",
+        NODE_ENV: "test",
+        PATH: process.env.PATH,
+        PRIORITY: "HIGH",
+        REQUIRE_DELIVERY: "false",
+        SUMMARY: "test resolve",
+      } as NodeJS.ProcessEnv,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("nothing to resolve");
+  });
+
+  test("production monitor ALERT delivery fails when the iLert integration key is unavailable", async () => {
+    const source = await readFile(
+      new URL("../.github/actions/ilert-event/action.yml", import.meta.url),
+      "utf8",
+    );
+    const action = parse(source) as {
+      runs: { steps: Array<{ name?: string; run?: string }> };
+    };
+    const run = action.runs.steps.find((step) => step.name === "Send event")?.run;
+    expect(run).toBeDefined();
+    const result = spawnSync("bash", ["-c", run!], {
+      encoding: "utf8",
+      env: {
+        ALERT_KEY: "test-alert",
+        DETAILS: "",
+        EVENT_TYPE: "ALERT",
+        NODE_ENV: "test",
+        PATH: process.env.PATH,
+        PRIORITY: "HIGH",
+        REQUIRE_DELIVERY: "true",
+        SUMMARY: "test alert",
+      } as NodeJS.ProcessEnv,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("ILERT_INTEGRATION_KEY is unset");
+  });
+
   test("requires notification delivery and preserves optional events", async () => {
     const workflow = parse(
       await readFile(
@@ -219,7 +959,7 @@ describe("production monitor workflow", () => {
       (step) => step.name === "Send ilert event",
     );
     expect(workflow.jobs.notify.if).toBe(
-      "${{ always() && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || inputs.test_alert == true) }}",
+      "${{ always() && needs.deployment-trust.outputs.trusted == 'true' && (needs.smoke.result == 'failure' || needs.release-recovery.result == 'failure' || needs.release-recovery.result == 'cancelled' || (inputs.test_alert == true && needs.smoke.result == 'success' && needs.release-recovery.result == 'success')) && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}",
     );
     expect(notification?.with?.["require-delivery"]).toBe(true);
     for (const [steps, name] of [
@@ -228,7 +968,7 @@ describe("production monitor workflow", () => {
     ] as const) {
       const resolveStep = steps.find((step) => step.name === name);
       expect(resolveStep).toBeDefined();
-      expect(resolveStep?.with?.["require-delivery"]).toBeUndefined();
+      expect(resolveStep?.with?.["require-delivery"]).toBe(true);
     }
 
     const action = parse(
@@ -493,3 +1233,37 @@ exit "${"${stale_found}"}"
     }
   });
 });
+
+function evaluateMonitorExpression(
+  expression: string,
+  context: { needs: unknown; inputs: unknown; github: unknown },
+): unknown {
+  const body = /^\$\{\{\s*(.*?)\s*\}\}$/u.exec(expression)?.[1];
+  if (!body || !/^[a-z0-9_.\s'()&|=!/\-]+$/iu.test(body)) {
+    throw new Error("Unsupported monitor expression");
+  }
+  const javascript = body
+    .replaceAll("needs.deployment-trust", "needs.deploymentTrust")
+    .replaceAll("needs.release-recovery", "needs.releaseRecovery");
+  const evaluate = new Function(
+    "needs", "inputs", "github", "always", `return (${javascript});`,
+  ) as (needs: unknown, inputs: unknown, github: unknown, always: () => boolean) => unknown;
+  return evaluate(context.needs, context.inputs, context.github, () => true);
+}
+
+function resolveFinalizerAttempt(
+  expression: string | undefined,
+  producerAttempt: string,
+  workflowAttempt: string,
+): string {
+  if (expression !== "${{ needs.alert-stream.outputs.producer-attempt || github.run_attempt }}") {
+    throw new Error("finalizer attempt handoff is not recoverable");
+  }
+  return producerAttempt || workflowAttempt;
+}
+
+function boundedStepMinutes(step: { run?: string } | undefined): number {
+  const match = /^timeout (\d+)m\b/u.exec(step?.run ?? "");
+  if (!match) return 0;
+  return Number(match[1]);
+}

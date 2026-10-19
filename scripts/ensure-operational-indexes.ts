@@ -12,6 +12,16 @@ interface OperationalIndex {
   name: string;
   createSql: string;
   definitionFragments: string[];
+  requiredColumns?: {
+    relation: string;
+    columns: string[];
+  };
+  /**
+   * Rebuild a valid index whose definition differs. Only a non-unique index
+   * that enforces no data invariant may opt in; every other index with an
+   * unexpected definition fails closed and stays in place.
+   */
+  repairDefinitionDrift?: boolean;
 }
 
 const OPERATIONAL_INDEXES: OperationalIndex[] = [
@@ -124,25 +134,89 @@ const OPERATIONAL_INDEXES: OperationalIndex[] = [
       "github",
     ],
   },
+  {
+    name: "ilert_alert_events_canary_observation_idx",
+    createSql:
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "ilert_alert_events_canary_observation_idx" ON "ilert_alert_events" USING btree ("alert_key", "event_type", "alert_source_id") WHERE "alert_key" IS NOT NULL',
+    definitionFragments: [
+      "public.ilert_alert_events",
+      "using btree",
+      "(alert_key, event_type, alert_source_id)",
+      "where",
+      "alert_key is not null",
+    ],
+    requiredColumns: {
+      relation: "public.ilert_alert_events",
+      columns: ["alert_key", "event_type", "alert_source_id"],
+    },
+    repairDefinitionDrift: true,
+  },
 ];
+
+/**
+ * Indexes the managed release command builds itself. The managed path does
+ * not run the full reconciliation, so it creates only indexes introduced
+ * together with a reviewed migration and leaves every other index untouched.
+ */
+export const MANAGED_RELEASE_OPERATIONAL_INDEXES: readonly string[] = [
+  "ilert_alert_events_canary_observation_idx",
+];
+const MANAGED_RELEASE_LOCK_WAIT_MS = 60_000;
+const MANAGED_RELEASE_STATEMENT_TIMEOUT_MS = 120_000;
+
+export interface EnsureOperationalIndexesOptions {
+  /**
+   * Reconcile only MANAGED_RELEASE_OPERATIONAL_INDEXES under bounded lock and
+   * statement waits. The release step row describes the full reconciliation
+   * and is not written.
+   */
+  managedRelease?: boolean;
+}
 
 interface IndexState {
   indisvalid: boolean;
   indisready: boolean;
+  enforcesInvariant: boolean;
   definition: string;
 }
 
-export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
+export async function ensureOperationalIndexes(
+  pool: Pool,
+  options: EnsureOperationalIndexesOptions = {},
+): Promise<string[]> {
+  const managedRelease = options.managedRelease === true;
+  const indexes = managedRelease
+    ? OPERATIONAL_INDEXES.filter((index) =>
+      MANAGED_RELEASE_OPERATIONAL_INDEXES.includes(index.name)
+    )
+    : OPERATIONAL_INDEXES;
+  if (managedRelease && indexes.length !== MANAGED_RELEASE_OPERATIONAL_INDEXES.length) {
+    throw new Error("managed release operational indexes are not all defined");
+  }
   const client = await pool.connect();
   let locked = false;
+  let statementTimeoutSet = false;
   try {
-    await acquireReleaseLock(client);
+    await acquireReleaseLock(
+      client,
+      managedRelease ? MANAGED_RELEASE_LOCK_WAIT_MS : RELEASE_LOCK_WAIT_MS,
+    );
     locked = true;
-    await ensureReleaseStepsTable(client);
+    if (managedRelease) {
+      // A concurrent build waits for older transactions; the bound keeps a
+      // blocked build from holding the release command. A cancelled build
+      // leaves an invalid index that the next run drops and rebuilds.
+      await client.query(
+        `SET statement_timeout = ${MANAGED_RELEASE_STATEMENT_TIMEOUT_MS}`,
+      );
+      statementTimeoutSet = true;
+    }
+    await assertOperationalIndexDependencies(client, indexes);
+    if (!managedRelease) await ensureReleaseStepsTable(client);
     const completed: string[] = [];
-    for (const index of OPERATIONAL_INDEXES) {
+    for (const index of indexes) {
       let state = await loadIndexState(client, index.name);
-      if (state && (!state.indisvalid || !state.indisready)) {
+      if (state && shouldRebuildIndex(index, state)) {
         await client.query(
           `DROP INDEX CONCURRENTLY IF EXISTS "public"."${index.name}"`,
         );
@@ -156,6 +230,7 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
       completed.push(index.name);
     }
 
+    if (managedRelease) return completed;
     await client.query(
       `INSERT INTO release_steps (name, completed_at, details)
        VALUES ($1, now(), $2::jsonb)
@@ -166,6 +241,9 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
     );
     return completed;
   } finally {
+    if (statementTimeoutSet) {
+      await client.query("RESET statement_timeout").catch(() => undefined);
+    }
     if (locked) {
       await client
         .query("SELECT pg_advisory_unlock($1, $2)", [
@@ -175,6 +253,34 @@ export async function ensureOperationalIndexes(pool: Pool): Promise<string[]> {
         .catch(() => undefined);
     }
     client.release();
+  }
+}
+
+async function assertOperationalIndexDependencies(
+  client: PoolClient,
+  indexes: readonly OperationalIndex[],
+): Promise<void> {
+  for (const index of indexes) {
+    const required = index.requiredColumns;
+    if (!required) continue;
+    const result = await client.query<{ attname: string }>(
+      `SELECT attribute.attname
+         FROM pg_attribute AS attribute
+        WHERE attribute.attrelid = to_regclass($1)
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
+          AND attribute.attname = ANY($2::text[])`,
+      [required.relation, required.columns],
+    );
+    const present = new Set(result.rows.map((row) => row.attname));
+    const missing = required.columns.filter((column) => !present.has(column));
+    if (missing.length > 0) {
+      throw new Error(
+        `operational index ${index.name} requires migrated columns ${required.relation}.${missing.join(
+          `, ${required.relation}.`,
+        )}`,
+      );
+    }
   }
 }
 
@@ -188,8 +294,11 @@ async function ensureReleaseStepsTable(client: PoolClient): Promise<void> {
   );
 }
 
-async function acquireReleaseLock(client: PoolClient): Promise<void> {
-  const deadline = Date.now() + RELEASE_LOCK_WAIT_MS;
+async function acquireReleaseLock(
+  client: PoolClient,
+  waitMs: number,
+): Promise<void> {
+  const deadline = Date.now() + waitMs;
   while (true) {
     const result = await client.query<{ acquired: boolean }>(
       "SELECT pg_try_advisory_lock($1, $2) AS acquired",
@@ -212,6 +321,13 @@ async function loadIndexState(
   const result = await client.query<IndexState>(
     `SELECT pg_index.indisvalid,
             pg_index.indisready,
+            (pg_index.indisunique
+              OR pg_index.indisprimary
+              OR pg_index.indisexclusion
+              OR EXISTS (
+                SELECT 1 FROM pg_constraint
+                 WHERE pg_constraint.conindid = pg_index.indexrelid
+              )) AS "enforcesInvariant",
             pg_get_indexdef(pg_index.indexrelid) AS definition
        FROM pg_index
       WHERE pg_index.indexrelid = to_regclass($1)`,
@@ -227,7 +343,33 @@ function assertExpectedIndex(
   if (!state || !state.indisvalid || !state.indisready) {
     throw new Error(`operational index ${index.name} is not valid and ready`);
   }
-  const normalized = state.definition
+  if (!hasExpectedDefinition(index, state.definition)) {
+    throw new Error(
+      `operational index ${index.name} has an unexpected definition`,
+    );
+  }
+}
+
+/**
+ * An interrupted concurrent build leaves an invalid index that is always
+ * rebuilt. A valid index with an unexpected definition is rebuilt only for an
+ * opted-in index that enforces no invariant; otherwise it is left in place
+ * and the definition check fails the run.
+ */
+function shouldRebuildIndex(
+  index: OperationalIndex,
+  state: IndexState,
+): boolean {
+  if (!state.indisvalid || !state.indisready) return true;
+  if (hasExpectedDefinition(index, state.definition)) return false;
+  return index.repairDefinitionDrift === true && !state.enforcesInvariant;
+}
+
+function hasExpectedDefinition(
+  index: OperationalIndex,
+  definition: string,
+): boolean {
+  const normalized = definition
     .toLowerCase()
     .replace(/["()]/gu, "")
     .replace(/\s+/gu, " ");
@@ -236,17 +378,20 @@ function assertExpectedIndex(
       .toLowerCase()
       .replace(/["()]/gu, "")
       .replace(/\s+/gu, " ");
-    if (!normalized.includes(expected)) {
-      throw new Error(
-        `operational index ${index.name} has an unexpected definition`,
-      );
-    }
+    if (!normalized.includes(expected)) return false;
   }
+  return true;
 }
 
 async function main(): Promise<void> {
   try {
-    const indexes = await ensureOperationalIndexes(getPool());
+    const args = process.argv.slice(2);
+    if (args.some((arg) => arg !== "--managed-release")) {
+      throw new Error("usage: ensure-operational-indexes.ts [--managed-release]");
+    }
+    const indexes = await ensureOperationalIndexes(getPool(), {
+      managedRelease: args.includes("--managed-release"),
+    });
     console.log(`operational indexes ready: ${indexes.join(", ")}`);
   } finally {
     await closeDb();

@@ -471,6 +471,33 @@ const REVIEWED_FEEDBACK_CONTROL_MIGRATION = {
   hash: "ae760e265f2a6f6fbaf1bad71c6e3552bb25f819a285f8e9f02db2f7a110d8d8",
 } as const;
 
+const REVIEWED_ILERT_CANARY_ALERT_KEY_MIGRATION = {
+  folderMillis: 1791572108139,
+  hash: "5c86858f27d8b7311bbe863468b421648dbe8a76853680f93a56425acdadb9c4",
+} as const;
+
+/** Apply the alert key column only after the reviewed feedback control schema. */
+export async function applyReviewedIlertCanaryAlertKeyMigration(
+  pool: Pool,
+  sourceReleaseSha: string,
+  releaseSha: string,
+  protocol: string,
+  migrations: readonly ManagedReleaseMigrationIdentity[],
+  source: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  checkedMigrationIdentities(migrations);
+  const predecessor = migrations.filter((migration) =>
+    migration.folderMillis < REVIEWED_ILERT_CANARY_ALERT_KEY_MIGRATION.folderMillis
+  ).sort((left, right) => right.folderMillis - left.folderMillis)[0];
+  if (predecessor?.folderMillis !== REVIEWED_FEEDBACK_CONTROL_MIGRATION.folderMillis ||
+      predecessor.hash !== REVIEWED_FEEDBACK_CONTROL_MIGRATION.hash) {
+    throw new Error("alert key migration requires the reviewed feedback control predecessor");
+  }
+  return applyExactReviewedMigration(pool, sourceReleaseSha, releaseSha, protocol,
+    migrations, source, REVIEWED_ILERT_CANARY_ALERT_KEY_MIGRATION, options);
+}
+
 /** Apply the feedback control only after the reviewed monitor delivery schema. */
 export async function applyReviewedFeedbackControlMigration(
   pool: Pool,

@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { Client, Pool } from "pg";
 
+import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
 import { checkedInReleaseMigrations, runReleaseMigrations } from "../scripts/run-release-migrations";
 import {
   COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS,
@@ -12,6 +13,7 @@ import {
   PRIVATE_REVIEW_AUTHOR_CAPABILITY,
   RELEASE_V1_JOBS_CAPABILITY,
   applyReviewedFeedbackControlMigration,
+  applyReviewedIlertCanaryAlertKeyMigration,
   applyReviewedMonitoringDeliveryMigration,
   compatibleManagedReleaseProtocolCapability,
   hostedInferenceCapability,
@@ -24,9 +26,29 @@ import {
 const TEST_URL = process.env.POSTIL_TEST_DATABASE_URL;
 const describeDatabase = TEST_URL ? describe : describe.skip;
 
+/** The alert key check as PostgreSQL records it, or no rows before migration 0064. */
+async function alertKeyCheck(pool: Pool): Promise<Array<{ validated: boolean; definition: string }>> {
+  return (await pool.query<{ validated: boolean; definition: string }>(
+    `SELECT convalidated AS validated, pg_get_constraintdef(oid) AS definition
+       FROM pg_constraint
+      WHERE conrelid = 'public.ilert_alert_events'::regclass
+        AND conname = 'ilert_alert_events_alert_key_check'`,
+  )).rows;
+}
+
+const UNVALIDATED_ALERT_KEY_CHECK = [{
+  validated: false,
+  definition: expect.stringMatching(/^CHECK \(.*alert_key.*\) NOT VALID$/),
+}];
+
+/** The checked-in history that ends at reviewed feedback control migration 0063. */
+function migrationsThroughFeedbackControl() {
+  return checkedInReleaseMigrations().slice(0, -1);
+}
+
 describe("compatible managed release identity", () => {
   test("rejects malformed full migration lists before opening any database transaction", async () => {
-    const migrations = checkedInReleaseMigrations();
+    const migrations = migrationsThroughFeedbackControl();
     const latest = migrations.at(-1)!;
     const source = await readFile(join(import.meta.dir, "..", "drizzle", "0063_review_feedback_control.sql"), "utf8");
     let connected = false;
@@ -65,14 +87,15 @@ describe("compatible managed release identity", () => {
   });
 });
 
-describeDatabase("managed release upgrade from monitoring migration 0061", () => {
+describeDatabase("managed release upgrade from feedback migration 0061", () => {
   const databaseName = `postil_release_upgrade_${process.pid}_${Date.now()}`;
   const cleanDatabaseName = `${databaseName}_clean`;
   const sourceRelease = COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS[0]!;
   const targetRelease = "a".repeat(40);
   const migrations = checkedInReleaseMigrations();
-  const monitoring = migrations.at(-2)!;
-  const feedback = migrations.at(-1)!;
+  const monitoring = migrations.at(-3)!;
+  const feedback = migrations.at(-2)!;
+  const alertKey = migrations.at(-1)!;
   let admin: Client;
   let pool: Pool;
   let cleanPool: Pool;
@@ -88,7 +111,7 @@ describeDatabase("managed release upgrade from monitoring migration 0061", () =>
     const migration = new Client({ connectionString: url.toString() });
     await migration.connect();
     for (const file of (await readdir(join(import.meta.dir, "..", "drizzle")))
-      .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !/^006[23]_/.test(name))
+      .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !/^006[234]_/.test(name))
       .sort()) {
       const source = await readFile(join(import.meta.dir, "..", "drizzle", file), "utf8");
       for (const statement of source.split("--> statement-breakpoint")) {
@@ -99,7 +122,7 @@ describeDatabase("managed release upgrade from monitoring migration 0061", () =>
     await migration.query(`CREATE TABLE drizzle.__drizzle_migrations (
       id serial PRIMARY KEY, hash text NOT NULL, created_at bigint
     )`);
-    for (const identity of migrations.slice(0, -2)) {
+    for (const identity of migrations.slice(0, -3)) {
       await migration.query(
         "INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)",
         [identity.hash, identity.folderMillis],
@@ -144,11 +167,24 @@ describeDatabase("managed release upgrade from monitoring migration 0061", () =>
     await admin?.end();
   }, 30_000);
 
-  test("rolls back a failed 0062, then applies 0062 and 0063 once in order", async () => {
+  test("rolls back each failed step, then applies 0062, 0063, and 0064 once in order", async () => {
     const commands: string[][] = [];
+    // The managed index command runs in process against the upgraded database.
     const release = () => runReleaseMigrations(environment,
-      (command) => { commands.push([...command]); return { exited: Promise.resolve(0) }; },
+      (command) => {
+        commands.push([...command]);
+        return {
+          exited: command.includes("operational:indexes")
+            ? ensureOperationalIndexes(pool, { managedRelease: true }).then(() => 0, () => 1)
+            : Promise.resolve(0),
+        };
+      },
       undefined, async () => true);
+    const canaryIndex = async () => (await pool.query<{ definition: string | null; valid: boolean | null }>(
+      `SELECT pg_get_indexdef(indexrelid) AS definition, indisvalid AS valid
+         FROM pg_index
+        WHERE indexrelid = to_regclass('public.ilert_alert_events_canary_observation_idx')`,
+    )).rows;
     const journal = async () => (await pool.query<{ created_at: string; hash: string }>(
       "SELECT created_at::text, hash FROM drizzle.__drizzle_migrations WHERE created_at >= $1 ORDER BY created_at",
       [monitoring.folderMillis],
@@ -156,12 +192,12 @@ describeDatabase("managed release upgrade from monitoring migration 0061", () =>
 
     const feedbackSource = await readFile(join(import.meta.dir, "..", "drizzle", "0063_review_feedback_control.sql"), "utf8");
     await expect(applyReviewedFeedbackControlMigration(pool, sourceRelease, targetRelease,
-      COMPATIBLE_MANAGED_RELEASE_PROTOCOL, migrations, feedbackSource))
+      COMPATIBLE_MANAGED_RELEASE_PROTOCOL, migrations.slice(0, -1), feedbackSource))
       .rejects.toThrow("pending migrations");
     expect(await journal()).toEqual([]);
     const monitoringSource = await readFile(join(import.meta.dir, "..", "drizzle", "0062_monitor_delivery_receipt.sql"), "utf8");
     await expect(applyReviewedMonitoringDeliveryMigration(pool, sourceRelease, targetRelease,
-      COMPATIBLE_MANAGED_RELEASE_PROTOCOL, migrations.slice(0, -1), monitoringSource + "\n"))
+      COMPATIBLE_MANAGED_RELEASE_PROTOCOL, migrations.slice(0, -2), monitoringSource + "\n"))
       .rejects.toThrow("reviewed identity");
     expect(await journal()).toEqual([]);
 
@@ -188,11 +224,39 @@ describeDatabase("managed release upgrade from monitoring migration 0061", () =>
     expect(commands).toEqual([]);
     await pool.query("ALTER TABLE drizzle.__drizzle_migrations DISABLE TRIGGER reject_feedback_journal_insert");
 
-    await release();
+    const alertKeyColumn = async () => (await pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_name='ilert_alert_events' AND column_name='alert_key'",
+    )).rows;
+    await pool.query(`CREATE FUNCTION reject_alert_key_journal_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.created_at = ${alertKey.folderMillis} THEN RAISE EXCEPTION 'injected 0064 journal failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER reject_alert_key_journal_insert BEFORE INSERT ON drizzle.__drizzle_migrations
+      FOR EACH ROW EXECUTE FUNCTION reject_alert_key_journal_insert()`);
+    await expect(release()).rejects.toThrow("injected 0064 journal failure");
     expect(await journal()).toEqual([
       { created_at: String(monitoring.folderMillis), hash: monitoring.hash },
       { created_at: String(feedback.folderMillis), hash: feedback.hash },
     ]);
+    expect(await alertKeyColumn()).toEqual([]);
+    expect(await alertKeyCheck(pool)).toEqual([]);
+    expect(await canaryIndex()).toEqual([]);
+    expect(commands).toEqual([]);
+    await pool.query("ALTER TABLE drizzle.__drizzle_migrations DISABLE TRIGGER reject_alert_key_journal_insert");
+
+    await release();
+    expect(await journal()).toEqual([
+      { created_at: String(monitoring.folderMillis), hash: monitoring.hash },
+      { created_at: String(feedback.folderMillis), hash: feedback.hash },
+      { created_at: String(alertKey.folderMillis), hash: alertKey.hash },
+    ]);
+    expect(await alertKeyColumn()).toEqual([{ column_name: "alert_key" }]);
+    expect(await alertKeyCheck(pool)).toEqual(UNVALIDATED_ALERT_KEY_CHECK);
+    const builtIndex = await canaryIndex();
+    expect(builtIndex).toEqual([{
+      definition: expect.stringContaining(
+        "USING btree (alert_key, event_type, alert_source_id) WHERE (alert_key IS NOT NULL)",
+      ),
+      valid: true,
+    }]);
     expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows)
       .toEqual([{ id: 1, mode: "disabled" }]);
     expect((await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name='private_monitor_incidents' AND column_name='last_delivery_receipt'")).rows)
@@ -205,10 +269,14 @@ describeDatabase("managed release upgrade from monitoring migration 0061", () =>
       expect(inserted.rows).toEqual([{ status: "queued" }]);
     });
     await release();
-    expect(await journal()).toHaveLength(2);
+    expect(await journal()).toHaveLength(3);
+    expect(await alertKeyCheck(pool)).toEqual(UNVALIDATED_ALERT_KEY_CHECK);
+    expect(await canaryIndex()).toEqual(builtIndex);
     expect(commands).toEqual([
       ["bun", "run", "hosted:verify-provider"],
+      ["bun", "run", "operational:indexes", "--managed-release"],
       ["bun", "run", "hosted:verify-provider"],
+      ["bun", "run", "operational:indexes", "--managed-release"],
     ]);
   }, 30_000);
 
@@ -223,10 +291,13 @@ describeDatabase("managed release upgrade from monitoring migration 0061", () =>
     const expected = [
       { created_at: String(monitoring.folderMillis), hash: monitoring.hash },
       { created_at: String(feedback.folderMillis), hash: feedback.hash },
+      { created_at: String(alertKey.folderMillis), hash: alertKey.hash },
     ];
     expect(await journal()).toEqual(expected);
+    expect(await alertKeyCheck(cleanPool)).toEqual(UNVALIDATED_ALERT_KEY_CHECK);
     await release();
     expect(await journal()).toEqual(expected);
+    expect(await alertKeyCheck(cleanPool)).toEqual(UNVALIDATED_ALERT_KEY_CHECK);
     expect((await cleanPool.query("SELECT id, mode FROM review_feedback_control")).rows)
       .toEqual([{ id: 1, mode: "disabled" }]);
   }, 30_000);
@@ -251,7 +322,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       const migration = new Client({ connectionString: url.toString() });
       await migration.connect();
       for (const file of (await readdir(join(import.meta.dir, "..", "drizzle")))
-        .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !name.startsWith("0063_"))
+        .filter((name) => /^\d{4}_.*\.sql$/.test(name) && !name.startsWith("0064_"))
         .sort()) {
         const source = await readFile(
           join(import.meta.dir, "..", "drizzle", file),
@@ -301,16 +372,17 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
     }, 30_000);
 
     test("applies only the reviewed additive migration atomically without retiring the source", async () => {
-      const source = await readFile(join(import.meta.dir, "..", "drizzle", "0063_review_feedback_control.sql"), "utf8");
+      const source = await readFile(join(import.meta.dir, "..", "drizzle", "0064_ilert_canary_alert_key.sql"), "utf8");
       const latest = migrations.at(-1)!;
       const previous = migrations.at(-2)!;
       const capabilities = async () => (await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows;
       const before = await capabilities();
       const apply = (dryRun = false, identities = migrations, sql = source) =>
-        applyReviewedFeedbackControlMigration(pool, sourceRelease, targetRelease,
+        applyReviewedIlertCanaryAlertKeyMigration(pool, sourceRelease, targetRelease,
           COMPATIBLE_MANAGED_RELEASE_PROTOCOL, identities, sql, { dryRun });
       const unchanged = async () => {
-        expect((await pool.query("SELECT to_regclass('public.review_feedback_control') AS relation")).rows[0].relation).toBeNull();
+        expect((await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name='ilert_alert_events' AND column_name='alert_key'")).rows).toEqual([]);
+        expect(await alertKeyCheck(pool)).toEqual([]);
         expect((await pool.query("SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations WHERE created_at=$1", [latest.folderMillis])).rows[0].count).toBe(0);
         expect(await capabilities()).toEqual(before);
       };
@@ -371,9 +443,30 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
           POSTIL_RELEASE_PROTOCOL: COMPATIBLE_MANAGED_RELEASE_PROTOCOL },
           (command) => { commands.push([...command]); return { exited: Promise.resolve(0) }; },
           undefined, async () => true);
-        expect(commands).toEqual([["bun", "run", "hosted:verify-provider"]]);
+        expect(commands).toEqual([
+          ["bun", "run", "hosted:verify-provider"],
+          ["bun", "run", "operational:indexes", "--managed-release"],
+        ]);
+        expect(await alertKeyCheck(pool)).toEqual(UNVALIDATED_ALERT_KEY_CHECK);
         expect(await apply()).toBe(false);
         expect(await apply(true)).toBe(false);
+        expect(await alertKeyCheck(pool)).toEqual(UNVALIDATED_ALERT_KEY_CHECK);
+        // The deployed release keeps writing events without the new column,
+        // while a new writer cannot store an out-of-range key.
+        const event = (alertKey?: string) => pool.query(
+          `INSERT INTO ilert_alert_events
+             (event_id, alert_id, event_type, status, priority, summary, details,
+              alert_source_id, alert_source_name, report_time, occurred_at,
+              payload_sha256${alertKey === undefined ? "" : ", alert_key"})
+           VALUES (gen_random_uuid(), '20000001', 'alert-created', 'PENDING', 'HIGH', 'Fixture alert',
+                   '', 2269078, 'Postil production', now(), now(), repeat('a', 64)${alertKey === undefined ? "" : ", $1"})
+           RETURNING alert_key`,
+          alertKey === undefined ? [] : [alertKey],
+        );
+        expect((await event()).rows).toEqual([{ alert_key: null }]);
+        await expect(event("")).rejects.toMatchObject({
+          code: "23514", constraint: "ilert_alert_events_alert_key_check",
+        });
         expect(await capabilities()).toEqual(before);
         expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows).toEqual([{ id: 1, mode: "disabled" }]);
         expect((await pool.query("SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at=$1", [latest.folderMillis])).rows).toEqual([{ hash: latest.hash }]);

@@ -33,9 +33,9 @@ describeDb("GitHub approval binding migration", () => {
 
     const migrationsDirectory = join(import.meta.dir, "..", "drizzle");
     const migrations = (await readdir(migrationsDirectory))
-      .filter((file) => file.endsWith(".sql") && file < "0037_")
+      .filter((file) => file.endsWith(".sql"))
       .sort();
-    for (const migration of migrations) {
+    for (const migration of migrations.filter((file) => file < "0037_")) {
       await applyMigration(client, join(migrationsDirectory, migration));
     }
 
@@ -86,6 +86,11 @@ describeDb("GitHub approval binding migration", () => {
     )).rows[0]!.id;
 
     await applyMigration(client, join(migrationsDirectory, "0037_github_approval_bindings.sql"));
+    for (const migration of migrations.filter(
+      (file) => file > "0037_github_approval_bindings.sql",
+    )) {
+      await applyMigration(client, join(migrationsDirectory, migration));
+    }
     const operationalPool = new Pool({ connectionString: isolatedDatabaseUrl, max: 1 });
     try {
       await ensureOperationalIndexes(operationalPool);
