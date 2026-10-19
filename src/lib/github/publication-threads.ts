@@ -417,20 +417,13 @@ export async function resolveGitHubReviewThreads(
       if (!observation.githubThreadId) {
         throw new Error("GitHub review thread resolution omitted its thread identity");
       }
-      if (
-        observation.viewerCanResolve === false &&
-        observation.state === "outdated"
-      ) {
+      if (observation.viewerCanResolve === false) {
         // The finding is already terminal in Postil. Preserve the forge's
-        // outdated state when this viewer cannot resolve its old thread.
+        // actual state when this viewer cannot resolve its old thread.
         continue;
       }
       if (observation.viewerCanResolve !== true) {
-        throw new Error(
-          observation.viewerCanResolve === false
-            ? "GitHub cannot resolve an active Postil review thread"
-            : "GitHub review thread resolution capability is unknown",
-        );
+        throw new Error("GitHub review thread resolution capability is unknown");
       }
       threadIds.add(observation.githubThreadId);
     }
