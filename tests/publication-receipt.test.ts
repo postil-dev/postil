@@ -683,20 +683,52 @@ describe("GitHub publication thread observations", () => {
     },
   );
 
-  test("fails closed when GitHub cannot resolve a still-active terminal thread", async () => {
-    await expect(
-      resolveGitHubReviewThreads(
-        "token",
-        [
-          {
-            githubCommentId: "16",
-            githubThreadId: "thread-16",
-            state: "inline",
-            viewerCanResolve: false,
-          },
-        ],
-        ["16"],
-      ),
-    ).rejects.toThrow("cannot resolve an active Postil review thread");
+  test("preserves unresolved terminal threads when GitHub explicitly refuses resolution", async () => {
+    let mutations = 0;
+    globalThis.fetch = (async () => {
+      mutations += 1;
+      throw new Error("unexpected thread mutation");
+    }) as unknown as typeof fetch;
+    const observations = ["16", "17"].map((id) => ({
+      githubCommentId: id,
+      githubThreadId: `thread-${id}`,
+      state: "inline" as const,
+      viewerCanResolve: false,
+    }));
+    expect(await resolveGitHubReviewThreads("token", observations, ["16", "17"]))
+      .toEqual(observations);
+    expect(mutations).toBe(0);
   });
+
+  test.each([false, true, undefined])(
+    "requires terminal thread identity with capability %s",
+    async (viewerCanResolve) => {
+      await expect(resolveGitHubReviewThreads("token", [{
+        githubCommentId: "18", state: "inline", viewerCanResolve,
+      }], ["18"])).rejects.toThrow("omitted its thread identity");
+    },
+  );
+
+  test.each(["http", "graphql", "network", "wrong-id", "unresolved"])(
+    "preserves true-capability resolution failure: %s",
+    async (failure) => {
+      globalThis.fetch = (async () => {
+        if (failure === "network") throw new Error("network unavailable");
+        if (failure === "http") return new Response(null, { status: 403 });
+        return Response.json(failure === "graphql"
+          ? { errors: [{ message: "mutation refused" }] }
+          : { data: { resolveReviewThread: { thread: {
+            id: failure === "wrong-id" ? "other-thread" : "thread-18",
+            isResolved: failure !== "unresolved",
+          } } } });
+      }) as unknown as typeof fetch;
+      await expect(resolveGitHubReviewThreads("token", [{
+        githubCommentId: "18", githubThreadId: "thread-18",
+        state: "inline", viewerCanResolve: true,
+      }], ["18"])).rejects.toThrow(failure === "http" ? "HTTP 403"
+        : failure === "graphql" ? "GraphQL errors"
+        : failure === "network" ? "network unavailable"
+        : "did not confirm review thread resolution");
+    },
+  );
 });

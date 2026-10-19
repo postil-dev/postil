@@ -7,7 +7,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
 import * as schema from "@/lib/db/schema";
-import type { Envelope, Finding } from "@/lib/envelope";
+import { gateCheckConclusionForEnvelope, type Envelope, type Finding } from "@/lib/envelope";
 import {
   getOrgReviewRows,
   shippedPublicationStateSql,
@@ -513,14 +513,20 @@ describeDb("publication receipt migration and lifecycle", () => {
     },
   );
 
-  test.each([
+  test.each(([
     { state: "outdated", viewerCanResolve: false, completes: true, prNumber: 171 },
-    { state: "inline", viewerCanResolve: false, completes: false, prNumber: 172 },
+    { state: "inline", viewerCanResolve: false, completes: true, prNumber: 172 },
     { state: "outdated", viewerCanResolve: undefined, completes: false, prNumber: 173 },
     { state: "inline", viewerCanResolve: undefined, completes: false, prNumber: 174 },
-  ] as const)(
-    "worker recovery with real resolver preserves $state thread with capability $viewerCanResolve",
-    async ({ state, viewerCanResolve, completes, prNumber }) => {
+    { state: "inline", viewerCanResolve: false, completes: true, prNumber: 175, hasBlocker: true },
+    { state: "inline", viewerCanResolve: false, completes: true, prNumber: 176, gateEnabled: false },
+    { state: "inline", viewerCanResolve: false, completes: true, prNumber: 177, disposition: "suppressed" },
+  ] as const).map((input) => ({
+    gateEnabled: true, hasBlocker: false, disposition: "resolved" as "resolved" | "suppressed",
+    ...input,
+  } as const)))(
+    "worker recovery preserves $state thread with capability $viewerCanResolve, disposition $disposition, blocker $hasBlocker, gate $gateEnabled",
+    async ({ state, viewerCanResolve, completes, prNumber, gateEnabled, hasBlocker, disposition }) => {
       const findingId = `terminal-finding-${prNumber}`;
       const commentId = String(9200 + prNumber);
       const priorId = await createRunningReview("b".repeat(40), null, prNumber, false);
@@ -545,8 +551,15 @@ describeDb("publication receipt migration and lifecycle", () => {
       });
       const reviewEnvelope = envelope({
         head: "c".repeat(40),
-        resolved: [finding(findingId)],
+        findings: hasBlocker ? [{ ...finding("active-error"), severity: "error" }] : [],
+        resolved: disposition === "resolved" ? [finding(findingId)] : [],
+        suppressed: disposition === "suppressed" ? [finding(findingId)] : [],
       });
+      reviewEnvelope.gate.failing = hasBlocker;
+      if (hasBlocker) {
+        reviewEnvelope.counts.warn = 0;
+        reviewEnvelope.counts.error = 1;
+      }
       const review = await pool.query<{ id: string }>(
         `INSERT INTO reviews
           (repository_id, pr_number, head_sha, base_sha, status,
@@ -569,17 +582,30 @@ describeDb("publication receipt migration and lifecycle", () => {
       }).returning({ id: schema.jobs.id });
       await stageReviewCompletionCandidate(db, {
         reviewId, reviewJobId: recoveryJob!.id,
-        envelope: reviewEnvelope, configFiles: [], silent: true,
-        gateFailing: false,
+        envelope: reviewEnvelope, configFiles: [], silent: reviewEnvelope.silent,
+        gateFailing: reviewEnvelope.gate.failing,
         publicationReceipt: {
           version: 1,
           receiptId: `github-review-v1:terminal-${prNumber}`,
           findings: [{
-            findingId, stableIdentity: true, initialOutcome: "resolved",
+            findingId, stableIdentity: true,
+            initialOutcome: disposition,
             inlineRejected: false,
-          }],
+          }, ...(hasBlocker ? [{
+            findingId: "active-error", stableIdentity: true,
+            initialOutcome: "summaryOnly" as const, inlineRejected: false,
+          }] : [])],
         },
       }, orgId);
+      await pool.query(
+        "UPDATE finding_publications SET lifecycle_observed_at='2000-01-01T00:00:00Z' WHERE review_id=$1",
+        [priorId],
+      );
+      const initialPublication = await pool.query(
+        "SELECT lifecycle_observed_at::text AS observed_at FROM finding_publications WHERE review_id=$1 AND finding_id=$2",
+        [reviewId, findingId],
+      );
+      expect(initialPublication.rows[0]?.observed_at).toBeString();
 
       const previousResolver = recoveryThreadResolver;
       const previousObservations = recoveryThreadObservations;
@@ -623,15 +649,41 @@ describeDb("publication receipt migration and lifecycle", () => {
         expect(terminal.rows[0]).toEqual({
           status: "completed", reconciled: completes, sync_jobs: completes ? 1 : 0,
         });
+        if (completes) {
+          const stored = await pool.query<{ envelope: Envelope }>(
+            "SELECT envelope FROM reviews WHERE id=$1", [reviewId],
+          );
+          expect(stored.rows[0]!.envelope).toEqual(reviewEnvelope);
+          expect(gateCheckConclusionForEnvelope(stored.rows[0]!.envelope, new Set(), gateEnabled))
+            .toBe(hasBlocker ? "failure" : gateEnabled ? "success" : "neutral");
+          const accounting = () => pool.query(
+            `SELECT (SELECT count(*)::int FROM usage_events WHERE review_id=$1) AS usage,
+                    (SELECT count(*)::int FROM hosted_usage_reservations WHERE review_id=$1) AS reservations,
+                    (SELECT count(*)::int FROM review_publication_receipts WHERE review_id=$1) AS receipts`,
+            [reviewId],
+          );
+          const before = (await accounting()).rows;
+          await expect(resumeStagedReviewCompletion({
+            db, pool, payload: recoveryPayload,
+            installation: { id: installationId, orgId, orgSlug: "publication" },
+            repository: { id: repositoryId, githubRepoId: 1003, fullName: "publication/repo" },
+          })).resolves.toBe(true);
+          expect((await accounting()).rows).toEqual(before);
+        }
         const publications = await pool.query(
-          `SELECT review_id::text, current_state FROM finding_publications
-            WHERE review_id=ANY($1::bigint[]) ORDER BY finding_publications.review_id`,
-          [[priorId, reviewId]],
+          `SELECT review_id::text, current_state,
+                  lifecycle_observed_at > timestamp '2000-01-01T00:00:00Z' AS observed FROM finding_publications
+            WHERE review_id=ANY($1::bigint[]) AND finding_id=$2 ORDER BY finding_publications.review_id`,
+          [[priorId, reviewId], findingId],
         );
         expect(publications.rows).toEqual([
-          { review_id: String(priorId), current_state: completes ? "outdated" : "resolved" },
-          { review_id: String(reviewId), current_state: "resolved" },
+          { review_id: String(priorId), current_state: completes && state === "outdated" ? "outdated" : disposition, observed: completes },
+          { review_id: String(reviewId), current_state: disposition, observed: true },
         ]);
+        expect((await pool.query(
+          "SELECT lifecycle_observed_at::text AS observed_at FROM finding_publications WHERE review_id=$1 AND finding_id=$2",
+          [reviewId, findingId],
+        )).rows).toEqual(initialPublication.rows);
         expect(await getPullRequestPublicationThreadPlan(db, repositoryId, prNumber))
           .toEqual({ commentIds: [commentId], resolveCommentIds: [commentId] });
       } finally {
