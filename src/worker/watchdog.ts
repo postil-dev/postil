@@ -1,5 +1,8 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 
+import {
+  appendPreparedReceiptBatch, prepareClosedJobReceipts, prepareReviewObservation, transactionReceiptClient,
+} from "@/lib/job-attempt-receipts";
 import { getDb, getPool, schema, type Database } from "@/lib/db";
 import { scheduleCustomerNotificationEmailJobs } from "@/lib/customer-notification-email";
 import { pruneExpiredCustomerNotifications } from "@/lib/customer-notifications";
@@ -116,6 +119,7 @@ export async function failStuckReview(
       )
       .returning({ id: schema.reviews.id });
     if (rows.length === 0) return false;
+    const receiptEvents = await prepareReviewObservation(transactionReceiptClient(tx), review.id, "failed");
     await tx.insert(schema.jobs).values({
       kind: "check-run-cleanup",
       payload: {
@@ -135,6 +139,7 @@ export async function failStuckReview(
       },
       maxAttempts: 5,
     });
+    await appendPreparedReceiptBatch(transactionReceiptClient(tx), receiptEvents);
     return true;
   });
 }
@@ -249,7 +254,12 @@ export async function watchdogPass(
   // Full feedback reviews carry publication recovery and coalesced snapshots.
   // Feedback polling jobs use the generic attempts budget below.
   const pool = getPool();
-  await pool.query(
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query(`SELECT id::text FROM jobs
+      WHERE status = 'running' AND locked_at < $1 ORDER BY id FOR UPDATE`, [cutoff]);
+    await client.query(
     `WITH updated AS (
        UPDATE jobs
        SET status = CASE
@@ -307,7 +317,14 @@ export async function watchdogPass(
      FROM updated
      WHERE kind = 'respond' AND status = 'failed'`,
     [cutoff, COALESCED_REVIEW_PAYLOAD_KEY, FEEDBACK_REVIEW_JOB_KIND],
-  );
+    );
+    const events = await prepareClosedJobReceipts(client, locked.rows.map((row) => row.id));
+    await appendPreparedReceiptBatch(client, events);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
 
   const scheduledFeedbackReconciliations = await scheduleFindingFeedbackReconciliationJobs(
     pool,

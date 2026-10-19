@@ -317,6 +317,7 @@ export async function runClaimedJob(
         "worker shutdown interrupted the claim",
         ["review", FEEDBACK_REVIEW_JOB_KIND],
         [job.id],
+        [job],
       );
       console.warn(
         `[${label}] job ${job.id} requeued after worker shutdown (${requeued})`,

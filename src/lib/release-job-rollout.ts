@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 
+import {
+  appendPreparedReceiptBatch,
+  claimEvent,
+  lockReceiptClaim,
+  type ReviewClaimLease,
+} from "@/lib/job-attempt-receipts";
 import type { Pool, PoolClient } from "pg";
 
 import type { Database } from "@/lib/db";
@@ -1640,7 +1646,7 @@ export async function restoreAllManagedReleasePreparations(
 /** Atomically park a claimed hosted review until a verified managed release activates. */
 export async function deferHostedReviewForRelease(
   pool: Pool,
-  job: { id: number; lockedBy: string; kind?: string },
+  job: { id: number; lockedBy: string; kind?: string; lockedAt?: Date; receiptClaim?: ReviewClaimLease["receiptClaim"] },
   releaseSha: string,
 ): Promise<"deferred" | "released"> {
   return deferHostedJobForRelease(pool, job, releaseSha, job.kind === "review-feedback" ? "review-feedback" : "review");
@@ -1662,7 +1668,7 @@ export async function deferHostedProviderKeyLifecycleForRelease(
 
 async function deferHostedJobForRelease(
   pool: Pool,
-  job: { id: number; lockedBy: string },
+  job: { id: number; lockedBy: string; lockedAt?: Date; receiptClaim?: ReviewClaimLease["receiptClaim"] },
   releaseSha: string,
   kind: "review" | "review-feedback" | typeof HOSTED_PROVIDER_KEY_LIFECYCLE_JOB_KIND,
 ): Promise<"deferred" | "released"> {
@@ -1674,6 +1680,11 @@ async function deferHostedJobForRelease(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       [HOSTED_INFERENCE_LOCK],
     );
+    const claim = job.receiptClaim ? await lockReceiptClaim(client, job as ReviewClaimLease) : null;
+    if (job.receiptClaim && !claim?.owned) {
+      await client.query("ROLLBACK");
+      throw new Error("hosted review release deferral lost its queue claim");
+    }
     const active = await client.query<{ active: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM deployment_capabilities WHERE name = $1
@@ -1695,10 +1706,16 @@ async function deferHostedJobForRelease(
               END
         WHERE id = $1 AND kind = $5
           AND status = 'running' AND locked_by = $2`,
-      [job.id, job.lockedBy, activated, normalized, kind],
+      [job.receiptClaim?.jobId ?? job.id, job.lockedBy, activated, normalized, kind],
     );
     if ((updated.rowCount ?? 0) !== 1) {
       throw new Error("hosted review release deferral lost its queue claim");
+    }
+    if (job.receiptClaim) {
+      await client.query("UPDATE jobs SET active_claim_receipt_id = NULL WHERE id = $1::bigint", [job.receiptClaim.jobId]);
+      await appendPreparedReceiptBatch(client, [claimEvent(job.receiptClaim.jobId,
+        Number(claim!.attempts), job.receiptClaim.receiptId, "queue_closed", "deferred",
+        null, null, String(claim!.kind))]);
     }
     await client.query("COMMIT");
     return activated ? "released" : "deferred";
