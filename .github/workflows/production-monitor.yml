@@ -495,7 +495,8 @@ jobs:
               echo "A self-service checkout failed or its metric is missing"
               stale_found=1
             fi
-            # Hard platform failures page at zero tolerance. Model-quality
+            # Operational failures page immediately. Terminal failed jobs page
+            # at three in 30 minutes. Model-quality
             # incidents (a review retried after bad model output, a scorer or
             # model fallback) are self-healing and only page when they burst,
             # otherwise a single flaky upstream completion pages the operator.
@@ -509,6 +510,7 @@ jobs:
                 scorer_fallback) threshold=2 ;;
                 model_fallback) threshold=5 ;;
                 invalid_output) threshold=2 ;;
+                failed_job) threshold=2 ;;
               esac
               echo "Recent ${category} incidents: ${count:-missing}"
               if [[ -z "${count:-}" ]]; then
