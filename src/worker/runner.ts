@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 
 import { getDb, getPool } from "@/lib/db";
+import { GitHubHttpError } from "@/lib/github/checks";
 import { optionalEnv, readPositiveIntEnv, requireEnv } from "@/lib/env";
 import {
   recordCustomerNotificationEmailFailure,
@@ -417,6 +418,9 @@ export async function runClaimedJob(
         )
       : await failJob(getPool(), job, message, {
           permanent,
+          ...(["review", FEEDBACK_REVIEW_JOB_KIND].includes(job.kind) &&
+          err instanceof GitHubHttpError && err.retryAt && Number.isFinite(err.retryAt.getTime())
+            ? { retryAt: err.retryAt } : {}),
           ...(job.kind === "respond"
             ? {
                 failureFollowup: {

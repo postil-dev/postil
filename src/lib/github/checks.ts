@@ -1,5 +1,6 @@
 import { apiBase } from "./app-auth";
 import { isPostilBotLogin } from "./conversation";
+import { GithubRateLimitError, githubResponseError } from "./rate-limit";
 
 /**
  * Check-run REST helpers.
@@ -62,6 +63,7 @@ export class GitHubHttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly retryAt?: Date,
   ) {
     super(message);
     this.name = "GitHubHttpError";
@@ -240,10 +242,15 @@ async function githubFetch(
     signal,
   });
   if (!res.ok) {
+    const rateLimit = res.status === 403 || res.status === 429
+      ? await githubResponseError(`${method} ${path}`, res.clone()).catch(() => undefined)
+      : undefined;
     const text = await res.text();
     throw new GitHubHttpError(
       res.status,
       `GitHub ${method} ${path} failed: HTTP ${res.status} ${text.slice(0, 300)}`,
+      rateLimit instanceof GithubRateLimitError && Number.isFinite(rateLimit.retryAt.getTime())
+        ? rateLimit.retryAt : undefined,
     );
   }
   return res;

@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
+import { createCheckRun, GitHubHttpError } from "@/lib/github/checks";
+
+import type { Pool } from "pg";
+import { createEphemeralDatabase } from "./ephemeral-database";
+
 import type { ClaimedJob } from "@/lib/queue";
 import { WorkerInterruptionRehearsalError } from "@/lib/private-worker-rehearsal";
 import "./quiet-console";
 
 const OLD_ENV = { ...process.env };
+// Capture real SQL transitions before replacing the queue boundary for runner tests.
+const sqlQueue = { ...await import("@/lib/queue") };
+let sqlFailurePool: Pool | undefined;
 
 const jobs: ClaimedJob[] = [];
 const completed: number[] = [];
@@ -18,6 +26,7 @@ const finiteRetrySchedules: Array<{
 }> = [];
 const failureFollowups: Array<Record<string, unknown>> = [];
 const permanentFailures: number[] = [];
+const failureDeadlines: Array<Date | undefined> = [];
 const retriedIndefinitely: Array<{
   id: number;
   error: string;
@@ -189,10 +198,13 @@ mock.module("@/lib/queue", () => ({
     error: string,
     options?: {
       permanent?: boolean;
-      failureFollowup?: { payload: Record<string, unknown> };
+      retryAt?: Date;
+      failureFollowup?: { kind: "respond-failure-comment"; payload: Record<string, unknown>; maxAttempts: number };
     },
   ) => {
     failed.push({ id: job.id, error });
+    failureDeadlines.push(options?.retryAt);
+    if (sqlFailurePool) return sqlQueue.failJob(sqlFailurePool, job, error, options);
     if (options?.permanent) permanentFailures.push(job.id);
     if (options?.failureFollowup) {
       failureFollowups.push(options.failureFollowup.payload);
@@ -377,6 +389,8 @@ beforeEach(() => {
   finiteRetrySchedules.length = 0;
   failureFollowups.length = 0;
   permanentFailures.length = 0;
+  failureDeadlines.length = 0;
+  sqlFailurePool = undefined;
   retriedIndefinitely.length = 0;
   shutdownRequeues.length = 0;
   claimCalls = 0;
@@ -1338,4 +1352,92 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error("condition was not met");
+}
+
+
+describe("GitHub rate-limit finite runner handoff", () => {
+  for (const kind of ["review", "review-feedback"] as const) {
+    test(`${kind} passes the real rejected check deadline to failJob`, async () => {
+      const originalFetch = globalThis.fetch;
+      const reset = Math.floor(Date.now() / 1000) + 600;
+      let requests = 0;
+      globalThis.fetch = (async () => {
+        requests += 1;
+        return new Response("API rate limit exceeded", { status: 403, headers: {
+          "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset),
+        } });
+      }) as unknown as typeof fetch;
+      reviewRun = async () => {
+        await createCheckRun(crypto.randomUUID(), "octo/repo", "postil/review", "a".repeat(40), {
+          externalId: "postil:synthetic:review",
+        });
+      };
+      try {
+        await runClaimedJob({ ...reviewJob(201), kind }, "rate-worker", "worker");
+        expect(failureDeadlines).toEqual([new Date(reset * 1000 + 1000)]);
+        expect(failed).toHaveLength(1);
+        expect(permanentFailures).toEqual([]);
+        expect(retriedIndefinitely).toEqual([]);
+        expect(completed).toEqual([]);
+        expect(requests).toBe(1);
+      } finally { globalThis.fetch = originalFetch; }
+    });
+  }
+
+  for (const retryAt of [undefined, new Date(NaN)]) {
+    test(`ignores ${retryAt === undefined ? "missing" : "invalid"} deadlines`, async () => {
+      reviewRun = async () => { throw new GitHubHttpError(403, "permission denied", retryAt); };
+      await runClaimedJob(reviewJob(202), "rate-worker", "worker");
+      expect(failureDeadlines).toEqual([undefined]);
+      expect(retriedIndefinitely).toEqual([]);
+    });
+  }
+
+  test("other ordinary finite job kinds do not acquire the review deadline option", async () => {
+    respondRun = async () => { throw new GitHubHttpError(429, "rate limited", new Date(Date.now() + 600_000)); };
+    await runClaimedJob({ ...reviewJob(203), kind: "respond" }, "rate-worker", "worker");
+    expect(failureDeadlines).toEqual([undefined]);
+    expect(failureFollowups).toHaveLength(1);
+  });
+});
+
+
+for (const kind of ["review", "review-feedback"] as const) {
+  const retainedSqlTest = process.env.POSTIL_TEST_DATABASE_URL && process.env.POSTIL_KEEP_TEST_DATABASE === "1" ? test : test.skip;
+  retainedSqlTest(`GitHub rate-limit ${kind} pipeline persists the rejected check deadline through runner into PostgreSQL`, async () => {
+    const db = await createEphemeralDatabase("rate_runner");
+    const originalFetch = globalThis.fetch;
+    const reset = Math.floor(Date.now() / 1000) + 600;
+    try {
+      const id = await sqlQueue.enqueueJob(db.pool, kind, { installationId: 42 });
+      const job = (await sqlQueue.claimJob(db.pool, "rate-pipeline", [kind]))!;
+      expect(job.id).toBe(id);
+      sqlFailurePool = db.pool;
+      let requests = 0;
+      globalThis.fetch = (async () => {
+        requests += 1;
+        return new Response("synthetic quota rejection", { status: 403, headers: {
+          "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset),
+        } });
+      }) as unknown as typeof fetch;
+      reviewRun = async () => {
+        await createCheckRun(crypto.randomUUID(), "octo/repo", "postil/review", "a".repeat(40), {
+          externalId: "postil:synthetic:review",
+        });
+      };
+      await runClaimedJob(job, "rate-pipeline", "worker");
+      expect(requests).toBe(1);
+      expect(failureDeadlines).toEqual([new Date(reset * 1000 + 1000)]);
+      const row = (await db.pool.query("SELECT status, attempts, max_attempts, run_after, locked_by FROM jobs WHERE id = $1", [id])).rows[0];
+      expect(row).toMatchObject({ status: "queued", attempts: 1, max_attempts: 3, locked_by: null });
+      expect(row.run_after.getTime()).toBe(reset * 1000 + 1000);
+      expect(await sqlQueue.claimJob(db.pool, "early-pipeline", [kind])).toBeNull();
+      expect(retriedIndefinitely).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      sqlFailurePool = undefined;
+      await db.drop();
+      process.stderr.write(`Preserved pipeline test database ${db.databaseName}\n`);
+    }
+  }, 60_000);
 }
