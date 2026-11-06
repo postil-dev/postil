@@ -1353,7 +1353,12 @@ export async function failJob(
   } = {},
 ): Promise<"retried" | "failed" | "coalesced" | "lost"> {
   const redactedError = redactAndTruncate(error, 2000);
-  const retryAt = opts.retryAt && Number.isFinite(opts.retryAt.getTime()) ? opts.retryAt : null;
+  const retryAt = opts.retryAt && Number.isFinite(opts.retryAt.getTime()) ? new Date(opts.retryAt) : null;
+  if (retryAt && retryAt.getTime() > Date.now()) {
+    // Spread jobs sharing an upstream reset without ever moving them before it.
+    const spreadMs = (Math.imul(job.id, 0x9e3779b1) >>> 0) % 1001;
+    retryAt.setTime(Math.min(8_640_000_000_000_000, retryAt.getTime() + spreadMs));
+  }
   const delay = backoffMs(job.attempts);
   return withFeedbackControl(pool, async (client, enabled) => {
   if (!opts.permanent && job.attempts < job.maxAttempts) {

@@ -1149,6 +1149,85 @@ describeDb("postgres job queue", () => {
     });
   }
 
+  for (let seed = 1; seed <= 40; seed += 1) {
+    test(`GitHub rate-limit generated ownership history seed ${seed}`, async () => {
+      let state = Math.imul(seed, 0x9e3779b1) >>> 0;
+      const next = (limit: number) => {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return Math.floor(state / 0x1_0000_0000 * limit);
+      };
+      const initial = { installationId: 17, githubRepoId: 99, repoFullName: "octo/generated-rate", prNumber: seed, headSha: "e".repeat(40), baseSha: "base" };
+      const id = await enqueueReviewJobOnce(pool, initial);
+      if (id === null) throw new Error("generated review was not admitted");
+      const loseClaim = next(3) === 0;
+      await pool.query("UPDATE jobs SET attempts = $2 WHERE id = $1", [id, next(loseClaim ? 2 : 3)]);
+      const originalClaim = (await claimJob(pool, "first-generated-owner"))!;
+      let claim = originalClaim;
+      if (loseClaim) {
+        await requeueJobsOwnedBy(pool, "first-generated-owner", "synthetic shutdown", ["review"], [id]);
+        claim = (await claimJob(pool, "second-generated-owner"))!;
+      }
+      const coalesce = next(2) === 0;
+      const installationId = next(2) === 0 ? initial.installationId : 23;
+      if (coalesce) await enqueueReviewJobOnce(pool, { ...initial, installationId, forceFullReview: true, sourceDeliveryId: `generated-${seed}` });
+      const permanent = next(4) === 0;
+      const deadlineKind = next(5);
+      const deadline = deadlineKind === 0 ? undefined : new Date(deadlineKind === 1 ? NaN : Date.now() + (deadlineKind === 2 ? -next(60_000) : deadlineKind === 3 ? next(2_000) : 120_000 + next(480_000)));
+      const snapshot = await pool.query("SELECT * FROM jobs ORDER BY id");
+      if (loseClaim) {
+        expect(await failJob(pool, originalClaim, "stale generated failure", { retryAt: deadline, permanent })).toBe("lost");
+        expect((await pool.query("SELECT * FROM jobs ORDER BY id")).rows).toEqual(snapshot.rows);
+      }
+      const before = Date.now();
+      const outcome = await failJob(pool, claim, "current generated failure", { retryAt: deadline, permanent });
+      const expected = coalesce ? "coalesced" : permanent || claim.attempts >= claim.maxAttempts ? "failed" : "retried";
+      expect(outcome).toBe(expected);
+      const rows = (await pool.query("SELECT id, status, attempts, max_attempts, payload, run_after, locked_by FROM jobs ORDER BY id")).rows;
+      expect(rows).toHaveLength(coalesce ? 2 : 1);
+      expect(rows[0].attempts).toBe(claim.attempts);
+      expect(rows[0].locked_by).toBeNull();
+      expect(rows[0].status).toBe(expected === "retried" ? "queued" : "failed");
+      const queued = rows.find(row => row.status === "queued");
+      if (!queued) return;
+      if (coalesce) {
+        expect(queued.attempts).toBe(0);
+        expect(queued.max_attempts).toBe(claim.maxAttempts);
+        expect(queued.payload.installationId).toBe(installationId);
+        expect(rows[0].payload).toMatchObject(initial);
+        expect(rows[0].payload.sourceDeliveryId).toBeUndefined();
+      }
+      const hasDeadline = deadline !== undefined && Number.isFinite(deadline.getTime());
+      const inheritsDeadline = !coalesce || installationId === initial.installationId;
+      if (!coalesce || hasDeadline && inheritsDeadline) {
+        const lower = Math.max(before + backoffMs(claim.attempts), hasDeadline && inheritsDeadline ? deadline!.getTime() : 0);
+        const upper = Math.max(Date.now() + backoffMs(claim.attempts), hasDeadline && inheritsDeadline ? deadline!.getTime() + 1000 : 0);
+        expect(queued.run_after.getTime()).toBeGreaterThanOrEqual(lower);
+        expect(queued.run_after.getTime()).toBeLessThanOrEqual(upper);
+        expect(await claimJob(pool, "too-early-generated-owner")).toBeNull();
+      } else {
+        expect((await claimJob(pool, "immediate-generated-successor"))?.id).toBe(Number(queued.id));
+      }
+    });
+  }
+
+  test("GitHub rate-limit spreads a shared reset within one second", async () => {
+    const deadline = new Date(Date.now() + 600_000);
+    const originalDeadline = deadline.getTime();
+    const times = [];
+    for (let i = 0; i < 8; i += 1) {
+      const id = await enqueueJob(pool, "review", { installationId: 17 });
+      const job = (await claimJob(pool, `spread-worker-${i}`))!;
+      expect(await failJob(pool, job, "shared quota reset", { retryAt: deadline })).toBe("retried");
+      const row = (await pool.query("SELECT run_after FROM jobs WHERE id = $1", [id])).rows[0];
+      times.push(row.run_after.getTime());
+    }
+    expect(new Set(times).size).toBeGreaterThan(1);
+    expect(Math.min(...times)).toBeGreaterThanOrEqual(deadline.getTime());
+    expect(Math.max(...times)).toBeLessThanOrEqual(deadline.getTime() + 1000);
+    expect(deadline.getTime()).toBe(originalDeadline);
+    expect(await claimJob(pool, "early-shared-reset")).toBeNull();
+  });
+
   test("failJob requeues with backoff until attempts are exhausted", async () => {
     await enqueueJob(pool, "review", { n: 1 }, { maxAttempts: 2 });
 

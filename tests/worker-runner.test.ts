@@ -1430,7 +1430,8 @@ for (const kind of ["review", "review-feedback"] as const) {
       expect(failureDeadlines).toEqual([new Date(reset * 1000 + 1000)]);
       const row = (await db.pool.query("SELECT status, attempts, max_attempts, run_after, locked_by FROM jobs WHERE id = $1", [id])).rows[0];
       expect(row).toMatchObject({ status: "queued", attempts: 1, max_attempts: 3, locked_by: null });
-      expect(row.run_after.getTime()).toBe(reset * 1000 + 1000);
+      expect(row.run_after.getTime()).toBeGreaterThanOrEqual(reset * 1000 + 1000);
+      expect(row.run_after.getTime()).toBeLessThanOrEqual(reset * 1000 + 2000);
       expect(await sqlQueue.claimJob(db.pool, "early-pipeline", [kind])).toBeNull();
       expect(retriedIndefinitely).toEqual([]);
     } finally {
