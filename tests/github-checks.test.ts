@@ -5,6 +5,7 @@ import {
   comparePullRequestSnapshotTimes,
   completeExpectedCheckRun,
   createCheckRun,
+  GitHubHttpError,
   findCheckRunByExternalId,
   findIssueCommentByMarker,
   findPullRequestReviewCommentByMarker,
@@ -916,4 +917,57 @@ describe("check-run publication verification", () => {
     ).rejects.toThrow("does not match its review identity");
     expect(methods).toEqual(["GET"]);
   });
+});
+
+
+
+describe("GitHub rate-limit check creation", () => {
+  for (const scenario of ["primary", "secondary", "retry-after", "permission"] as const) {
+    test(`${scenario} preserves HTTP identity and never reconciles a rejected create`, async () => {
+      const before = Date.now();
+      const reset = Math.floor(before / 1000) + 600;
+      const headers: Record<string, string> = scenario === "primary"
+        ? { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) }
+        : scenario === "retry-after" ? { "retry-after": "180" } : {};
+      const status = scenario === "secondary" || scenario === "retry-after" ? 429 : 403;
+      const body = scenario === "permission" ? "Resource not accessible" : "API rate limit exceeded";
+      const methods: string[] = [];
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        methods.push(init?.method ?? "GET");
+        return new Response(body, { status, headers });
+      }) as unknown as typeof fetch;
+      const error = await createCheckRun(crypto.randomUUID(), "octo/repo", "postil/review", "a".repeat(40), {
+        externalId: "postil:synthetic:review",
+      }).catch((error: unknown) => error) as GitHubHttpError;
+      expect(error).toBeInstanceOf(GitHubHttpError);
+      expect(error.status).toBe(status);
+      expect(error.message).toBe(`GitHub POST /repos/octo/repo/check-runs failed: HTTP ${status} ${body}`);
+      expect(methods).toEqual(["POST"]);
+      if (scenario === "permission") expect(error.retryAt).toBeUndefined();
+      else {
+        expect(error.retryAt).toBeInstanceOf(Date);
+        const deadline = error.retryAt!.getTime();
+        if (scenario === "primary") expect(deadline).toBe(reset * 1000 + 1000);
+        else expect(deadline).toBeGreaterThanOrEqual(before + (scenario === "secondary" ? 60_000 : 181_000));
+      }
+    });
+  }
+});
+
+
+test("GitHub rate-limit malformed reset cannot turn a known rejection into ambiguous creation", async () => {
+  const methods: string[] = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    methods.push(init?.method ?? "GET");
+    return new Response("synthetic quota rejection", { status: 403, headers: {
+      "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1e100",
+    } });
+  }) as unknown as typeof fetch;
+  const error = await createCheckRun(crypto.randomUUID(), "octo/repo", "postil/review", "a".repeat(40), {
+    externalId: "postil:synthetic:review",
+  }).catch((error: unknown) => error) as GitHubHttpError;
+  expect(error).toBeInstanceOf(GitHubHttpError);
+  expect(error.status).toBe(403);
+  expect(error.retryAt).toBeUndefined();
+  expect(methods).toEqual(["POST"]);
 });
