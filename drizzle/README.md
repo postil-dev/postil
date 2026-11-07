@@ -28,6 +28,19 @@ The schema and Drizzle snapshot describe the final released database. The
 transactional migration stream and records their verified state in
 `release_steps`.
 
+## CHECK constraints on existing tables
+
+`ALTER TABLE ... ADD CONSTRAINT ... CHECK` scans every existing row while it
+holds an `ACCESS EXCLUSIVE` lock, which blocks reads and writes to the table.
+
+- Add the constraint with `NOT VALID`. PostgreSQL skips the scan and still
+  enforces the constraint on every inserted or updated row.
+- Run `VALIDATE CONSTRAINT` in a separate release step outside the
+  transactional migration stream. Its scan permits concurrent reads and writes
+  and needs its own time budget.
+- The Drizzle snapshot records the constraint expression, not its validation
+  state.
+
 ## Bulk UPDATE/DELETE dedup work
 
 Row rewrites must not run as one unbounded statement against a live table:

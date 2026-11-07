@@ -54,6 +54,17 @@ entries and unapproved pending migrations stop preparation. The existing strict
 journal verification runs before the new release receives capabilities.
 `bun run scripts/run-release-migrations.ts --inspect-additive` checks the same
 migration identity and source compatibility in a read-only transaction.
+After the provider preflight and before the new release receives capabilities,
+the managed release command runs `bun run operational:indexes --managed-release`.
+That mode concurrently builds only the `ilert_alert_events_canary_observation_idx`
+lookup index, waits at most 60 seconds for the index release lock, and bounds
+each statement at 120 seconds. It neither inspects other operational indexes
+nor writes the full reconciliation's release step. A failed or cancelled build
+stops the release with the running fleet unchanged, and the next run rebuilds
+an invalid index. The full reconciliation rebuilds a valid index with an
+unexpected definition only for that non-unique lookup index; any other
+unexpected definition, and any index that enforces uniqueness or a constraint,
+stays in place and fails the run.
 
 The free-tier operating profile keeps Postgres idle-capable by avoiding permanent hot polling when the private monitor is disabled. Webhook intake verifies the signature, then commits the payload and one `webhook-dispatch` job in the same transaction before acknowledging GitHub. A Next.js `after` callback claims that exact job without delaying the response, and the long-running worker remains a fallback with configurable idle backoff. Completed inbox payloads are cleared. A stopped web process leaves a retryable queue claim and retained payload instead of a completed dedupe marker with missing side effects.
 
@@ -510,9 +521,12 @@ monitoring alert only when ilert rejects the event, so a lapsed or
 misconfigured alerting account cannot silence paging. After each completed pass
 the monitor pings an ilert heartbeat (`POSTIL_MONITOR_HEARTBEAT_URL`), so a
 dead monitor process or persistently failing pass raises a missed-heartbeat
-alert outside the platform's failure domain. Without a configured integration
-key, monitoring alerts are logged only and paging relies on the heartbeat, the
-external uptime checks, and the GitHub monitor.
+alert outside the platform's failure domain. `ILERT_INTEGRATION_KEY` is optional
+at monitor startup, so a self-hosted monitor runs its checks without an
+alerting account. Without the key every monitoring alert delivery attempt
+fails with an explicit configuration error, the durable outbox retains the
+incident and retries it, and paging relies on the heartbeat, the external
+uptime checks, and the GitHub monitor.
 
 iLert alert actions can deliver bounded alert lifecycle events to
 `/api/webhooks/ilert` with HTTP Basic authentication. The receiver stores the
@@ -527,6 +541,94 @@ renewable CLI bearer token and the separate `POSTIL_OPERATOR_GITHUB_IDS`
 allowlist. Transport keepalives do not query alert state. The receiver and
 stream make no outbound iLert API calls and cannot acknowledge, accept, or
 resolve an alert.
+
+The production-monitor workflow loads the workflow-only `ILERT_API_KEY`
+management bearer credential through its dedicated least-privilege Infisical
+OIDC identity and sends monitor and canary events with the
+`ILERT_INTEGRATION_KEY` Event API credential. The management credential is not
+part of the application environment. Its
+`POSTIL_ILERT_ALERT_SOURCE_ID` GitHub Actions variable selects the alert source
+whose action is reconciled. `POSTIL_ILERT_WEBHOOK_SECRET` supplies the receiver
+password embedded as URL-encoded HTTP Basic credentials in that action, and
+`POSTIL_ILERT_RECEIVER_ORIGIN` selects its strictly validated HTTPS origin. The
+reconciliation workflow loads the receiver password from the secret record that
+also supplies the deployed receiver's runtime secret. Reconciliation verifies that the deployed receiver accepts the
+credential before it creates or updates the action. Before any action mutation
+or Event API mutation, reconciliation reads `GET /api/alert-sources/{id}` with
+the configured numeric source id and the management bearer credential. The
+returned numeric source id, Event API type, and Event API integration key must
+match the configured source. The key, management authorization, integration
+fields, and full lookup URL remain confined to the sensitive request. Manual canaries send a
+HIGH-priority production test alert that can invoke the escalation path. They
+use attempt-specific keys derived from the workflow run id and producer run
+attempt, distinct from production monitor keys. Earlier main keys are swept
+through the current attempt and every discovered trusted alert is resolved with
+`PUT /api/alerts/{id}/resolve` then polled by that exact id until management
+reports RESOLVED. A discovered canary retains its exact id, key, and source
+before receiver evidence is checked, so cleanup can resolve it when later
+receiver or inventory requests fail. A blind same-key Event API RESOLVE is
+limited to an undiscovered current key.
+The main alert is discovered within the configured source using the same exact
+32-day report-time window as cleanup. It must remain PENDING or ACCEPTED at
+HIGH priority and have an
+exact persisted `alert-created` receiver event. A `cleaned` handoff means the
+primary canary also proves the exact persisted `alert-resolved` receiver event.
+The independent cleanup-only finalizer uses the producer attempt for
+accepted-current proof and the running attempt as a sweep ceiling. It accepts
+GitHub's 1 through 51 attempt range, bounds work per attempt, and sweeps an
+exact 32-day run-wide report-time window with PENDING, ACCEPTED, and RESOLVED
+states. Every discovery pass freezes its upper report-time bound, brackets
+offset pagination with matching inventory counts, repeats the complete
+inventory for continuity validation, and advances the bound before the next
+delayed pass. Complete inventory fingerprints preserve opaque provider alert
+ids, while a matching cleanup target requires the provider's positive-integer
+alert identity before mutation. The finalizer reserves 90 seconds for delayed
+discovery, 60 seconds for terminal inventory validation, and 60 seconds for
+retained-id resolution. Its 210-second operation deadline runs within a
+four-minute shell bound, leaving one minute of GitHub's cancellation grace.
+The finalizer verifies every retained id as RESOLVED. Two complete delayed
+passes must find no matching open alert before success.
+A cleaned handoff still performs this
+management sweep to resolve a delayed Event API duplicate. If the producer
+output is unavailable, the finalizer uses its running attempt to reconstruct
+the deterministic identity. It never reads receiver configuration or
+reconciles the action. A manual dispatch that requests both `test_alert` and
+`reconcile_alert_stream` fails in the trust job before any credentialed job
+starts, because the finalizer resolves the compatibility key that the operator
+test alert uses. A requested test alert is sent only when the smoke and release
+recovery jobs succeed. Its own finalizer resolves the dedicated key after the
+notification job settles, including when delivery reports failure after iLert
+accepts the alert. When the `POSTIL_ILERT_CANARY_SWEEP_ENABLED` repository
+variable is `true`, scheduled and routine manual production monitors also
+run a management-only orphan sweep across every exact deterministic canary key
+and the exact `postil-production-monitor-test` compatibility canary key for the
+configured source. Otherwise the trust job reports the sweep as disabled and
+the run makes no iLert management request. The sweep scans only PENDING and ACCEPTED alerts,
+count-brackets and repeats the complete offset inventory, retains each exact
+id, resolves and verifies each target, and fails closed on incomplete or
+changing inventory. It has no Event API credential and cannot emit a canary
+or resolve the stable `postil-production-monitor` alert or an arbitrary alert.
+Management cleanup validates the source
+numeric id and API type without requiring an older Event API key to remain
+bound; Event API mutations and action reconciliation retain the full
+integration-key binding. The command supports `--dry-run`, `--canary`,
+`--finalize-canary`, and `--sweep-canary-orphans`; unflagged live reconciliation
+is rejected because it has no recoverable command. The canary does not open
+the authenticated operator SSE stream.
+
+iLert supplies offset pagination rather than a snapshot, cursor, or exact-key
+filter. The bounded count and repeated-inventory checks provide evidence for a
+complete scan and fail closed on observed churn; they do not claim atomic
+absence proof. The reconciler revalidates the numeric source ID, API integration
+type, and integration-key binding at every alert-action and Event API mutation,
+then reloads the complete reserved-action inventory after an action mutation.
+The alert-action API has no conditional-write precondition, so a concurrent
+out-of-band action update can still occur after the final guard read. The
+reconciler detects conflicting pre- and post-mutation state and fails closed;
+it does not claim compare-and-swap behavior.
+Deployment preserves runtime secret metadata and stages no receiver credential.
+The `--validate-webhook-secret` command checks a receiver secret against the
+printable-ASCII length and diversity contract used by the receiver.
 
 The monitor and product processes share the deployment platform, network, and
 DNS path. The private database, the external alerting service, and the
