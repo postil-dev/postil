@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +44,13 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
   const directory = mkdtempSync(join(tmpdir(), "postil-deploy-test-"));
   try {
     writeFileSync(join(directory, "machines.json"), JSON.stringify(machines));
-    writeFileSync(join(directory, "postil-source-machines.json"), JSON.stringify(snapshot));
+    writeFileSync(join(directory, "postil-source-machines.json"), JSON.stringify(snapshot.filter(machine => approvedMachineIds.includes(machine.id))));
+    const retained = deadlineEnvironment.RETAINED_MACHINE_IDS ?? "[]";
+    const baseline = Bun.spawnSync(["jq", "-cS", "--arg", "retained", retained,
+      '($retained | fromjson) as $held | [.[] | select(.id as $id | $held | index($id)) | {id, region, state, config, image_ref}] | sort_by(.id)'],
+      { stdin: Buffer.from(JSON.stringify(snapshot)), stdout: "pipe", stderr: "pipe" });
+    if (baseline.exitCode === 0) writeFileSync(join(directory, "postil-retained-machines.sha256"),
+      `${createHash("sha256").update(baseline.stdout).digest("hex")}  -\n`);
     writeFileSync(join(directory, "postil-source-secrets.json"), JSON.stringify(sourceSecrets));
     writeFileSync(join(directory, "secrets.json"), JSON.stringify(secrets));
     writeFileSync(join(directory, "status-machines.json"), JSON.stringify(statusMachines));
@@ -83,6 +89,9 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
             mv "$RUNNER_TEMP/next-secrets.json" "$RUNNER_TEMP/secrets.json"
             printf 'staged\n' ;;
           "deploy --remote-only")
+            [[ "$*" == *"--only-machines a0,a1,a2,a3,a4"* ]] || return 97
+            [[ "$*" == *"--max-concurrent 1 --update-only --ha=false"* ]] || return 97
+            if [[ -n "\${TARGET_IMAGE:-}" ]]; then [[ "$*" == *"--image $TARGET_IMAGE"* ]] || return 97; fi
             if [[ "\${TEST_RELEASE_COMMAND_FAILURE:-0}" == "1" ]]; then return 1; fi
             printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
@@ -146,6 +155,135 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
 }
 
 describe("managed deployment contract", () => {
+  test("deploys the qualified immutable image through the rolling command", () => {
+    const result = runStep("deploy", fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
+      { TARGET_IMAGE: `registry.fly.io/postil-web@sha256:${randomBytes(32).toString("hex")}` });
+    expect(result.code, result.error).toBe(0);
+    expect(result.updates).toBe("deploy");
+  });
+
+  test("source feedback preflight permits a separately qualified target image", () => {
+    const result = runStep("feedback-preflight", fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
+      { TARGET_IMAGE: `registry.fly.io/postil-web@sha256:${randomBytes(32).toString("hex")}` });
+    expect(result.code, result.error).toBe(0);
+    expect(result.calls.trim().split("\n")).toHaveLength(5);
+  });
+
+  test("target verification requires the exact qualified image digest", () => {
+    const result = runStep("verify", fleet(), fleet(), deployedSecrets, undefined, fleet(), undefined,
+      { TARGET_IMAGE: `registry.fly.io/postil-web@sha256:${randomBytes(32).toString("hex")}` });
+    expect(result.code).not.toBe(0);
+    expect(result.calls).toBe("");
+    expect(result.stdout).toContain("differs from the qualified rollback target");
+    const matching = runStep("verify", fleet(), fleet(), deployedSecrets, undefined, fleet(), undefined,
+      { TARGET_IMAGE: sourceImage });
+    expect(matching.code, matching.error).toBe(0);
+  });
+
+  test.each(["registry.fly.io/postil-web:latest", "registry.fly.io/other@sha256:" + "a".repeat(64), "malformed"])(
+    "refuses an unbound image %s at admission", image => {
+      const result = runStep("admission", fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined, { TARGET_IMAGE: image });
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.calls).toBe("");
+    });
+
+  const withRetained = () => {
+    const machines = fleet();
+    const held = structuredClone(machines[2]!);
+    held.id = "b0";
+    held.state = "stopped";
+    machines.push(held);
+    return machines;
+  };
+  const retainedEnvironment = { RETAINED_MACHINE_IDS: '["b0"]' };
+
+  test("generated fleet histories preserve selection and recover active machines after retained drift", () => {
+    for (let seed = 1; seed <= 16; seed++) {
+      let state = seed;
+      const next = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0);
+      const before = withRetained();
+      before[5]!.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
+      before[5]!.config.mounts = [{ volume: `retained_${seed}`, path: "/retained" }];
+      for (let index = before.length - 1; index > 0; index--) {
+        const other = next() % (index + 1);
+        [before[index], before[other]] = [before[other]!, before[index]!];
+      }
+      const source = runStep("source-fleet", before, before, stagedSecrets, undefined, before, undefined, retainedEnvironment);
+      expect(source.code, source.error).toBe(0);
+      expect(source.calls.trim().split("\n").sort()).toEqual(approvedMachineIds);
+      const admitted = runStep("deploy", before, before, stagedSecrets, undefined, before, undefined, retainedEnvironment);
+      expect(admitted.code, admitted.error).toBe(0);
+      const changed = structuredClone(before);
+      const held = changed.find(machine => machine.id === "b0")!;
+      if (seed % 4 === 0) held.state = "started";
+      else if (seed % 4 === 1) held.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
+      else if (seed % 4 === 2) held.config.mounts[0]!.volume = `changed_${seed}`;
+      else changed.splice(changed.indexOf(held), 1);
+      const rejected = runStep("deploy", changed, before, stagedSecrets, undefined, changed, undefined, retainedEnvironment);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.updates).toBe("");
+      const partial = structuredClone(changed);
+      const target = partial.find(machine => machine.id === "a0")!;
+      target.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
+      target.release = targetSha;
+      const recovered = runStep("rollback", partial, before, stagedSecrets, undefined, partial, undefined, retainedEnvironment);
+      expect(recovered.code, recovered.error).toBe(0);
+      expect(recovered.calls.trim().split("\n")).not.toContain("b0");
+      expect(recovered.updates).not.toContain("machine update b0");
+      expect(recovered.machines.find((machine: ReturnType<typeof fleet>[number]) => machine.id === "b0")).toEqual(seed % 4 === 3 ? undefined : held);
+      expect(recovered.machines.filter((machine: ReturnType<typeof fleet>[number]) => machine.id !== "b0")
+        .every((machine: ReturnType<typeof fleet>[number]) => machine.image_ref.digest === digest && machine.release === sourceSha)).toBe(true);
+    }
+  }, 30_000);
+
+  test.each(["verify", "activate"])("%s does not roll back healthy active machines for unrelated retained drift", id => {
+    const before = withRetained();
+    const changed = structuredClone(before);
+    changed[5]!.state = "started";
+    changed[5]!.config.mounts = [{ volume: "changed", path: "/retained" }];
+    const result = runStep(id, changed, before, deployedSecrets, undefined, changed, undefined, retainedEnvironment);
+    expect(result.code, result.error).toBe(0);
+    expect(result.calls.trim().split("\n")).not.toContain("b0");
+    expect(result.updates).not.toContain("machine update b0");
+  });
+
+  test.each(["source-fleet", "feedback-preflight", "stage-feedback", "deploy", "verify", "activate", "rollback"])(
+    "%s preserves an explicitly retained stopped worker", (id) => {
+      const machines = withRetained();
+      const result = runStep(id, machines, structuredClone(machines), id === "verify" ? deployedSecrets : stagedSecrets,
+        undefined, structuredClone(machines), undefined, retainedEnvironment);
+      expect(result.code, result.error).toBe(0);
+      expect(result.calls.trim().split("\n")).not.toContain("b0");
+      expect(result.updates).not.toContain("machine update b0");
+      expect(result.machines.find((machine: ReturnType<typeof fleet>[number]) => machine.id === "b0")).toEqual(machines.find(machine => machine.id === "b0"));
+    });
+
+  test.each(["state", "image", "environment", "mount", "group"])("rejects retained worker %s drift before mutation", (field) => {
+    const before = withRetained();
+    const machines = structuredClone(before);
+    const held = machines[5]!;
+    if (field === "state") held.state = "started";
+    if (field === "image") held.image_ref.digest = `sha256:${"e".repeat(64)}`;
+    if (field === "environment") held.config.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0";
+    if (field === "mount") held.config.mounts = [{ volume: "different", path: "/retained" }];
+    if (field === "group") held.config.metadata.fly_process_group = "web";
+    const result = runStep("deploy", machines, before, stagedSecrets, undefined, machines, undefined, retainedEnvironment);
+    expect(result.code).not.toBe(0);
+    expect(result.calls).toBe("");
+    expect(result.updates).toBe("");
+  });
+
+  test.each(['["b0","b0"]', '["a0"]', '["b1"]', 'null', '["invalid-id"]'])(
+    "rejects invalid retained membership %s", (retained) => {
+      const machines = withRetained();
+      const result = runStep("deploy", machines, machines, stagedSecrets, undefined, machines, undefined,
+        { RETAINED_MACHINE_IDS: retained });
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+      expect(result.calls).toBe("");
+    });
+
   test.each(["verify", "rollback"])("%s retries transient reads but rejects persistent failure and wrong identity", (id) => {
     const machines = fleet();
     if (id === "rollback") {
@@ -415,7 +553,7 @@ describe("managed deployment contract", () => {
     else observed.push(structuredClone(observed[0]!));
     const result = runStep("rollback", fleet(), fleet(), stagedSecrets, undefined, observed);
     expect(result.code).not.toBe(0);
-    expect(result.error).toContain("captured machine identity is not unique");
+    expect(result.error).toContain("Fleet membership or retained worker state differs from the approved release");
     expect(result.updates).toBe("");
   });
 
@@ -427,7 +565,7 @@ describe("managed deployment contract", () => {
     else observed.push(structuredClone(observed[1]!));
     const result = runStep("rollback", machines, fleet(), stagedSecrets, undefined, machines, observed);
     expect(result.code).not.toBe(0);
-    expect(result.error).toContain("restored machine identity is not unique");
+    expect(result.error).toContain("Fleet membership or retained worker state differs from the approved release");
     expect(result.updates.trim().split("\n")).toHaveLength(1);
   });
 
@@ -477,7 +615,7 @@ describe("managed deployment contract", () => {
       }
     }
     const deployScript = steps.find((step) => step.id === "deploy")!.run!;
-    expect(deployScript.lastIndexOf("flyctl machine list")).toBeGreaterThan(deployScript.indexOf("flyctl secrets list"));
+    expect(deployScript.lastIndexOf("read_deploy_machines")).toBeGreaterThan(deployScript.indexOf("flyctl secrets list"));
     expect(deployScript.lastIndexOf("flyctl machine list")).toBeLessThan(deployScript.indexOf("flyctl deploy"));
   });
 
@@ -645,7 +783,7 @@ describe("managed deployment contract", () => {
       const result = runStep(id, changed, fleet(), deployedSecrets);
       expect(result.code).not.toBe(0);
       expect(result.calls).toBe("");
-      expect(result.stdout).toContain("differs from the five approved Machine IDs");
+      expect(result.error).toContain("Fleet membership or retained worker state differs from the approved release");
       expect(result.updates).toBe("");
     }
   });

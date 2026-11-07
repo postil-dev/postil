@@ -7,6 +7,16 @@ on:
         description: JSON array of the five approved postil-web Machine IDs
         required: true
         type: string
+      retained_machine_ids:
+        description: JSON array of stopped workers to preserve outside the rollout
+        required: false
+        default: "[]"
+        type: string
+      target_image:
+        description: Immutable image from the qualified build, bound by the rollback timer
+        required: false
+        default: ""
+        type: string
       rollback_deadline_epoch:
         description: Absolute Unix-seconds deadline from the active target-bound rollback timer
         required: true
@@ -42,6 +52,8 @@ jobs:
       ROLLBACK_SOURCE_SHA: ${{ inputs.rollback_source_sha }}
       ROLLBACK_SOURCE_IMAGE: ${{ inputs.rollback_source_image }}
       APPROVED_MACHINE_IDS: ${{ inputs.machine_ids }}
+      RETAINED_MACHINE_IDS: ${{ inputs.retained_machine_ids }}
+      TARGET_IMAGE: ${{ inputs.target_image }}
     # Manual admission remains disabled until target-bound rollback protection is active.
     if: vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
     steps:
@@ -181,6 +193,10 @@ jobs:
         id: admission
         run: |
           set -euo pipefail
+          if [[ -n "${TARGET_IMAGE:-}" && ! "${TARGET_IMAGE}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The qualified target image must be an immutable application image."
+            exit 1
+          fi
           if [[ ! "${TARGET_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ||
                 ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ ||
                 "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
@@ -214,7 +230,8 @@ jobs:
             exit 1
           fi
           umask 077
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines capture)
           if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
             ($approved | fromjson) as $ids |
             ($ids | type == "array" and length == 5 and
@@ -316,7 +333,8 @@ jobs:
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines)
           if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
             ($approved | fromjson) as $ids |
             ($ids | type == "array" and length == 5 and
@@ -356,7 +374,8 @@ jobs:
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines)
           # Revalidate the captured source immediately before the first mutation.
           # Fly may regenerate these four metadata fields without changing the runtime.
           if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" \
@@ -477,7 +496,8 @@ jobs:
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines)
           # Compare the captured source before the first replacement. Fly may
           # regenerate these four metadata fields without changing the runtime.
           if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" \
@@ -515,9 +535,18 @@ jobs:
             fi
           done
           echo "attempted=true" >> "${GITHUB_OUTPUT}"
+          image_args=()
+          if [[ -n "${TARGET_IMAGE:-}" ]]; then
+            image_args=(--image "${TARGET_IMAGE}")
+          fi
           flyctl deploy \
             --remote-only \
+            "${image_args[@]}" \
             --strategy rolling \
+            --max-concurrent 1 \
+            --update-only \
+            --ha=false \
+            --only-machines "$(jq -r 'join(",")' <<<"${APPROVED_MACHINE_IDS}")" \
             --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
             --build-arg POSTIL_RELEASE_SHA="${TARGET_RELEASE_SHA}" \
             --build-arg POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA="${SOURCE_RELEASE_SHA}" \
@@ -538,7 +567,14 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/probe-managed-runtime.sh
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines active)
+          if [[ -n "${TARGET_IMAGE:-}" ]] && ! jq -e --arg image "${TARGET_IMAGE}" 'all(.[];
+            (.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest) == $image
+          )' <<<"${machines}" >/dev/null; then
+            echo "::error::The deployed image differs from the qualified rollback target."
+            exit 1
+          fi
           if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
             ($approved | fromjson) as $ids |
             ($ids | type == "array" and length == 5 and
@@ -618,7 +654,8 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines active)
           if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
             ($approved | fromjson) as $ids |
             ($ids | type == "array" and length == 5 and
@@ -691,7 +728,8 @@ jobs:
             fi
           }
           verify_source_secrets
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines rollback)
           # flyctl generates release identity, client-version, and builder metadata.
           # All runtime configuration, including environment and mounts, must
           # retain the original source values throughout this content rollout.
@@ -716,7 +754,7 @@ jobs:
           mapfile -t machine_ids < <(jq -r 'sort_by(.config.metadata.fly_process_group)[] | .id' "${RUNNER_TEMP}/postil-source-machines.json")
           umask 077
           for id in "${machine_ids[@]}"; do
-            flyctl machine list --app postil-web --json | jq -ce --arg id "${id}" '
+            read_deploy_machines rollback | jq -ce --arg id "${id}" '
               [.[] | select(.id == $id)] |
               if length == 1 then .[0] else error("captured machine identity is not unique") end
             ' > "${RUNNER_TEMP}/postil-before-update.json"
@@ -752,7 +790,7 @@ jobs:
               echo "::error::Rollback cannot replace a machine outside the captured source and attempted target releases."
               exit 1
             fi
-            current_machines=$(flyctl machine list --app postil-web --json)
+            current_machines=$(read_deploy_machines rollback)
             if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" --arg id "${id}" '
               def runtime_config: .config | del(.image,
                 .metadata.fly_release_id, .metadata.fly_release_version, .metadata.fly_flyctl_version,
@@ -785,7 +823,7 @@ jobs:
               echo "::error::A captured machine could not return to the source image."
               exit 1
             fi
-            restored=$(flyctl machine list --app postil-web --json | jq -ce --arg id "${id}" '
+            restored=$(read_deploy_machines rollback | jq -ce --arg id "${id}" '
               [.[] | select(.id == $id)] |
               if length == 1 then .[0] else error("restored machine identity is not unique") end
             ')
@@ -806,7 +844,8 @@ jobs:
             verify_source_secrets
           done
           verify_source_secrets
-          machines=$(flyctl machine list --app postil-web --json)
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines rollback)
           machines=$(jq '[.[] | select(
             .config.metadata.fly_process_group == "web" or
             .config.metadata.fly_process_group == "worker" or
