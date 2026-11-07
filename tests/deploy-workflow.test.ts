@@ -198,6 +198,44 @@ describe("managed deployment contract", () => {
   };
   const retainedEnvironment = { RETAINED_MACHINE_IDS: '["b0"]' };
 
+  test("generated fleet histories preserve selection and recover active machines after retained drift", () => {
+    for (let seed = 1; seed <= 16; seed++) {
+      let state = seed;
+      const next = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0);
+      const before = withRetained();
+      before[5]!.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
+      before[5]!.config.mounts = [{ volume: `retained_${seed}`, path: "/retained" }];
+      for (let index = before.length - 1; index > 0; index--) {
+        const other = next() % (index + 1);
+        [before[index], before[other]] = [before[other]!, before[index]!];
+      }
+      const source = runStep("source-fleet", before, before, stagedSecrets, undefined, before, undefined, retainedEnvironment);
+      expect(source.code, source.error).toBe(0);
+      expect(source.calls.trim().split("\n").sort()).toEqual(approvedMachineIds);
+      const admitted = runStep("deploy", before, before, stagedSecrets, undefined, before, undefined, retainedEnvironment);
+      expect(admitted.code, admitted.error).toBe(0);
+      const changed = structuredClone(before);
+      const held = changed.find(machine => machine.id === "b0")!;
+      if (seed % 3 === 0) held.state = "started";
+      else if (seed % 3 === 1) held.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
+      else held.config.mounts[0]!.volume = `changed_${seed}`;
+      const rejected = runStep("deploy", changed, before, stagedSecrets, undefined, changed, undefined, retainedEnvironment);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.updates).toBe("");
+      const partial = structuredClone(changed);
+      const target = partial.find(machine => machine.id === "a0")!;
+      target.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
+      target.release = targetSha;
+      const recovered = runStep("rollback", partial, before, stagedSecrets, undefined, partial, undefined, retainedEnvironment);
+      expect(recovered.code, recovered.error).toBe(0);
+      expect(recovered.calls.trim().split("\n")).not.toContain("b0");
+      expect(recovered.updates).not.toContain("machine update b0");
+      expect(recovered.machines.find((machine: ReturnType<typeof fleet>[number]) => machine.id === "b0")).toEqual(held);
+      expect(recovered.machines.filter((machine: ReturnType<typeof fleet>[number]) => machine.id !== "b0")
+        .every((machine: ReturnType<typeof fleet>[number]) => machine.image_ref.digest === digest && machine.release === sourceSha)).toBe(true);
+    }
+  }, 30_000);
+
   test.each(["source-fleet", "feedback-preflight", "stage-feedback", "deploy", "verify", "activate", "rollback"])(
     "%s preserves an explicitly retained stopped worker", (id) => {
       const machines = withRetained();
