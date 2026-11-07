@@ -46,7 +46,7 @@ function fixture() {
   chmodSync(join(bin, "postil"), 0o555);
   mkdirSync(join(bin, ".postil.unrelated"));
   writeFileSync(join(bin, ".postil.unrelated", "sentinel"), old);
-  const environment = { PATH: tools, HOME: root, TMPDIR: temporary, FIXTURE_ARCHIVE: archive };
+  const environment: NodeJS.ProcessEnv = { NODE_ENV: "test", PATH: tools, HOME: root, TMPDIR: temporary, FIXTURE_ARCHIVE: archive };
   const cleanStage = () => {
     expect(readdirSync(bin).filter((name) => name.startsWith(".postil.")).sort()).toEqual([".postil.unrelated"]);
     expect(readFileSync(join(bin, ".postil.unrelated", "sentinel"), "utf8")).toBe(old);
@@ -54,7 +54,7 @@ function fixture() {
   const preserved = () => {
     expect(readFileSync(join(bin, "postil"), "utf8")).toBe(old);
     expect(lstatSync(join(bin, "postil")).mode & 0o777).toBe(0o555);
-    expect(spawnSync(join(bin, "postil"), [], { env: environment }).stdout.toString()).toBe(old.split("echo ")[1]);
+    expect(spawnSync(join(bin, "postil"), [], { env: environment }).stdout.toString()).toBe(old.slice("#!/bin/sh\necho ".length));
     cleanStage();
   };
   const run = (mask = "022") => spawnSync("/bin/sh", ["-c", 'umask "$1"; shift; exec sh "$@"', "fixture", mask, resolve("public/install.sh"), "--version", "v-test", "--bin-dir", bin], { env: environment, timeout: 5000 });
@@ -130,10 +130,10 @@ test("directory symlink rejects replacement without changing its target", () => 
   } finally { f.close(); }
 });
 
-for (const order of [[0, 1], [1, 0]]) {
-  for (const succeeds of [[false, false], [false, true], [true, false], [true, true]]) {
+for (const order of [[0, 1], [1, 0]] as const) {
+  for (const succeeds of [[false, false], [false, true], [true, false], [true, true]] as const) {
     test(`concurrent order ${order} outcomes ${succeeds} retains the last complete commit`, async () => {
-      const fixtures = [fixture(), fixture()];
+      const fixtures = [fixture(), fixture()] as const;
       const children: ReturnType<typeof spawn>[] = [];
       try {
         const attempts = fixtures.map((f, index) => {
@@ -157,8 +157,10 @@ for (const order of [[0, 1], [1, 0]]) {
         await Promise.all(attempts.map((attempt) => attempt.ready));
         let expected = fixtures[0].old;
         for (const index of order) {
-          attempts[index].child.stdin.end("commit\n");
-          const [code] = await attempts[index].done;
+          const attempt = attempts[index];
+          if (!attempt) throw new Error("Missing concurrent installer attempt");
+          attempt.child.stdin.end("commit\n");
+          const [code] = await attempt.done;
           expect(code === 0).toBe(succeeds[index]);
           if (succeeds[index]) expected = fixtures[index].candidate;
           expect(readFileSync(join(fixtures[0].bin, "postil"), "utf8")).toBe(expected);

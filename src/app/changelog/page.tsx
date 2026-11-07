@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.21",
+    date: "November 7, 2026",
+    summary:
+      "CLI v0.9.21 can retry an invalid model decision before a review fails.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "If a model gives an invalid decision about a finding, the CLI asks it to correct the response once. That retry keeps the original findings and evidence and respects the review's prompt and spending limits.",
+      },
+      {
+        label: "Security",
+        text: "Updated TLS certificate verification dependencies.",
+      },
+    ],
+  },
+  {
     version: "0.9.19",
     date: "September 30, 2026",
     summary:
