@@ -12,7 +12,7 @@ read_deploy_machines() {
     ($active | ids and length == 5) and ($held | ids) and
     (($active + $held | unique | length) == ($active + $held | length)) and
     (type == "array") and
-    (if $mode == "rollback" then
+    (if $mode == "rollback" or $mode == "active" then
       ([.[].id] | unique | length) == length and
       all(.[]; .id as $id | ($active + $held) | index($id) != null) and
       ([.[] | select(.id as $id | $active | index($id)) | .id] | sort) == ($active | sort)
@@ -24,7 +24,7 @@ read_deploy_machines() {
     echo '::error::Fleet membership or retained worker state differs from the approved release.' >&2
     return 1
   fi
-  if [[ "$mode" == rollback ]]; then
+  if [[ "$mode" == rollback || "$mode" == active ]]; then
     jq -c --arg approved "${APPROVED_MACHINE_IDS}" '
       ($approved | fromjson) as $active | [.[] | select(.id as $id | $active | index($id))]
     ' <<<"$machines"

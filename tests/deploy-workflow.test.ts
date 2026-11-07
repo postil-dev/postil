@@ -216,9 +216,10 @@ describe("managed deployment contract", () => {
       expect(admitted.code, admitted.error).toBe(0);
       const changed = structuredClone(before);
       const held = changed.find(machine => machine.id === "b0")!;
-      if (seed % 3 === 0) held.state = "started";
-      else if (seed % 3 === 1) held.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
-      else held.config.mounts[0]!.volume = `changed_${seed}`;
+      if (seed % 4 === 0) held.state = "started";
+      else if (seed % 4 === 1) held.image_ref.digest = `sha256:${randomBytes(32).toString("hex")}`;
+      else if (seed % 4 === 2) held.config.mounts[0]!.volume = `changed_${seed}`;
+      else changed.splice(changed.indexOf(held), 1);
       const rejected = runStep("deploy", changed, before, stagedSecrets, undefined, changed, undefined, retainedEnvironment);
       expect(rejected.code).not.toBe(0);
       expect(rejected.updates).toBe("");
@@ -230,11 +231,22 @@ describe("managed deployment contract", () => {
       expect(recovered.code, recovered.error).toBe(0);
       expect(recovered.calls.trim().split("\n")).not.toContain("b0");
       expect(recovered.updates).not.toContain("machine update b0");
-      expect(recovered.machines.find((machine: ReturnType<typeof fleet>[number]) => machine.id === "b0")).toEqual(held);
+      expect(recovered.machines.find((machine: ReturnType<typeof fleet>[number]) => machine.id === "b0")).toEqual(seed % 4 === 3 ? undefined : held);
       expect(recovered.machines.filter((machine: ReturnType<typeof fleet>[number]) => machine.id !== "b0")
         .every((machine: ReturnType<typeof fleet>[number]) => machine.image_ref.digest === digest && machine.release === sourceSha)).toBe(true);
     }
   }, 30_000);
+
+  test.each(["verify", "activate"])("%s does not roll back healthy active machines for unrelated retained drift", id => {
+    const before = withRetained();
+    const changed = structuredClone(before);
+    changed[5]!.state = "started";
+    changed[5]!.config.mounts = [{ volume: "changed", path: "/retained" }];
+    const result = runStep(id, changed, before, deployedSecrets, undefined, changed, undefined, retainedEnvironment);
+    expect(result.code, result.error).toBe(0);
+    expect(result.calls.trim().split("\n")).not.toContain("b0");
+    expect(result.updates).not.toContain("machine update b0");
+  });
 
   test.each(["source-fleet", "feedback-preflight", "stage-feedback", "deploy", "verify", "activate", "rollback"])(
     "%s preserves an explicitly retained stopped worker", (id) => {

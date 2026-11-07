@@ -568,7 +568,7 @@ jobs:
           set -euo pipefail
           source scripts/probe-managed-runtime.sh
           source scripts/select-deploy-machines.sh
-          machines=$(read_deploy_machines)
+          machines=$(read_deploy_machines active)
           if [[ -n "${TARGET_IMAGE:-}" ]] && ! jq -e --arg image "${TARGET_IMAGE}" 'all(.[];
             (.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest) == $image
           )' <<<"${machines}" >/dev/null; then
@@ -655,7 +655,7 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/select-deploy-machines.sh
-          machines=$(read_deploy_machines)
+          machines=$(read_deploy_machines active)
           if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
             ($approved | fromjson) as $ids |
             ($ids | type == "array" and length == 5 and
