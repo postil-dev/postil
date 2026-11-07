@@ -38,11 +38,11 @@ const RELEASES: Release[] = [
     version: "0.9.21",
     date: "November 7, 2026",
     summary:
-      "Reviews can recover from invalid finding adjudication within their request and spending limits.",
+      "CLI v0.9.21 can retry an invalid model decision before a review fails.",
     changes: [
       {
         label: "Fixed",
-        text: "An invalid adjudication response gets one correction attempt while preserving candidate findings and evidence. Admission reserves both attempts, and the correction fits within the prompt limit.",
+        text: "If a model gives an invalid decision about a finding, the CLI asks it to correct the response once. That retry keeps the original findings and evidence and respects the review's prompt and spending limits.",
       },
       {
         label: "Security",
