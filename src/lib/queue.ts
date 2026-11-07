@@ -1344,6 +1344,7 @@ export async function failJob(
   error: string,
   opts: {
     permanent?: boolean;
+    retryAt?: Date;
     failureFollowup?: {
       kind: "respond-failure-comment";
       payload: Record<string, unknown>;
@@ -1352,9 +1353,15 @@ export async function failJob(
   } = {},
 ): Promise<"retried" | "failed" | "coalesced" | "lost"> {
   const redactedError = redactAndTruncate(error, 2000);
+  const retryAt = opts.retryAt && Number.isFinite(opts.retryAt.getTime()) ? new Date(opts.retryAt) : null;
+  if (retryAt && retryAt.getTime() > Date.now()) {
+    // Spread jobs sharing an upstream reset without ever moving them before it.
+    const spreadMs = (Math.imul(job.id, 0x9e3779b1) >>> 0) % 1001;
+    retryAt.setTime(Math.min(8_640_000_000_000_000, retryAt.getTime() + spreadMs));
+  }
+  const delay = backoffMs(job.attempts);
   return withFeedbackControl(pool, async (client, enabled) => {
   if (!opts.permanent && job.attempts < job.maxAttempts) {
-    const delay = backoffMs(job.attempts);
     // Guarded by `status = 'running'` (mirroring the final-fail path below).
     // If the watchdog already requeued this stalled job and a second worker
     // re-claimed it (`status` now 'queued' or 'running' under a new owner with
@@ -1380,13 +1387,16 @@ export async function failJob(
                        AND jsonb_typeof(payload -> $5) = 'object'
                        AND (NOT ((payload -> $5) ? 'reviewFeedback') OR $6::boolean)
                     THEN now()
-                  ELSE now() + ($3 || ' milliseconds')::interval
+                  ELSE GREATEST(now() + ($3 || ' milliseconds')::interval, $7::timestamptz)
                 END
           WHERE id = $1 AND status = 'running' AND locked_by = $4
-        RETURNING status, kind, payload -> $5 AS pending, max_attempts, payload ? 'recoveryReviewId' AS recovering
+        RETURNING status, kind, payload -> $5 AS pending, payload ->> 'installationId' AS installation_id, max_attempts, payload ? 'recoveryReviewId' AS recovering
        ), inserted AS (
          INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-         SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
+         SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued',
+           CASE WHEN $7::timestamptz IS NOT NULL AND pending ->> 'installationId' = installation_id
+             THEN GREATEST(now() + ($3 || ' milliseconds')::interval, $7::timestamptz)
+             ELSE now() END, max_attempts
            FROM transitioned
           WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
             AND (NOT pending ? 'reviewFeedback' OR $6::boolean)
@@ -1398,7 +1408,7 @@ export async function failJob(
          WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
          ELSE 'lost'
        END AS outcome`,
-      [job.id, redactedError, String(delay), job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled],
+      [job.id, redactedError, String(delay), job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled, retryAt],
     );
     return res.rows[0]?.outcome ?? "lost";
   }
@@ -1415,10 +1425,13 @@ export async function failJob(
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending, max_attempts, payload ? 'recoveryReviewId' AS recovering
+          RETURNING status, kind, payload -> $4 AS pending, payload ->> 'installationId' AS installation_id, max_attempts, payload ? 'recoveryReviewId' AS recovering
          ), inserted_review AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-           SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
+           SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued',
+             CASE WHEN $9::timestamptz IS NOT NULL AND pending ->> 'installationId' = installation_id
+               THEN GREATEST(now() + ($10 || ' milliseconds')::interval, $9::timestamptz)
+               ELSE now() END, max_attempts
              FROM transitioned
             WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
               AND (NOT pending ? 'reviewFeedback' OR $8::boolean)
@@ -1446,6 +1459,8 @@ export async function failJob(
           JSON.stringify(opts.failureFollowup.payload),
           opts.failureFollowup.maxAttempts,
           enabled,
+          retryAt,
+          String(delay),
         ],
       )
     : await client.query<{ outcome: "coalesced" | "failed" | "lost" }>(
@@ -1455,10 +1470,13 @@ export async function failJob(
                   locked_at = NULL, locked_by = NULL,
                   last_error = $2, run_after = now()
             WHERE id = $1 AND status = 'running' AND locked_by = $3
-          RETURNING status, kind, payload -> $4 AS pending, max_attempts, payload ? 'recoveryReviewId' AS recovering
+          RETURNING status, kind, payload -> $4 AS pending, payload ->> 'installationId' AS installation_id, max_attempts, payload ? 'recoveryReviewId' AS recovering
          ), inserted AS (
            INSERT INTO jobs (kind, payload, status, run_after, max_attempts)
-           SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued', now(), max_attempts
+           SELECT CASE WHEN pending ? 'reviewFeedback' THEN 'review-feedback' ELSE 'review' END, pending, 'queued',
+             CASE WHEN $6::timestamptz IS NOT NULL AND pending ->> 'installationId' = installation_id
+               THEN GREATEST(now() + ($7 || ' milliseconds')::interval, $6::timestamptz)
+               ELSE now() END, max_attempts
              FROM transitioned
             WHERE kind IN ('review', 'review-feedback') AND NOT recovering AND jsonb_typeof(pending) = 'object'
               AND (NOT pending ? 'reviewFeedback' OR $5::boolean)
@@ -1469,7 +1487,7 @@ export async function failJob(
            WHEN EXISTS (SELECT 1 FROM transitioned WHERE status = 'failed') THEN 'failed'
            ELSE 'lost'
          END AS outcome`,
-        [job.id, redactedError, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled],
+        [job.id, redactedError, job.lockedBy, COALESCED_REVIEW_PAYLOAD_KEY, enabled, retryAt, String(delay)],
       );
   return (res.rows[0] as { outcome?: "coalesced" | "failed" | "lost" } | undefined)
     ?.outcome ?? "lost";
