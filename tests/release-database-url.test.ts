@@ -191,7 +191,9 @@ describe("release database connection", () => {
     await runReleaseMigrations(
       environment,
       (command) => {
-        events.push("provider preflight");
+        events.push(command.includes("hosted:verify-provider")
+          ? "provider preflight"
+          : "managed indexes");
         commands.push([...command]);
         return { exited: Promise.resolve(0) };
       },
@@ -203,12 +205,40 @@ describe("release database connection", () => {
         return true;
       },
     );
-    expect(commands).toEqual([["bun", "run", "hosted:verify-provider"]]);
+    expect(commands).toEqual([
+      ["bun", "run", "hosted:verify-provider"],
+      ["bun", "run", "operational:indexes", "--managed-release"],
+    ]);
     expect(events).toEqual([
       "compatibility verified",
       "provider preflight",
+      "managed indexes",
       "release prepared",
     ]);
+  });
+
+  test("stops a managed release before preparation when its index build fails", async () => {
+    let prepared = false;
+    await expect(
+      runReleaseMigrations(
+        {
+          POSTIL_MANAGED_RELEASE: "1",
+          DATABASE_URL: "postgresql://postil@db.internal:5432/postil",
+          POSTIL_RELEASE_SHA: "a".repeat(40),
+          POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA: "b".repeat(40),
+          POSTIL_RELEASE_PROTOCOL: "additive-publication-hosted-v1",
+        },
+        (command) => ({
+          exited: Promise.resolve(command.includes("operational:indexes") ? 1 : 0),
+        }),
+        async () => undefined,
+        async () => {
+          prepared = true;
+          return true;
+        },
+      ),
+    ).rejects.toThrow("release managed operational indexes failed with status 1");
+    expect(prepared).toBe(false);
   });
 
   test("rejects incompatibility and provider failure before preparation", async () => {
@@ -354,7 +384,7 @@ describe("release database connection", () => {
       'recovery_target_sha="${recovery_targets[0]}"',
     );
     expect(productionMonitorWorkflow).toContain(
-      "needs: [smoke, release-recovery]",
+      "needs: [deployment-trust, smoke, release-recovery]",
     );
     expect(productionMonitorWorkflow).toContain(
       "Postil release recovery failed",
