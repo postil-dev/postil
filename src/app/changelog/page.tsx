@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.21",
+    date: "November 7, 2026",
+    summary:
+      "Reviews can recover from invalid finding adjudication within their request and spending limits.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "An invalid adjudication response gets one correction attempt while preserving candidate findings and evidence. Admission reserves both attempts, and the correction fits within the prompt limit.",
+      },
+      {
+        label: "Security",
+        text: "Updated TLS certificate verification dependencies.",
+      },
+    ],
+  },
+  {
     version: "0.9.19",
     date: "September 30, 2026",
     summary:
