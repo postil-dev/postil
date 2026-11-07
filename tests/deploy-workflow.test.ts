@@ -206,7 +206,7 @@ describe("managed deployment contract", () => {
       expect(result.code, result.error).toBe(0);
       expect(result.calls.trim().split("\n")).not.toContain("b0");
       expect(result.updates).not.toContain("machine update b0");
-      expect(result.machines.find(machine => machine.id === "b0")).toEqual(machines.find(machine => machine.id === "b0"));
+      expect(result.machines.find((machine: ReturnType<typeof fleet>[number]) => machine.id === "b0")).toEqual(machines.find(machine => machine.id === "b0"));
     });
 
   test.each(["state", "image", "environment", "mount", "group"])("rejects retained worker %s drift before mutation", (field) => {
