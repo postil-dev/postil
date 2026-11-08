@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { verifyManagedImageBinding } from "../scripts/start-managed-process";
 import { runReleaseMigrations } from "../scripts/run-release-migrations";
+import { selectPhases } from "../scripts/deploy-managed-fleet";
 
 const workflow = parse(readFileSync(".github/workflows/deploy.yml", "utf8"));
 const steps = workflow.jobs.deploy.steps as Array<{ id?: string; name?: string; run?: string }>;
@@ -112,8 +113,18 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
             mv "$RUNNER_TEMP/next-secrets.json" "$RUNNER_TEMP/secrets.json"
             printf 'staged\n' ;;
           "deploy --remote-only")
-            [[ "$*" == *"--only-machines a0,a2"* || "$*" == *"--only-machines a1,a4,a3"* ]] || return 97
+            [[ "$*" == *"--only-machines $FIRST_MACHINE_IDS"* || "$*" == *"--only-machines $REMAINING_MACHINE_IDS"* ]] || return 97
             [[ "$*" == *"--max-concurrent 1 --update-only --ha=false"* ]] || return 97
+            # Fly validates mounts for configured process groups before update-only.
+            local process_groups="web,worker,monitor" previous="" argument
+            for argument in "$@"; do
+              if [[ "$previous" == "--process-groups" ]]; then process_groups="$argument"; fi
+              previous="$argument"
+            done
+            if [[ "$*" == *"--only-machines $FIRST_MACHINE_IDS"* && ",$process_groups," == *",monitor,"* ]]; then
+              printf '%s\\n' "creating a new machine in group 'monitor' requires an unattached volume" >&2
+              return 1
+            fi
             if [[ -n "\${TARGET_IMAGE:-}" ]]; then [[ "$*" == *"--image $TARGET_IMAGE"* ]] || return 97; fi
             if [[ "\${TEST_RELEASE_COMMAND_FAILURE:-0}" == "1" ]]; then return 1; fi
             printf '%s\\n' "$*" > "$RUNNER_TEMP/deploy-args"
@@ -201,6 +212,7 @@ describe("managed deployment contract", () => {
     const first = runStep("deploy");
     expect(first.code, first.error).toBe(0);
     expect(first.deployArgs).toContain("--only-machines a0,a2");
+    expect(first.deployArgs).toContain("--process-groups web,worker");
     expect(first.deployArgs).not.toContain("--only-machines a1,a4,a3");
     const peers = runStep("deploy-peers", mixedFleet(), fleet(), deployedSecrets, undefined,
       mixedFleet(), undefined, { ACCEPTED: "true" });
@@ -208,6 +220,65 @@ describe("managed deployment contract", () => {
     expect(peers.deployArgs).toContain("--only-machines a1,a4,a3");
     expect(peers.deployArgs).toContain(`--image ${targetImage}`);
   });
+
+  test("generated group assignments preserve phase scope, admission and source recovery", () => {
+    let assignments = 0;
+    let recoveredPrefixes = 0;
+    for (let monitor = 0; monitor < 5; monitor++) {
+      for (let firstWeb = 0; firstWeb < 5; firstWeb++) {
+        for (let secondWeb = firstWeb + 1; secondWeb < 5; secondWeb++) {
+          if ([firstWeb, secondWeb].includes(monitor)) continue;
+          const source = fleet().map((machine, index) => {
+            const group = index === monitor ? "monitor" : [firstWeb, secondWeb].includes(index) ? "web" : "worker";
+            machine.config.metadata.fly_process_group = group;
+            machine.config.mounts = group === "monitor" ? [{ volume: "vol_test", path: "/var/lib/postil-monitor" }] : [];
+            return machine;
+          }).reverse();
+          const phase = selectPhases(source);
+          const environment = { FIRST_MACHINE_IDS: phase.first.join(","), REMAINING_MACHINE_IDS: phase.remaining.join(","),
+            FIRST_WEB_ID: phase.firstWeb, FIRST_WORKER_ID: phase.firstWorker };
+          expect(selectPhases([...source].reverse())).toEqual(phase);
+          expect(new Set([...phase.first, ...phase.remaining]).size).toBe(5);
+          expect(phase.first.map(id => source.find(machine => machine.id === id)!.config.metadata.fly_process_group)).toEqual(["web", "worker"]);
+          expect(phase.remaining).toContain(`a${monitor}`);
+          const first = runStep("deploy", source, source, stagedSecrets, undefined, source, undefined, environment);
+          expect(first.code, first.error).toBe(0);
+          expect(first.deployArgs).toContain("--process-groups web,worker");
+          const partial = structuredClone(source);
+          for (const machine of partial.filter(machine => phase.first.includes(machine.id))) {
+            machine.config.image = targetImage;
+            machine.image_ref.digest = targetImage.split("@")[1]!;
+            machine.release = targetSha;
+          }
+          const denied = runStep("deploy-peers", partial, source, deployedSecrets, undefined, partial, undefined, environment);
+          expect(denied.code).not.toBe(0);
+          expect(denied.updates).toBe("");
+          const peers = runStep("deploy-peers", partial, source, deployedSecrets, undefined, partial, undefined,
+            { ...environment, ACCEPTED: "true" });
+          expect(peers.code, peers.error).toBe(0);
+          expect(peers.deployArgs).toContain(`--only-machines ${phase.remaining.join(",")}`);
+          expect(peers.deployArgs).not.toContain("--process-groups");
+          const order = [...(monitor % 2 ? [...phase.first].reverse() : phase.first),
+            ...phase.remaining.slice(firstWeb % 3), ...phase.remaining.slice(0, firstWeb % 3)];
+          for (let prefix = 1; prefix <= order.length; prefix++) {
+            const interrupted = structuredClone(source);
+            for (const machine of interrupted.filter(machine => order.slice(0, prefix).includes(machine.id))) {
+              machine.config.image = targetImage;
+              machine.image_ref.digest = targetImage.split("@")[1]!;
+              machine.release = targetSha;
+            }
+            const restored = runStep("rollback", interrupted, source, deployedSecrets, undefined, interrupted, undefined, environment);
+            expect(restored.code, restored.error).toBe(0);
+            expect(restored.machines).toEqual(source);
+            recoveredPrefixes++;
+          }
+          assignments++;
+        }
+      }
+    }
+    expect(assignments).toBe(30);
+    expect(recoveredPrefixes).toBe(150);
+  }, 120_000);
 
   test("peer deployment accepts the unchanged partial feedback-secret deployment after phase one", () => {
     const partialSecrets = [...secretMetadata, { ...stagedFeedback, status: "Partial" }];
