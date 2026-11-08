@@ -209,6 +209,24 @@ describe("managed deployment contract", () => {
     expect(peers.deployArgs).toContain(`--image ${targetImage}`);
   });
 
+  test("peer deployment accepts the unchanged partial feedback-secret deployment after phase one", () => {
+    const partialSecrets = [...secretMetadata, { ...stagedFeedback, status: "Partial" }];
+    const peers = runStep("deploy-peers", mixedFleet(), fleet(), partialSecrets, undefined,
+      mixedFleet(), undefined, { ACCEPTED: "true" });
+    expect(peers.code, peers.error).toBe(0);
+    expect(peers.deployArgs).toContain("--only-machines a1,a4,a3");
+    for (const invalid of [
+      [...secretMetadata, { ...stagedFeedback, digest: "changed", status: "Partial" }],
+      [{ ...secretMetadata[0]!, status: "Partial" }, { ...stagedFeedback, status: "Partial" }],
+    ]) {
+      const rejected = runStep("deploy-peers", mixedFleet(), fleet(), invalid, undefined,
+        mixedFleet(), undefined, { ACCEPTED: "true" });
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.updates).toBe("");
+    }
+    expect(runStep("verify", fleet(), fleet(), partialSecrets).code).not.toBe(0);
+  });
+
   test("no peer replacement follows missing acceptance, dependency failure or mixed-fleet drift", () => {
     const mixed = mixedFleet();
     const first = runStep("first-proof", mixed, fleet(), deployedSecrets);

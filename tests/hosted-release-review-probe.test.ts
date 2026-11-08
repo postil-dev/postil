@@ -23,12 +23,14 @@ const row = (id: number, changes: Partial<Observation> = {}): Observation => ({
 async function simulate(attempts: readonly (readonly Observation[])[], options: {
   associations?: number; selectedHead?: string; checkHead?: string;
   checkExternalId?: string; previousCount?: number; rerunStatus?: number; advisoryConclusion?: string;
+  pendingPolls?: number;
 } = {}) {
   let now = 1800000000000;
   let rerequests = 0;
   let output = "";
   let errors = 0;
   let tokenMints = 0;
+  let observationReads = 0;
   const calls: Array<{ path: string; method: string; signal: boolean }> = [];
   const token = randomBytes(32).toString("hex");
   class Client {
@@ -53,7 +55,12 @@ async function simulate(attempts: readonly (readonly Observation[])[], options: 
         const selected = (attempts[rerequests - 1] ?? []).filter(item =>
           item.id > Number(args[7]) && (item.repository ?? input.repository) === args[4] &&
           (item.head ?? input.head) === args[2]);
-        return { rows: selected };
+        observationReads++;
+        return { rows: selected.map(item => ({ ...item,
+          cli_match: item.cli_match && args[5] === "postil CLI version 0.9.21",
+          ...(observationReads <= (options.pendingPolls ?? 0)
+            ? { status: "running", finished: false } : {}),
+        })) };
       }
       throw Error("unexpected SQL");
     }
@@ -99,7 +106,7 @@ async function simulate(attempts: readonly (readonly Observation[])[], options: 
 }
 
 describe("owned hosted release review probe", () => {
-  test("accepts a completed target review and both terminal check IDs from that attempt", async () => {
+  test("matches the worker's actual version log and both terminal check IDs from that attempt", async () => {
     const accepted = await simulate([[row(101)]]);
     expect(accepted.errors).toBe(0);
     expect(accepted.rerequests).toBe(1);
@@ -107,6 +114,13 @@ describe("owned hosted release review probe", () => {
       repository: input.repository, pr: input.pr, head, reviewId: 101,
       advisoryCheckRunId: 201, gateCheckRunId: 202 });
     expect(accepted.calls.every(call => call.signal)).toBe(true);
+  });
+
+  test("a running target review may finish after three minutes within the total acceptance bound", async () => {
+    const accepted = await simulate([[row(101)]], { pendingPolls: 3 });
+    expect(accepted.errors).toBe(0);
+    expect(accepted.rerequests).toBe(1);
+    expect(JSON.parse(accepted.output).reviewId).toBe(101);
   });
 
   test("generated duplicate and reordered observations cannot borrow another attempt or head", async () => {

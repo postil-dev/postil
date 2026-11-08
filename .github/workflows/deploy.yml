@@ -675,9 +675,13 @@ jobs:
           fi
           fly_secrets=$(flyctl secrets list --app postil-web --json)
           if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
-            (map({name, digest, status}) | sort_by(.name)) ==
-              ($source[0] | map(if .name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and
-                .status == "Staged" then .status = "Deployed" else . end))
+            (map({name, digest, status}) | sort_by(.name)) as $observed |
+            ($observed | map({name, digest})) == ($source[0] | map({name, digest})) and
+            all($observed[]; . as $secret |
+              any($source[0][]; .name == $secret.name and
+                (.status == $secret.status or
+                  (.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Staged" and
+                    ($secret.status == "Partial" or $secret.status == "Deployed")))))
           ' <<<"${fly_secrets}" >/dev/null; then
             echo "::error::Fly secret metadata changed before peer replacement."
             exit 1

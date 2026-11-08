@@ -71,7 +71,7 @@ export const remoteReviewProgram = String.raw`(async () => {
      selected.pull_requests[0]?.number!==input.pr||selected.pull_requests[0]?.head?.sha!==input.head)throw Error('check run association changed');
   const observations=async(watermark)=>read(
     'SELECT v.id, v.public_id, v.status, v.error_message IS NULL AS no_error, v.finished_at IS NOT NULL AS finished, v.advisory_check_run_id AS advisory, v.gate_check_run_id AS gate, EXISTS (SELECT 1 FROM review_logs l WHERE l.review_id=v.id AND l.line=$6) AS cli_match FROM reviews v JOIN repositories r ON r.id=v.repository_id WHERE r.github_repo_id=$1 AND v.pr_number=$2 AND v.head_sha=$3 AND v.source_github_installation_id=$4 AND v.source_github_repo_id=$1 AND v.source_repo_full_name=$5 AND v.trigger_source=\'github_check_rerun\' AND v.trigger_context->>\'webhookEvent\'=\'check_run\' AND v.trigger_context->>\'webhookAction\'=\'rerequested\' AND v.trigger_context->>\'checkName\'=$7 AND v.id>$8 ORDER BY v.id LIMIT 10',
-    [repoId,input.pr,input.head,installation,input.repository,'postil CLI version '+input.version,selected.name,watermark]);
+    [repoId,input.pr,input.head,installation,input.repository,'postil CLI version '+input.version.slice('postil '.length),selected.name,watermark]);
   const terminalCheck=async(id,name,publicId)=>{
     if(!exactId(Number(id)))return false;
     const check=await request('/repos/'+input.repository+'/check-runs/'+id,token);
@@ -83,9 +83,8 @@ export const remoteReviewProgram = String.raw`(async () => {
   let watermark=Number((await read('SELECT COALESCE(MAX(v.id),0) AS id FROM reviews v JOIN repositories r ON r.id=v.repository_id WHERE r.github_repo_id=$1 AND v.pr_number=$2 AND v.head_sha=$3',[repoId,input.pr,input.head]))[0].id);
   for(let attempt=1;attempt<=3;attempt++){
     await rerequest(token);
-    const attemptEnd=Math.min(end,Date.now()+3*60*1000);
     let completedAttempt=false;
-    while(Date.now()<attemptEnd){
+    while(Date.now()<end){
       const rows=await observations(watermark);
       if(rows.length>0){
         if(rows.length===10)throw Error('ambiguous webhook attempts');
