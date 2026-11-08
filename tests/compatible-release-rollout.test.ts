@@ -407,7 +407,9 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       const commands: string[][] = [];
       try {
         const before = (await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows;
-        for (const mode of ["disabled", "enabled", "inherit"]) {
+        const modes = ["disabled", "enabled", "inherit"];
+        const history = modes.flatMap(from => modes.flatMap(to => [from, to, to]));
+        for (const mode of history) {
           await pool.query("UPDATE review_feedback_control SET mode = $1 WHERE id = 1", [mode]);
           await runReleaseMigrations(environment,
             (command) => { commands.push([...command]); return { exited: Promise.resolve(0) }; },
@@ -419,7 +421,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
           expect((await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows)
             .toEqual(before);
         }
-        expect(commands).toEqual(Array.from({ length: 3 }, () => ["bun", "run", "hosted:verify-provider"]));
+        expect(commands).toEqual(Array.from({ length: history.length }, () => ["bun", "run", "hosted:verify-provider"]));
       } finally {
         await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
       }
