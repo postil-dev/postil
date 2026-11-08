@@ -34,13 +34,15 @@ if(!match)process.exit(92);
 const program=Buffer.from(match[1],'base64').toString();
 const id=args[2];
 const scenario=process.env.TEST_SCENARIO;
+const failures=scenario?.startsWith('generated-')?Number(scenario.slice('generated-'.length)):0;
 if(program.includes('/api/webhooks/github')){
   if(id!=='a1'||!program.includes('"a0"'))process.exit(95);
+  if(scenario==='webhook-transport')process.exit(96);
   console.log(JSON.stringify({status:scenario==='webhook-http'?503:400,
-    authenticated:scenario!=='webhook-auth'&&scenario!=='webhook-source'}));
+    authenticated:scenario!=='webhook-auth'&&scenario!=='webhook-source'&&!(failures&4)}));
 }else if(program.includes('/api/health/dependencies')){
   if(id!=='a0')process.exit(93);
-  console.log(JSON.stringify({status:scenario==='web-http'?503:200,ok:scenario!=='web-ok',database:scenario!=='web-db'}));
+  console.log(JSON.stringify({status:scenario==='web-http'?503:200,ok:scenario!=='web-ok',database:scenario!=='web-db'&&!(failures&2)}));
 }else if(program.includes('POSTIL_RELEASE_SHA')){
   const target=process.env.TEST_MODE==='target';
   const release=target?process.env.TARGET_RELEASE_SHA:process.env.SOURCE_RELEASE_SHA;
@@ -53,7 +55,7 @@ if(program.includes('/api/webhooks/github')){
   if(scenario==='source-managed')contract[3]='0';
   if(scenario==='source-shape')contract.push('unexpected');
   console.log(JSON.stringify({contract,
-    version,hash:scenario==='worker-hash'&&id==='a2'?'b'.repeat(64):hash}));
+    version,hash:(scenario==='worker-hash'||(failures&1))&&id==='a2'?'b'.repeat(64):hash}));
 }else process.exit(94);
 `);
     chmodSync(flyctl, 0o755);
@@ -91,7 +93,7 @@ describe("phased managed fleet helper", () => {
   });
 
   test.each(["web-http", "web-ok", "web-db", "worker-hash", "worker-release",
-    "webhook-http", "webhook-auth", "webhook-source"])(
+    "webhook-http", "webhook-auth", "webhook-source", "webhook-transport"])(
     "rejects exact first-target %s failure before peers", scenario => {
       const result = execute("target", scenario);
       expect(result.code).not.toBe(0);
@@ -126,7 +128,15 @@ describe("phased managed fleet helper", () => {
     expect(sameIdentity({ ...identity, hash: "0".repeat(64) }, contract, identity.version, targetHash)).toBe(false);
   });
 
-  test.each(["authenticated", "unauthorized", "wrong-response", "redirect", "wrong-source", "missing-key"])(
+  test.each(Array.from({ length: 8 }, (_, failures) => failures))(
+    "requires every first-target barrier with generated failure mask %i", failures => {
+      const result = execute("target", `generated-${failures}`);
+      expect(result.code === 0).toBe(failures === 0);
+      expect(result.stdout.includes("verified")).toBe(failures === 0);
+      expect(result.output).toBe("");
+    });
+
+  test.each(["authenticated", "unauthorized", "wrong-response", "redirect", "wrong-source", "missing-key", "network"])(
     "executes the emitted public webhook probe with %s", async scenario => {
       const key = randomBytes(24).toString("hex");
       let requests = 0;
@@ -149,6 +159,7 @@ describe("phased managed fleet helper", () => {
         const wrapper = `const originalFetch=globalThis.fetch;
           globalThis.fetch=(url,options)=>{
             if(url!=='https://postil.dev/api/webhooks/github'||options.redirect!=='error'||!options.signal)throw Error();
+            if(${scenario === "network"})throw Error();
             return originalFetch(${JSON.stringify(server.url.toString())}+'api/webhooks/github',options);
           };`;
         const child = Bun.spawn(["bun", "-e", wrapper + publicWebhookProbe("a0", source)], {
@@ -161,7 +172,7 @@ describe("phased managed fleet helper", () => {
           child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
         ]);
         expect(output.includes(key) || error.includes(key)).toBe(false);
-        if (["wrong-source", "missing-key"].includes(scenario)) {
+        if (["wrong-source", "missing-key", "network"].includes(scenario)) {
           expect(code).toBe(64);
           expect(requests).toBe(0);
         } else {
