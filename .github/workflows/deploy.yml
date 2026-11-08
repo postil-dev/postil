@@ -577,6 +577,7 @@ jobs:
             --update-only \
             --ha=false \
             --only-machines "${FIRST_MACHINE_IDS}" \
+            --process-groups web,worker \
             --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
             --build-arg POSTIL_RELEASE_SHA="${TARGET_RELEASE_SHA}" \
             --build-arg POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA="${SOURCE_RELEASE_SHA}" \
