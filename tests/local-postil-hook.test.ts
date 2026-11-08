@@ -27,8 +27,8 @@ afterEach(async () => {
 });
 
 describe("trusted local Postil pre-push hook", () => {
-  test("retains full output for clean, incomplete and malformed reviews without retaining credentials", async()=>{
-    for(const mode of ["pass","synthetic-diff","malformed","provider-error"] as const) {
+  test.each(["pass","synthetic-diff","malformed","provider-error"] as const)(
+    "retains full output without retaining credentials for %s reviews", async(mode)=>{
       const fixture=await createFixture(`retained-${mode}`);
       await commit(fixture.repository,"topic",`${mode} review\n`);await installHook(fixture,fixture.repository,true);
       const credential=crypto.randomUUID();
@@ -47,7 +47,6 @@ describe("trusted local Postil pre-push hook", () => {
       expect(await directoryContains(join(fixture.repository,".git","postil-local-review"),credential)).toBe(false);
       expect(files.some(path=>path.endsWith("/exit-status"))).toBe(true);
       expect(await Bun.file(fixture.leakLog).exists()).toBe(false);
-    }
   });
 
   test("superseding a finding retains exact cache, edited disposition and both full outputs",async()=>{

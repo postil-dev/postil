@@ -13,16 +13,16 @@ on:
         default: "[]"
         type: string
       target_image:
-        description: Immutable image from the qualified build, bound by the rollback timer
+        description: Immutable qualified runtime image; rollback_target_sha names its release
         required: false
         default: ""
         type: string
       rollback_deadline_epoch:
-        description: Absolute Unix-seconds deadline from the active target-bound rollback timer
+        description: Absolute Unix-seconds workflow recovery deadline
         required: true
         type: string
       rollback_target_sha:
-        description: Exact target SHA bound by the active rollback timer
+        description: Exact runtime target SHA, distinct from the workflow SHA for supplied images
         required: true
         type: string
       rollback_source_sha:
@@ -31,6 +31,10 @@ on:
         type: string
       rollback_source_image:
         description: Exact pinned source image bound by the rollback package
+        required: true
+        type: string
+      acceptance:
+        description: JSON with exact owned repository, PR, head SHA and existing Postil check run ID
         required: true
         type: string
 
@@ -46,7 +50,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      TARGET_RELEASE_SHA: ${{ github.sha }}
+      ORCHESTRATION_SHA: ${{ github.sha }}
+      TARGET_RELEASE_SHA: ${{ inputs.target_image != '' && inputs.rollback_target_sha || github.sha }}
       ROLLBACK_DEADLINE_EPOCH: ${{ inputs.rollback_deadline_epoch }}
       ROLLBACK_TARGET_SHA: ${{ inputs.rollback_target_sha }}
       ROLLBACK_SOURCE_SHA: ${{ inputs.rollback_source_sha }}
@@ -54,7 +59,8 @@ jobs:
       APPROVED_MACHINE_IDS: ${{ inputs.machine_ids }}
       RETAINED_MACHINE_IDS: ${{ inputs.retained_machine_ids }}
       TARGET_IMAGE: ${{ inputs.target_image }}
-    # Manual admission remains disabled until target-bound rollback protection is active.
+      ACCEPTANCE_CONTEXT: ${{ inputs.acceptance }}
+    # Manual admission remains governed by the configured release switch.
     if: vars.FLY_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -76,8 +82,8 @@ jobs:
       - name: Verify deploy source types
         run: |
           set -euo pipefail
-          [[ "${TARGET_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "${TARGET_RELEASE_SHA}"
+          [[ "${ORCHESTRATION_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "${ORCHESTRATION_SHA}"
           bun install --frozen-lockfile
           bunx tsc --noEmit
       - name: Fetch pinned postil CLI
@@ -189,7 +195,7 @@ jobs:
           install -m 0755 "${tmp}/flyctl" "${RUNNER_TEMP}/flyctl"
           echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
           "${RUNNER_TEMP}/flyctl" version
-      - name: Admit target-bound rollout
+      - name: Admit phased rollout
         id: admission
         run: |
           set -euo pipefail
@@ -200,14 +206,28 @@ jobs:
           if [[ ! "${TARGET_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ||
                 ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ ||
                 "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
+                ( -z "${TARGET_IMAGE:-}" && "${TARGET_RELEASE_SHA}" != "${ORCHESTRATION_SHA}" ) ||
                 ! "${ROLLBACK_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ||
+                "${ROLLBACK_SOURCE_SHA}" == "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_SOURCE_IMAGE:-}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ||
+                ( -n "${TARGET_IMAGE:-}" && "${ROLLBACK_SOURCE_IMAGE}" == "${TARGET_IMAGE}" ) ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
             echo "::error::An exact target, source SHA, source image, and rollback deadline are required."
             exit 1
           fi
+          if ! jq -e --arg context "${ACCEPTANCE_CONTEXT:-}" '
+            ($context | fromjson) as $owned |
+            ($owned | type == "object" and (keys | sort) == ["checkRun", "head", "pr", "repository"] and
+              (.repository | type == "string" and test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
+              (.head | type == "string" and test("^[0-9a-f]{40}$")) and
+              (.pr | type == "number" and . > 0 and . == floor and . <= 9007199254740991) and
+              (.checkRun | type == "number" and . > 0 and . == floor and . <= 9007199254740991))
+          ' <<<"null" >/dev/null; then
+            echo "::error::Exact owned hosted review inputs are required."
+            exit 1
+          fi
           now=$(date -u +%s)
-          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2400 )); then
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 4800 )); then
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
@@ -358,19 +378,29 @@ jobs:
           echo "Source feedback runtime is off on all approved machines."
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Select phased managed release and prove source CLI identities
+        id: phases
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          bun run scripts/deploy-managed-fleet.ts plan
+          bun run scripts/deploy-managed-fleet.ts source
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          SOURCE_RELEASE_SHA: ${{ steps.source-fleet.outputs.release-sha }}
       - name: Stage feedback compatibility mode
         id: stage-feedback
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          # Stage (2m), secret contract (2m), and the bounded 40m release sequence.
+          # Both phases, hosted acceptance, verification and same-job recovery remain ahead.
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
-            echo "::error::An exact target-bound rollback deadline is required."
+            echo "::error::An exact runtime target and workflow recovery deadline are required."
             exit 1
           fi
           now=$(date -u +%s)
-          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2640 )); then
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 4200 )); then
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
@@ -446,14 +476,14 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          # Provisioning (5m), deploy (10m), verify (5m), activate (5m), rollback (10m), margin (5m).
+          # Provisioning, two deploy phases, acceptance, verification, activation and recovery.
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
-            echo "::error::An exact target-bound rollback deadline is required."
+            echo "::error::An exact runtime target and workflow recovery deadline are required."
             exit 1
           fi
           now=$(date -u +%s)
-          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2400 )); then
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 3900 )); then
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
@@ -473,7 +503,7 @@ jobs:
           echo "volume-id=${volume_id}" >> "${GITHUB_OUTPUT}"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Deploy managed fleet
+      - name: Deploy first web and worker
         id: deploy
         timeout-minutes: 10
         run: |
@@ -485,14 +515,14 @@ jobs:
             echo "::error::Fly secret metadata changed after source capture; deployment requires separate configuration maintenance."
             exit 1
           fi
-          # Recheck after preparation: deploy, verify, activate, automatic rollback, and a five-minute margin.
+          # Leave time for both deploy phases, bounded acceptance, verification and rollback.
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
-            echo "::error::An exact target-bound rollback deadline is required."
+            echo "::error::An exact runtime target and workflow recovery deadline are required."
             exit 1
           fi
           now=$(date -u +%s)
-          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2100 )); then
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 3600 )); then
             echo "::error::The rollback deadline leaves insufficient time for the bounded release sequence."
             exit 1
           fi
@@ -546,7 +576,7 @@ jobs:
             --max-concurrent 1 \
             --update-only \
             --ha=false \
-            --only-machines "$(jq -r 'join(",")' <<<"${APPROVED_MACHINE_IDS}")" \
+            --only-machines "${FIRST_MACHINE_IDS}" \
             --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
             --build-arg POSTIL_RELEASE_SHA="${TARGET_RELEASE_SHA}" \
             --build-arg POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA="${SOURCE_RELEASE_SHA}" \
@@ -558,6 +588,127 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
           SOURCE_RELEASE_SHA: ${{ steps.source-fleet.outputs.release-sha }}
+          FIRST_MACHINE_IDS: ${{ steps.phases.outputs.first-ids }}
+      - name: Prove first target web and worker
+        id: first-proof
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines active)
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" \
+            --arg first "${FIRST_MACHINE_IDS}" --arg remaining "${REMAINING_MACHINE_IDS}" \
+            --arg source_image "${ROLLBACK_SOURCE_IMAGE}" --arg target_image "${TARGET_IMAGE}" '
+            def image: .image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest;
+            def stable_config: .config | del(.image, .metadata.fly_release_id,
+              .metadata.fly_release_version, .metadata.fly_flyctl_version, .metadata.fly_builder_id);
+            def healthy: .state == "started" and .host_status == "ok" and all(.checks[]?; .status == "passing");
+            ($first | split(",")) as $first_ids | ($remaining | split(",")) as $remaining_ids |
+            length == 5 and ([.[].id] | sort) == ([$source[0][].id] | sort) and
+            all(.[]; . as $machine | healthy and any($source[0][];
+              .id == $machine.id and .region == $machine.region and
+              stable_config == ($machine | stable_config))) and
+            all(.[] | select(.id as $id | $first_ids | index($id));
+              image != $source_image and ($target_image == "" or image == $target_image)) and
+            all(.[] | select(.id as $id | $remaining_ids | index($id)); image == $source_image) and
+            ([.[] | select(.id as $id | $first_ids | index($id)) | image] | unique | length) == 1
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::First phase did not leave exactly the approved healthy mixed fleet."
+            exit 1
+          fi
+          first_image=$(jq -er --arg id "${FIRST_WEB_ID}" \
+            '.[] | select(.id == $id) | .image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest' <<<"${machines}")
+          if [[ ! "${first_image}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::First target image reference is invalid."
+            exit 1
+          fi
+          bun run scripts/deploy-managed-fleet.ts target
+          echo "image=${first_image}" >> "${GITHUB_OUTPUT}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          SOURCE_RELEASE_SHA: ${{ steps.source-fleet.outputs.release-sha }}
+          FIRST_MACHINE_IDS: ${{ steps.phases.outputs.first-ids }}
+          REMAINING_MACHINE_IDS: ${{ steps.phases.outputs.remaining-ids }}
+          FIRST_WEB_ID: ${{ steps.phases.outputs.first-web }}
+      - name: Prove a normal owned hosted review on the first target worker
+        id: hosted-acceptance
+        timeout-minutes: 11
+        run: bun run scripts/probe-hosted-release-review.ts
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FIRST_WORKER_ID: ${{ steps.phases.outputs.first-worker }}
+          POSTIL_CLI_VERSION: ${{ steps.phases.outputs.cli-version }}
+          POSTIL_CLI_HASH: ${{ steps.phases.outputs.cli-hash }}
+      - name: Deploy remaining source peers and monitor
+        id: deploy-peers
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          if [[ "${ACCEPTED}" != "true" || ! "${FIRST_IMAGE}" =~ ^registry\.fly\.io/postil-web@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::First-target hosted acceptance is absent."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          if [[ ! "$now" =~ ^[1-9][0-9]{9}$ ]] || (( ROLLBACK_DEADLINE_EPOCH - now < 2100 )); then
+            echo "::error::The recovery deadline leaves insufficient time for the remaining release sequence."
+            exit 1
+          fi
+          source scripts/select-deploy-machines.sh
+          machines=$(read_deploy_machines active)
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-machines.json" \
+            --arg first "${FIRST_MACHINE_IDS}" --arg remaining "${REMAINING_MACHINE_IDS}" \
+            --arg source_image "${ROLLBACK_SOURCE_IMAGE}" --arg target_image "${FIRST_IMAGE}" '
+            def image: .image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest;
+            def stable_config: .config | del(.image, .metadata.fly_release_id,
+              .metadata.fly_release_version, .metadata.fly_flyctl_version, .metadata.fly_builder_id);
+            def healthy: .state == "started" and .host_status == "ok" and all(.checks[]?; .status == "passing");
+            ($first | split(",")) as $first_ids | ($remaining | split(",")) as $remaining_ids |
+            length == 5 and ([.[].id] | sort) == ([$source[0][].id] | sort) and
+            all(.[]; . as $machine | healthy and any($source[0][];
+              .id == $machine.id and .region == $machine.region and
+              stable_config == ($machine | stable_config))) and
+            all(.[] | select(.id as $id | $first_ids | index($id)); image == $target_image) and
+            all(.[] | select(.id as $id | $remaining_ids | index($id)); image == $source_image)
+          ' <<<"${machines}" >/dev/null; then
+            echo "::error::Mixed fleet changed before the second phase."
+            exit 1
+          fi
+          fly_secrets=$(flyctl secrets list --app postil-web --json)
+          if ! jq -e --slurpfile source "${RUNNER_TEMP}/postil-source-secrets.json" '
+            (map({name, digest, status}) | sort_by(.name)) as $observed |
+            ($observed | map({name, digest})) == ($source[0] | map({name, digest})) and
+            all($observed[]; . as $secret |
+              any($source[0][]; .name == $secret.name and
+                (.status == $secret.status or
+                  (.name == "POSTIL_REVIEW_FEEDBACK_ENABLED" and .status == "Staged" and
+                    ($secret.status == "Partial" or $secret.status == "Deployed")))))
+          ' <<<"${fly_secrets}" >/dev/null; then
+            echo "::error::Fly secret metadata changed before peer replacement."
+            exit 1
+          fi
+          flyctl deploy \
+            --remote-only \
+            --image "${FIRST_IMAGE}" \
+            --strategy rolling \
+            --max-concurrent 1 \
+            --update-only \
+            --ha=false \
+            --only-machines "${REMAINING_MACHINE_IDS}" \
+            --build-arg POSTIL_CLI_REV="${POSTIL_CLI_TAG}" \
+            --build-arg POSTIL_RELEASE_SHA="${TARGET_RELEASE_SHA}" \
+            --build-arg POSTIL_COMPATIBLE_SOURCE_RELEASE_SHA="${SOURCE_RELEASE_SHA}" \
+            --build-arg POSTIL_RELEASE_PROTOCOL=additive-publication-hosted-v1 \
+            --build-arg POSTIL_MANAGED_RELEASE=1 \
+            --build-arg POSTIL_DEPLOY_SOURCE_TYPECHECKED=1 \
+            --build-arg NEXT_PUBLIC_POSTHOG_HOST="${NEXT_PUBLIC_POSTHOG_HOST:-https://eu.i.posthog.com}"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
+          SOURCE_RELEASE_SHA: ${{ steps.source-fleet.outputs.release-sha }}
+          FIRST_MACHINE_IDS: ${{ steps.phases.outputs.first-ids }}
+          REMAINING_MACHINE_IDS: ${{ steps.phases.outputs.remaining-ids }}
+          FIRST_IMAGE: ${{ steps.first-proof.outputs.image }}
+          ACCEPTED: ${{ steps.hosted-acceptance.outputs.accepted }}
       - name: Verify managed fleet after rolling replacement
         id: verify
         # Existing reviews remain available throughout the rollout. This check
@@ -572,7 +723,7 @@ jobs:
           if [[ -n "${TARGET_IMAGE:-}" ]] && ! jq -e --arg image "${TARGET_IMAGE}" 'all(.[];
             (.image_ref.registry + "/" + .image_ref.repository + "@" + .image_ref.digest) == $image
           )' <<<"${machines}" >/dev/null; then
-            echo "::error::The deployed image differs from the qualified rollback target."
+            echo "::error::The deployed image differs from the qualified runtime target."
             exit 1
           fi
           if ! jq -e --arg approved "${APPROVED_MACHINE_IDS}" '
@@ -677,7 +828,7 @@ jobs:
           # Activation (5m), automatic rollback (10m), and margin (5m).
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
-            echo "::error::An exact target-bound rollback deadline is required."
+            echo "::error::An exact runtime target and workflow recovery deadline are required."
             exit 1
           fi
           now=$(date -u +%s)
@@ -692,15 +843,15 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Roll back an incomplete managed replacement
         id: rollback
-        if: ${{ always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outputs.attempted == 'true' && (steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure' || steps.activate.outcome == 'failure') }}
+        if: ${{ always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outputs.attempted == 'true' && (steps.deploy.outcome == 'failure' || steps.first-proof.outcome == 'failure' || steps.hosted-acceptance.outcome == 'failure' || steps.deploy-peers.outcome == 'failure' || steps.verify.outcome == 'failure' || steps.activate.outcome == 'failure') }}
         timeout-minutes: 10
         run: |
           set -euo pipefail
           source scripts/probe-managed-runtime.sh
-          # If the local timer is due, leave recovery to that independently armed owner.
+          # This same job is the sole recovery writer while it holds fly-deploy.
           if [[ ! "${ROLLBACK_TARGET_SHA:-}" =~ ^[0-9a-f]{40}$ || "${ROLLBACK_TARGET_SHA}" != "${TARGET_RELEASE_SHA}" ||
                 ! "${ROLLBACK_DEADLINE_EPOCH:-}" =~ ^[1-9][0-9]{9}$ ]]; then
-            echo "::error::An exact target-bound rollback deadline is required."
+            echo "::error::An exact runtime target and workflow recovery deadline are required."
             exit 1
           fi
           now=$(date -u +%s)

@@ -13,6 +13,7 @@ const sourceSha = randomBytes(20).toString("hex");
 const targetSha = randomBytes(20).toString("hex");
 const digest = `sha256:${randomBytes(32).toString("hex")}`;
 const sourceImage = `registry.fly.io/postil-web@${digest}`;
+const targetImage = `registry.fly.io/postil-web@sha256:${randomBytes(32).toString("hex")}`;
 const secretMetadata = [{ name: "DATABASE_URL", digest: "fixture-digest", status: "Deployed" }];
 const stagedFeedback = { name: "POSTIL_REVIEW_FEEDBACK_ENABLED", digest: "feedback-digest", status: "Staged" };
 const deployedFeedback = { ...stagedFeedback, status: "Deployed" };
@@ -37,6 +38,16 @@ function fleet() {
       mounts: group === "monitor" ? [{ volume: "vol_test", path: "/var/lib/postil-monitor" }] : [],
     },
   }));
+}
+
+function mixedFleet() {
+  const machines = fleet();
+  for (const machine of machines.filter(item => item.id === "a0" || item.id === "a2")) {
+    machine.image_ref.digest = targetImage.split("@")[1]!;
+    machine.config.image = targetImage;
+    machine.release = targetSha;
+  }
+  return machines;
 }
 
 function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = id === "verify" ? deployedSecrets : stagedSecrets,
@@ -65,6 +76,18 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
     const result = Bun.spawnSync(["bash", "-c", `
       date() { printf '%s\\n' "$TEST_NOW_EPOCH"; }
       sleep() { printf '%s\\n' "$1" >> "$RUNNER_TEMP/sleeps"; }
+      bun() {
+        if [[ "$*" == "run scripts/deploy-managed-fleet.ts target" ]]; then
+          [[ "\${TEST_TARGET_PROBE_FAIL:-0}" != "1" ]]
+          return
+        fi
+        if [[ "$*" == "run scripts/probe-hosted-release-review.ts" ]]; then
+          [[ "\${TEST_ACCEPTANCE_FAIL:-0}" != "1" ]] || return 1
+          printf 'accepted=true\\n' >> "$GITHUB_OUTPUT"
+          return
+        fi
+        return 98
+      }
       flyctl() {
         case "$1 $2" in
           "volumes list") cat "$RUNNER_TEMP/volumes.json" ;;
@@ -89,10 +112,11 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
             mv "$RUNNER_TEMP/next-secrets.json" "$RUNNER_TEMP/secrets.json"
             printf 'staged\n' ;;
           "deploy --remote-only")
-            [[ "$*" == *"--only-machines a0,a1,a2,a3,a4"* ]] || return 97
+            [[ "$*" == *"--only-machines a0,a2"* || "$*" == *"--only-machines a1,a4,a3"* ]] || return 97
             [[ "$*" == *"--max-concurrent 1 --update-only --ha=false"* ]] || return 97
             if [[ -n "\${TARGET_IMAGE:-}" ]]; then [[ "$*" == *"--image $TARGET_IMAGE"* ]] || return 97; fi
             if [[ "\${TEST_RELEASE_COMMAND_FAILURE:-0}" == "1" ]]; then return 1; fi
+            printf '%s\\n' "$*" > "$RUNNER_TEMP/deploy-args"
             printf 'deploy' >> "$RUNNER_TEMP/updates" ;;
           "machine exec")
             if [[ "$4" == "bun run jobs:activate-release" ]]; then printf 'activate' >> "$RUNNER_TEMP/updates"; return 0; fi
@@ -141,20 +165,138 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
       ${script}
     `], {
       env: { ...process.env, RUNNER_TEMP: directory, GITHUB_OUTPUT: join(directory, "output"),
-        TARGET_RELEASE_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.4", MONITOR_VOLUME_ID: "vol_test", TEST_NOW_EPOCH: "1800000000",
-        ROLLBACK_DEADLINE_EPOCH: "1800004000", ROLLBACK_TARGET_SHA: targetSha,
+        TARGET_RELEASE_SHA: targetSha, ORCHESTRATION_SHA: targetSha, SOURCE_RELEASE_SHA: sourceSha, SOURCE_IMAGE: sourceImage, POSTIL_CLI_TAG: "v0.9.21", MONITOR_VOLUME_ID: "vol_test", TEST_NOW_EPOCH: "1800000000",
+        ROLLBACK_DEADLINE_EPOCH: "1800006000", ROLLBACK_TARGET_SHA: targetSha,
         ROLLBACK_SOURCE_SHA: sourceSha, ROLLBACK_SOURCE_IMAGE: sourceImage,
-        APPROVED_MACHINE_IDS: JSON.stringify(approvedMachineIds), ...deadlineEnvironment },
+        APPROVED_MACHINE_IDS: JSON.stringify(approvedMachineIds), FIRST_MACHINE_IDS: "a0,a2",
+        REMAINING_MACHINE_IDS: "a1,a4,a3", FIRST_WEB_ID: "a0", FIRST_WORKER_ID: "a2",
+        FIRST_IMAGE: targetImage, ACCEPTED: "",
+        ACCEPTANCE_CONTEXT: JSON.stringify({ repository: "postil-dev/postil", pr: 1, head: targetSha, checkRun: 1 }),
+        TARGET_IMAGE: "", ...deadlineEnvironment },
       stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
     const read = (name: string) => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
-    return { code: result.exitCode, error: result.stderr.toString(), stdout: result.stdout.toString(), output: read("output"), calls: read("exec-calls"), sleeps: read("sleeps"), updates: read("updates"), stagedInput: read("staged-input"), capturedSecrets: read("postil-source-secrets.json"), observedSecrets: JSON.parse(read("secrets.json")), machines: JSON.parse(read("machines.json")) };
+    return { code: result.exitCode, error: result.stderr.toString(), stdout: result.stdout.toString(), output: read("output"), calls: read("exec-calls"), sleeps: read("sleeps"), updates: read("updates"), deployArgs: read("deploy-args"), stagedInput: read("staged-input"), capturedSecrets: read("postil-source-secrets.json"), observedSecrets: JSON.parse(read("secrets.json")), machines: JSON.parse(read("machines.json")) };
   } finally {
     rmSync(directory, { recursive: true });
   }
 }
 
 describe("managed deployment contract", () => {
+  test("the single concurrency holder gates source peers on both first-target proofs", () => {
+    expect(workflow.concurrency).toMatchObject({ group: "fly-deploy", "cancel-in-progress": false });
+    expect(Object.keys(workflow.on.workflow_dispatch.inputs).length).toBeLessThanOrEqual(10);
+    expect(workflow.on.workflow_dispatch.inputs.acceptance).toMatchObject({ required: true, type: "string" });
+    const ids = steps.map(step => step.id);
+    for (const [earlier, later] of [["deploy", "first-proof"], ["first-proof", "hosted-acceptance"],
+      ["hosted-acceptance", "deploy-peers"], ["deploy-peers", "verify"], ["verify", "activate"],
+      ["activate", "rollback"]]) expect(ids.indexOf(earlier)).toBeLessThan(ids.indexOf(later));
+    const rollback = steps.find(step => step.id === "rollback") as any;
+    for (const id of ["deploy", "first-proof", "hosted-acceptance", "deploy-peers", "verify", "activate"])
+      expect(rollback.if).toContain(`steps.${id}.outcome == 'failure'`);
+    expect(rollback.if).toContain("steps.deploy.outputs.attempted == 'true'");
+  });
+
+  test("first-phase web, worker and peer phase use disjoint deterministic IDs", () => {
+    const first = runStep("deploy");
+    expect(first.code, first.error).toBe(0);
+    expect(first.deployArgs).toContain("--only-machines a0,a2");
+    expect(first.deployArgs).not.toContain("--only-machines a1,a4,a3");
+    const peers = runStep("deploy-peers", mixedFleet(), fleet(), deployedSecrets, undefined,
+      mixedFleet(), undefined, { ACCEPTED: "true" });
+    expect(peers.code, peers.error).toBe(0);
+    expect(peers.deployArgs).toContain("--only-machines a1,a4,a3");
+    expect(peers.deployArgs).toContain(`--image ${targetImage}`);
+  });
+
+  test("peer deployment accepts the unchanged partial feedback-secret deployment after phase one", () => {
+    const partialSecrets = [...secretMetadata, { ...stagedFeedback, status: "Partial" }];
+    const peers = runStep("deploy-peers", mixedFleet(), fleet(), partialSecrets, undefined,
+      mixedFleet(), undefined, { ACCEPTED: "true" });
+    expect(peers.code, peers.error).toBe(0);
+    expect(peers.deployArgs).toContain("--only-machines a1,a4,a3");
+    for (const invalid of [
+      [...secretMetadata, { ...stagedFeedback, digest: "changed", status: "Partial" }],
+      [{ ...secretMetadata[0]!, status: "Partial" }, { ...stagedFeedback, status: "Partial" }],
+    ]) {
+      const rejected = runStep("deploy-peers", mixedFleet(), fleet(), invalid, undefined,
+        mixedFleet(), undefined, { ACCEPTED: "true" });
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.updates).toBe("");
+    }
+    expect(runStep("verify", fleet(), fleet(), partialSecrets).code).not.toBe(0);
+  });
+
+  test("no peer replacement follows missing acceptance, dependency failure or mixed-fleet drift", () => {
+    const mixed = mixedFleet();
+    const first = runStep("first-proof", mixed, fleet(), deployedSecrets);
+    expect(first.code, first.error).toBe(0);
+    expect(first.output).toContain(`image=${targetImage}`);
+    for (const changed of [
+      (() => { const value = structuredClone(mixed); value[0]!.image_ref.digest = digest; return value; })(),
+      (() => { const value = structuredClone(mixed); value[1]!.image_ref.digest = targetImage.split("@")[1]!; return value; })(),
+      (() => { const value = structuredClone(mixed); value[2]!.config.env.POSTIL_HOSTED_INFERENCE_ENABLED = "0"; return value; })(),
+    ]) {
+      const result = runStep("first-proof", changed, fleet(), deployedSecrets);
+      expect(result.code).not.toBe(0);
+      expect(result.output).not.toContain("image=");
+    }
+    const failedProbe = runStep("first-proof", mixed, fleet(), deployedSecrets, undefined,
+      mixed, undefined, { TEST_TARGET_PROBE_FAIL: "1" });
+    expect(failedProbe.code).not.toBe(0);
+    for (const environment of [{}, { ACCEPTED: "false" }, { ACCEPTED: "true", FIRST_IMAGE: sourceImage }] as Record<string, string>[]) {
+      const result = runStep("deploy-peers", mixed, fleet(), deployedSecrets, undefined,
+        mixed, undefined, environment);
+      expect(result.code).not.toBe(0);
+      expect(result.updates).toBe("");
+    }
+  });
+
+  test("a mixed first-phase fleet restores both changed machines under the workflow rollback", () => {
+    for (const failedId of ["a0", "a2"]) {
+      const failed = runStep("rollback", mixedFleet(), fleet(), deployedSecrets, undefined,
+        mixedFleet(), undefined, { TEST_FAIL_UPDATE_ID: failedId });
+      expect(failed.code).not.toBe(0);
+      const recovered = runStep("rollback", mixedFleet(), fleet(), deployedSecrets);
+      expect(recovered.code, recovered.error).toBe(0);
+      expect(recovered.updates).toContain("machine update a0");
+      expect(recovered.updates).toContain("machine update a2");
+      expect(recovered.machines.every((machine: ReturnType<typeof fleet>[number]) => machine.image_ref.digest === digest && machine.release === sourceSha)).toBe(true);
+    }
+  });
+
+  test("generated mutation and proof failures recover every partial native rolling prefix", () => {
+    const updateOrder = ["a0", "a2", "a1", "a4", "a3"];
+    for (let boundary = 1; boundary <= updateOrder.length; boundary++) {
+      const partial = fleet();
+      for (const machine of partial.filter(item => updateOrder.slice(0, boundary).includes(item.id))) {
+        machine.image_ref.digest = targetImage.split("@")[1]!;
+        machine.config.image = targetImage;
+        machine.release = targetSha;
+      }
+      const recovered = runStep("rollback", partial, fleet(), deployedSecrets);
+      expect(recovered.code, `boundary ${boundary}: ${recovered.error}`).toBe(0);
+      expect(recovered.machines.every((machine: ReturnType<typeof fleet>[number]) =>
+        machine.image_ref.digest === digest && machine.release === sourceSha)).toBe(true);
+      for (const changed of updateOrder.slice(0, boundary))
+        expect(recovered.updates).toContain(`machine update ${changed}`);
+      const failed = runStep("rollback", partial, fleet(), deployedSecrets, undefined, partial, undefined,
+        { TEST_FAIL_UPDATE_ID: updateOrder[boundary - 1]! });
+      expect(failed.code).not.toBe(0);
+      expect(failed.machines.find((machine: ReturnType<typeof fleet>[number]) =>
+        machine.id === updateOrder[boundary - 1])?.release).toBe(targetSha);
+    }
+  });
+
+  test("supplied immutable runtime can differ from the workflow SHA; a build cannot", () => {
+    const supplied = runStep("admission", fleet(), fleet(), secretMetadata, undefined,
+      fleet(), undefined, { TARGET_IMAGE: targetImage, ORCHESTRATION_SHA: sourceSha }, secretMetadata);
+    expect(supplied.code, supplied.error).toBe(0);
+    const build = runStep("admission", fleet(), fleet(), secretMetadata, undefined,
+      fleet(), undefined, { ORCHESTRATION_SHA: sourceSha }, secretMetadata);
+    expect(build.code).not.toBe(0);
+  });
+
   test("deploys the qualified immutable image through the rolling command", () => {
     const result = runStep("deploy", fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
       { TARGET_IMAGE: `registry.fly.io/postil-web@sha256:${randomBytes(32).toString("hex")}` });
@@ -174,7 +316,7 @@ describe("managed deployment contract", () => {
       { TARGET_IMAGE: `registry.fly.io/postil-web@sha256:${randomBytes(32).toString("hex")}` });
     expect(result.code).not.toBe(0);
     expect(result.calls).toBe("");
-    expect(result.stdout).toContain("differs from the qualified rollback target");
+    expect(result.stdout).toContain("differs from the qualified runtime target");
     const matching = runStep("verify", fleet(), fleet(), deployedSecrets, undefined, fleet(), undefined,
       { TARGET_IMAGE: sourceImage });
     expect(matching.code, matching.error).toBe(0);
@@ -328,7 +470,7 @@ describe("managed deployment contract", () => {
     expect(workflow.jobs.deploy.steps.find((step: any) => step.id === "rollback")["timeout-minutes"]).toBe(10);
   });
 
-  test("requires manual target-bound admission and never rolls back an unattempted deploy", () => {
+  test("requires manual runtime-bound admission and never rolls back an unattempted deploy", () => {
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
     for (const input of ["machine_ids", "rollback_deadline_epoch", "rollback_target_sha", "rollback_source_sha", "rollback_source_image"]) {
       expect(workflow.on.workflow_dispatch.inputs[input]).toMatchObject({ required: true, type: "string" });
@@ -466,23 +608,23 @@ describe("managed deployment contract", () => {
   });
 
   test("preflight elapsed time can expire staging margin after admission", () => {
-    const deadline = "1800002700";
+    const deadline = "1800004800";
     expect(runStep("admission", fleet(), fleet(), secretMetadata, undefined,
       fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: deadline }, secretMetadata).code).toBe(0);
     expect(runStep("source-fleet").code).toBe(0);
     expect(runStep("feedback-preflight").code).toBe(0);
     const expired = runStep("stage-feedback", fleet(), fleet(), secretMetadata, undefined,
-      fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: deadline, TEST_NOW_EPOCH: "1800000061" }, secretMetadata);
+      fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: deadline, TEST_NOW_EPOCH: "1800000601" }, secretMetadata);
     expect(expired.code).not.toBe(0);
     expect(expired.updates).toBe("");
     expect(expired.stagedInput).toBe("");
     expect(expired.observedSecrets).toEqual(secretMetadata);
   });
 
-  test("feedback staging requires the complete 44-minute window and exact target", () => {
+  test("feedback staging requires the complete phased release window and exact target", () => {
     for (const offset of [-1, 0, 1]) {
       const result = runStep("stage-feedback", fleet(), fleet(), secretMetadata, undefined,
-        fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + 2640 + offset) }, secretMetadata);
+        fleet(), undefined, { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + 4200 + offset) }, secretMetadata);
       expect(result.code, result.error).toBe(offset < 0 ? 1 : 0);
       expect(result.updates).toBe(offset < 0 ? "" : "stage-feedback\n");
     }
@@ -515,7 +657,7 @@ describe("managed deployment contract", () => {
     }
   });
 
-  test.each([["monitor-volume", 2400], ["deploy", 2100], ["activate", 1200], ["rollback", 900]] as const)("%s enforces its complete boundary", (id, window) => {
+  test.each([["monitor-volume", 3900], ["deploy", 3600], ["activate", 1200], ["rollback", 900]] as const)("%s enforces its complete boundary", (id, window) => {
     for (const offset of [-1, 0, 1]) {
       const result = runStep(id, fleet(), fleet(), stagedSecrets, undefined, fleet(), undefined,
         { ROLLBACK_DEADLINE_EPOCH: String(1800000000 + window + offset) });
@@ -570,7 +712,8 @@ describe("managed deployment contract", () => {
   });
 
   test("binds checkout, build, and verification to the triggering workflow SHA", () => {
-    expect(workflow.jobs.deploy.env.TARGET_RELEASE_SHA).toBe("${{ github.sha }}");
+    expect(workflow.jobs.deploy.env.ORCHESTRATION_SHA).toBe("${{ github.sha }}");
+    expect(workflow.jobs.deploy.env.TARGET_RELEASE_SHA).toBe("${{ inputs.target_image != '' && inputs.rollback_target_sha || github.sha }}");
     const source = readFileSync(".github/workflows/deploy.yml", "utf8");
     expect(source).not.toContain("${GITHUB_SHA}");
     expect(source).not.toContain("--skip-release-command");

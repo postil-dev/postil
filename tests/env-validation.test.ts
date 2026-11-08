@@ -127,7 +127,7 @@ describe("worker startup environment validation", () => {
     expect(deployWorkflow).not.toContain("--skip-release-command");
     expect(flyConfig).toContain('POSTIL_HOSTED_INFERENCE_ENABLED = "1"');
     expect(deployWorkflow).toMatch(
-      /- name: Deploy managed fleet\n\s+id: deploy\n\s+timeout-minutes: 10/,
+      /id: deploy\n\s+timeout-minutes: 10/,
     );
     expect(deployWorkflow).toContain(
       "always() && steps.source-fleet.outcome == 'success' && steps.secret-contract.outcome == 'success' && steps.deploy.outputs.attempted == 'true'",
@@ -210,7 +210,7 @@ describe("worker startup environment validation", () => {
 
     const typecheck = deployWorkflow.indexOf("- name: Verify deploy source types");
     const secrets = deployWorkflow.indexOf("- name: Verify runtime secret contract");
-    const deploy = deployWorkflow.indexOf("- name: Deploy managed fleet");
+    const deploy = deployWorkflow.indexOf("id: deploy\n");
     expect(typecheck).toBeGreaterThan(-1);
     expect(deployWorkflow.slice(typecheck, secrets)).toContain(
       "bun install --frozen-lockfile",
