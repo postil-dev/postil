@@ -69,10 +69,15 @@ describe("phased managed fleet helper", () => {
   });
 
   test("source CLI identity must be distinguishable before phase one", () => {
-    expect(execute("source").code).toBe(0);
+    const observed = execute("source");
+    expect(observed.code).toBe(0);
+    expect(JSON.parse(observed.stdout).sourceWorkers).toEqual([
+      { id: "a2", version: "postil 0.9.17", binarySha256: "a".repeat(64) },
+      { id: "a4", version: "postil 0.9.17", binarySha256: "a".repeat(64) },
+    ]);
     const ambiguous = execute("source", "ambiguous-source");
     expect(ambiguous.code).not.toBe(0);
-    expect(ambiguous.error).toContain("ambiguous");
+    expect(ambiguous.error).toContain("phase probe failed");
     expect(execute("source", "source-mismatch").code).not.toBe(0);
   });
 

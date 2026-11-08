@@ -39,7 +39,11 @@ async function simulate(attempts: readonly (readonly Observation[])[], options: 
       if (query.startsWith("SELECT i.github_installation_id")) return { rows: [{
         installation: 9, suspended: false, repo_id: 10, enabled: true, full_name: input.repository,
       }] };
-      if (query.startsWith("SELECT v.id FROM reviews")) return { rows: Array.from({ length: options.previousCount ?? 1 }, () => ({ id: 99 })) };
+      if (query.startsWith("SELECT v.id FROM reviews")) {
+        expect(query).toContain("v.source_repo_full_name=$6");
+        expect(args[5]).toBe(input.repository);
+        return { rows: Array.from({ length: options.previousCount ?? 1 }, () => ({ id: 99 })) };
+      }
       if (query.startsWith("SELECT COALESCE")) return { rows: [{ id: 100 }] };
       if (query.startsWith("SELECT v.id, v.public_id")) {
         expect(query).toContain("v.source_github_installation_id=$4");

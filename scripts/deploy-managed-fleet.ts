@@ -82,7 +82,7 @@ function main() {
       sourceVersion = actual.version;
       sourceHash = String(actual.hash);
     }
-    console.log("Both source worker CLI identities are distinct from the target.");
+    console.log(JSON.stringify({ sourceWorkers: phase.sourceWorkers.map(id => ({ id, version: sourceVersion, binarySha256: sourceHash })) }));
     return;
   }
   if (mode === "target") {
@@ -105,5 +105,5 @@ function main() {
 
 if (import.meta.main) {
   try { main(); }
-  catch (error) { console.error(error instanceof Error ? error.message : "phased release probe failed"); process.exit(1); }
+  catch { console.error("Managed fleet phase probe failed; source peers remain unchanged."); process.exit(1); }
 }

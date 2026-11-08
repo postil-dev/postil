@@ -23,8 +23,8 @@ export const remoteReviewProgram = String.raw`(async () => {
   if(owner.length!==1||owner[0].suspended||!owner[0].enabled||!exactId(Number(owner[0].installation))||!exactId(Number(owner[0].repo_id)))throw Error('repository ownership');
   const installation=Number(owner[0].installation), repoId=Number(owner[0].repo_id);
   const previous=await read(
-    'SELECT v.id FROM reviews v JOIN repositories r ON r.id=v.repository_id WHERE r.github_repo_id=$1 AND v.pr_number=$2 AND v.head_sha=$3 AND v.source_github_installation_id=$4 AND v.source_github_repo_id=$1 AND (v.advisory_check_run_id=$5 OR v.gate_check_run_id=$5) ORDER BY v.id DESC LIMIT 2',
-    [repoId,input.pr,input.head,installation,input.checkRun]);
+    'SELECT v.id FROM reviews v JOIN repositories r ON r.id=v.repository_id WHERE r.github_repo_id=$1 AND v.pr_number=$2 AND v.head_sha=$3 AND v.source_github_installation_id=$4 AND v.source_github_repo_id=$1 AND v.source_repo_full_name=$6 AND (v.advisory_check_run_id=$5 OR v.gate_check_run_id=$5) ORDER BY v.id DESC LIMIT 2',
+    [repoId,input.pr,input.head,installation,input.checkRun,input.repository]);
   if(previous.length!==1)throw Error('check run ownership');
   const appId=Number(process.env.GITHUB_APP_ID);
   if(!exactId(appId))throw Error('App identity');
