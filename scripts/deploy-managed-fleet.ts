@@ -69,16 +69,20 @@ function main() {
   if (mode === "source") {
     const identities = phase.sourceWorkers.map(id => remote(id, remoteIdentity));
     let sourceVersion = "", sourceHash = "";
+    let sourceContract: string[] | undefined;
     for (const value of identities) {
       const actual = value as { contract?: unknown; version?: unknown; hash?: unknown };
-      if (!Array.isArray(actual.contract) || actual.contract[0] !== source ||
+      if (!Array.isArray(actual.contract) || actual.contract.length !== 4 || actual.contract[0] !== source ||
+          typeof actual.contract[1] !== "string" || !/^[0-9a-f]{40}$/.test(actual.contract[1]) ||
+          actual.contract[2] !== "additive-publication-hosted-v1" || actual.contract[3] !== "1" ||
           typeof actual.version !== "string" || !/^postil [0-9]+\.[0-9]+\.[0-9]+$/.test(actual.version) ||
           !/^[0-9a-f]{64}$/.test(String(actual.hash)) || actual.version === version) {
         throw new Error("source worker CLI identity is missing or ambiguous");
       }
-      if (sourceVersion && (actual.version !== sourceVersion || actual.hash !== sourceHash)) {
+      if (sourceContract && !sameIdentity(value, sourceContract, sourceVersion, sourceHash)) {
         throw new Error("source worker CLI identities differ");
       }
+      sourceContract = actual.contract;
       sourceVersion = actual.version;
       sourceHash = String(actual.hash);
     }

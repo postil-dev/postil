@@ -42,8 +42,13 @@ if(program.includes('/api/health/dependencies')){
   const release=target?process.env.TARGET_RELEASE_SHA:process.env.SOURCE_RELEASE_SHA;
   const version=target?'postil 0.9.21':scenario==='ambiguous-source'?'postil 0.9.21':'postil 0.9.17';
   const hash=target?process.env.TEST_TARGET_HASH:scenario==='source-mismatch'&&id==='a4'?'b'.repeat(64):'a'.repeat(64);
-  console.log(JSON.stringify({contract:[scenario==='worker-release'&&id==='a2'?'b'.repeat(40):release,
-    process.env.SOURCE_RELEASE_SHA,'additive-publication-hosted-v1','1'],
+  const contract=[scenario==='worker-release'&&id==='a2'?'b'.repeat(40):release,
+    process.env.SOURCE_RELEASE_SHA,'additive-publication-hosted-v1','1'];
+  if(scenario==='source-compatible'&&id==='a4')contract[1]='b'.repeat(40);
+  if(scenario==='source-protocol')contract[2]='unknown-protocol';
+  if(scenario==='source-managed')contract[3]='0';
+  if(scenario==='source-shape')contract.push('unexpected');
+  console.log(JSON.stringify({contract,
     version,hash:scenario==='worker-hash'&&id==='a2'?'b'.repeat(64):hash}));
 }else process.exit(94);
 `);
@@ -86,6 +91,11 @@ describe("phased managed fleet helper", () => {
       const result = execute("target", scenario);
       expect(result.code).not.toBe(0);
       expect(result.output).toBe("");
+    });
+
+  test.each(["source-compatible", "source-protocol", "source-managed", "source-shape"])(
+    "rejects incomplete or inconsistent %s contracts before phase one", scenario => {
+      expect(execute("source", scenario).code).not.toBe(0);
     });
 
   test("target contract, binary and dependency proof all succeed together", () => {
