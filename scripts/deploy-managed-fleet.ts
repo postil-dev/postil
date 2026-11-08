@@ -14,7 +14,7 @@ export function selectPhases(machines: Machine[]) {
       machines.some(machine => !/^[0-9a-f]+$/.test(machine.id))) {
     throw new Error("expected exactly two web, two worker and one monitor machines");
   }
-  return { firstWeb: web[0]!, firstWorker: worker[0]!, sourceWorkers: worker,
+  return { firstWeb: web[0]!, sourceWeb: web[1]!, firstWorker: worker[0]!, sourceWorkers: worker,
     first: [web[0]!, worker[0]!], remaining: [web[1]!, worker[1]!, monitor[0]!] };
 }
 
@@ -25,6 +25,26 @@ const version=Bun.spawnSync(['/usr/local/bin/postil','--version'],{stdout:'pipe'
 if(version.exitCode!==0)process.exit(64);
 process.stdout.write(JSON.stringify({contract,version:version.stdout.toString().trim(),hash:createHash('sha256').update(binary).digest('hex')}));`;
 const remoteDependencies = String.raw`(async()=>{const response=await fetch('http://127.0.0.1:3000/api/health/dependencies',{signal:AbortSignal.timeout(5000)}); const body=await response.json(); process.stdout.write(JSON.stringify({status:response.status,ok:body?.ok===true,database:body?.database==='up'}));})().catch(()=>process.exit(64));`;
+
+export function publicWebhookProbe(targetWeb: string, source: string): string {
+  if (!/^[0-9a-f]+$/.test(targetWeb) || !/^[0-9a-f]{40}$/.test(source)) {
+    throw new Error("invalid public webhook probe binding");
+  }
+  // Run on the retained source web so the target cannot authenticate its own key.
+  // Missing delivery headers stop the real handler before any database access.
+  return String.raw`(async()=>{
+    if(process.env.POSTIL_RELEASE_SHA!==${JSON.stringify(source)})throw Error();
+    const key=process.env.GITHUB_WEBHOOK_SECRET;
+    if(!key)throw Error();
+    const body='{}';
+    const signature='sha256='+require('node:crypto').createHmac('sha256',key).update(body).digest('hex');
+    const response=await fetch('https://postil.dev/api/webhooks/github',{
+      method:'POST',redirect:'error',signal:AbortSignal.timeout(5000),body,
+      headers:{'content-type':'application/json','fly-force-instance-id':${JSON.stringify(targetWeb)},'x-hub-signature-256':signature}});
+    const result=await response.json();
+    process.stdout.write(JSON.stringify({status:response.status,authenticated:result?.error==='missing delivery headers'}));
+  })().catch(()=>process.exit(64));`;
+}
 
 function remote(machine: string, program: string): unknown {
   if (!/^[0-9a-f]+$/.test(machine)) throw new Error("invalid managed machine ID");
@@ -101,7 +121,13 @@ function main() {
         dependency.ok !== true || dependency.database !== true) {
       throw new Error("first target web dependency readiness failed");
     }
-    console.log("First target release, CLI and web dependency readiness verified.");
+    const webhook = remote(phase.sourceWeb, publicWebhookProbe(phase.firstWeb, source)) as {
+      status?: number; authenticated?: boolean;
+    };
+    if (webhook?.status !== 400 || webhook.authenticated !== true) {
+      throw new Error("first target public webhook authentication failed");
+    }
+    console.log("First target release, CLI, web dependency and public webhook readiness verified.");
     return;
   }
   throw new Error("unknown phased release probe mode");
