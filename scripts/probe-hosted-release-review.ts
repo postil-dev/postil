@@ -1,4 +1,5 @@
 import { appendFileSync } from "node:fs";
+import { remoteEvalProgram } from "./deploy-managed-fleet";
 
 // This program is sent over the existing named Fly machine-exec transport.
 // The immutable target image does not need to contain this deployment helper.
@@ -136,7 +137,7 @@ function main() {
   };
   const machine = process.env.FIRST_WORKER_ID!;
   if (!/^[0-9a-f]+$/.test(machine)) throw new Error("invalid first worker ID");
-  const command = `bun -e 'eval(Buffer.from("${Buffer.from(remoteReviewProgram).toString("base64")}","base64").toString())' ${Buffer.from(JSON.stringify(input)).toString("base64")}`;
+  const command = `bun -e '${remoteEvalProgram(remoteReviewProgram)}' ${Buffer.from(JSON.stringify(input)).toString("base64")}`;
   const result = Bun.spawnSync(["flyctl", "machine", "exec", machine, command, "--app", "postil-web", "--timeout", "600"],
     { stdout: "pipe", stderr: "pipe", timeout: 610_000 });
   if (result.exitCode !== 0 || result.stdout.length > 4096) throw new Error("owned hosted acceptance inconclusive");

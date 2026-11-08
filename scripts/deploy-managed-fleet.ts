@@ -3,6 +3,13 @@ import { readFileSync, appendFileSync } from "node:fs";
 
 type Machine = { id: string; config: { metadata: { fly_process_group: string } } };
 
+export function remoteEvalProgram(program: string): string {
+  // Direct eval needs a lexical require; Bun's source transform cannot supply it.
+  // Resolve application dependencies from the managed image, regardless of cwd.
+  return `const require=(await import("node:module")).createRequire("/app/package.json");` +
+    `await eval(Buffer.from("${Buffer.from(program).toString("base64")}","base64").toString())`;
+}
+
 export function selectPhases(machines: Machine[]) {
   if (machines.length !== 5 || new Set(machines.map(machine => machine.id)).size !== 5) {
     throw new Error("expected five distinct managed machines");
@@ -48,7 +55,7 @@ export function publicWebhookProbe(targetWeb: string, source: string): string {
 
 function remote(machine: string, program: string): unknown {
   if (!/^[0-9a-f]+$/.test(machine)) throw new Error("invalid managed machine ID");
-  const command = `bun -e 'eval(Buffer.from("${Buffer.from(program).toString("base64")}","base64").toString())'`;
+  const command = `bun -e '${remoteEvalProgram(program)}'`;
   const result = Bun.spawnSync(["flyctl", "machine", "exec", machine, command, "--app", "postil-web", "--timeout", "15"],
     { stdout: "pipe", stderr: "pipe", timeout: 20_000 });
   if (result.exitCode !== 0 || result.stdout.length > 4096) throw new Error("managed target probe failed");

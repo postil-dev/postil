@@ -3,7 +3,7 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { publicWebhookProbe, sameIdentity, selectPhases } from "../scripts/deploy-managed-fleet";
+import { publicWebhookProbe, remoteEvalProgram, sameIdentity, selectPhases } from "../scripts/deploy-managed-fleet";
 
 const source = randomBytes(20).toString("hex");
 const target = randomBytes(20).toString("hex");
@@ -70,6 +70,33 @@ if(program.includes('/api/webhooks/github')){
 }
 
 describe("phased managed fleet helper", () => {
+  test.each([false, true])("executes the emitted Bun module context with async=%s", asynchronous => {
+    const argument = randomBytes(24).toString("hex");
+    const body = `const {createHash}=require('node:crypto');
+      process.stdout.write(JSON.stringify({argument:process.argv[1],
+        hash:createHash('sha256').update(process.argv[1]).digest('hex'),
+        dependency:require('node:path').basename('/probe/item')}));`;
+    const program = asynchronous ? `(async()=>{await Bun.sleep(5);${body}})()` : body;
+    const result = Bun.spawnSync(["bun", "-e", remoteEvalProgram(program), argument], {
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 3000,
+      env: { PATH: process.env.PATH },
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toEqual({ argument,
+      hash: createHash("sha256").update(argument).digest("hex"), dependency: "item" });
+    expect(result.stderr.length).toBe(0);
+  });
+
+  test("the emitted Bun loader preserves program failure", () => {
+    const result = Bun.spawnSync(["bun", "-e", remoteEvalProgram("throw Error('probe rejected')")], {
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 3000,
+      env: { PATH: process.env.PATH },
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout.length).toBe(0);
+    expect(result.stderr.toString()).toContain("probe rejected");
+  });
+
   test("deterministically selects the approved two web, two worker and monitor fleet", () => {
     const machines = ["worker", "monitor", "web", "worker", "web"].map((group, index) =>
       ({ id: `a${4 - index}`, config: { metadata: { fly_process_group: group } } }));
