@@ -54,6 +54,7 @@ interface CliOptions {
   repoPath: string;
   repoFullName: string;
   prNumber: number;
+  pullRequestTitle?: string;
   keepDatabase: boolean;
   requireClean: boolean;
   target: DiffTarget;
@@ -139,6 +140,7 @@ export function parseArgs(argv: string[]): CliOptions {
   let repoPath = process.cwd();
   let repoFullName: string | undefined;
   let prNumber = DEFAULT_PR_NUMBER;
+  let pullRequestTitle: string | undefined;
   let keepDatabase = false;
   let requireClean = false;
   let head: string | undefined;
@@ -152,6 +154,9 @@ export function parseArgs(argv: string[]): CliOptions {
       repoFullName = requireValue(argv, ++index, arg);
     } else if (arg === "--pr") {
       prNumber = positiveInteger(requireValue(argv, ++index, arg), arg);
+    } else if (arg === "--pr-title") {
+      pullRequestTitle = requireValue(argv, ++index, arg).trim();
+      if (!pullRequestTitle) throw new Error("--pr-title must not be empty");
     } else if (arg === "--staged") {
       ensureNoTarget(target);
       target = { kind: "staged" };
@@ -183,6 +188,7 @@ export function parseArgs(argv: string[]): CliOptions {
     repoPath: absoluteRepoPath,
     repoFullName: repoFullName ?? `local/${basename(absoluteRepoPath) || "repo"}`,
     prNumber,
+    pullRequestTitle,
     keepDatabase,
     requireClean,
     target,
@@ -198,7 +204,7 @@ export async function runHarness(options: CliOptions): Promise<RunResult> {
     ["rev-parse", `${selectedHead}^{commit}`],
     syntheticSha("1"),
   );
-  const pullRequestTitle = await gitMaybe(
+  const pullRequestTitle = options.pullRequestTitle ?? await gitMaybe(
     options.repoPath,
     ["show", "-s", "--format=%s", selectedHead],
     "Proposed code change",
@@ -1113,6 +1119,7 @@ Options:
   --repo-path PATH    Git repository containing the local diff. Defaults to cwd.
   --repo OWNER/NAME   Synthetic repository slug exposed by the local fake GitHub API.
   --pr NUMBER         Synthetic pull request number. Defaults to 1.
+  --pr-title TITLE    Pull request title. Defaults to the selected commit subject.
   --keep-database     Keep the database for inspection. A self-started Postgres container remains running.
   --require-clean     Exit 1 when any surviving finding would be posted.
 `);
