@@ -409,6 +409,14 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
         const before = (await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows;
         const modes = ["disabled", "enabled", "inherit"];
         const history = modes.flatMap(from => modes.flatMap(to => [from, to, to]));
+        for (const seed of [1, 17, 101, 997]) {
+          let state = seed;
+          for (let step = 0; step < 8; step++) {
+            state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+            const mode = modes[state % modes.length]!;
+            history.push(mode, mode);
+          }
+        }
         for (const mode of history) {
           await pool.query("UPDATE review_feedback_control SET mode = $1 WHERE id = 1", [mode]);
           await runReleaseMigrations(environment,
