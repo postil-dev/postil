@@ -147,8 +147,8 @@ async function defaultPrepareAndVerifyCompatibleRelease(
       "SELECT id, mode FROM review_feedback_control",
     );
     if (feedbackControl.rows.length !== 1 || feedbackControl.rows[0]?.id !== 1 ||
-        feedbackControl.rows[0].mode !== "disabled") {
-      throw new Error("release feedback control must be disabled");
+        !["disabled", "enabled", "inherit"].includes(feedbackControl.rows[0].mode)) {
+      throw new Error("release feedback control singleton or mode is invalid");
     }
   } finally {
     await pool.end();

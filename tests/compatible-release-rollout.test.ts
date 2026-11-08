@@ -394,7 +394,7 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       }
     }, 30_000);
 
-    test("rejects a rerun unless the applied feedback control remains disabled", async () => {
+    test("preserves existing feedback control through a compatible release", async () => {
       const url = new URL(TEST_URL!);
       url.pathname = `/${databaseName}`;
       const environment = {
@@ -406,15 +406,30 @@ for (const sourceRelease of COMPATIBLE_MANAGED_RELEASE_BOOTSTRAP_SHAS) {
       };
       const commands: string[][] = [];
       try {
-        for (const mode of ["enabled", "inherit"]) {
+        const before = (await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows;
+        const modes = ["disabled", "enabled", "inherit"];
+        const history = modes.flatMap(from => modes.flatMap(to => [from, to, to]));
+        for (const seed of [1, 17, 101, 997]) {
+          let state = seed;
+          for (let step = 0; step < 8; step++) {
+            state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+            const mode = modes[state % modes.length]!;
+            history.push(mode, mode);
+          }
+        }
+        for (const mode of history) {
           await pool.query("UPDATE review_feedback_control SET mode = $1 WHERE id = 1", [mode]);
-          await expect(runReleaseMigrations(environment,
+          await runReleaseMigrations(environment,
             (command) => { commands.push([...command]); return { exited: Promise.resolve(0) }; },
             undefined,
             async () => false,
-          )).rejects.toThrow("feedback control must be disabled");
+          );
+          expect((await pool.query("SELECT id, mode FROM review_feedback_control")).rows)
+            .toEqual([{ id: 1, mode }]);
+          expect((await pool.query("SELECT name FROM deployment_capabilities ORDER BY name")).rows)
+            .toEqual(before);
         }
-        expect(commands).toEqual([]);
+        expect(commands).toEqual(Array.from({ length: history.length }, () => ["bun", "run", "hosted:verify-provider"]));
       } finally {
         await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
       }

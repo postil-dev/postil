@@ -544,6 +544,21 @@ console.log("fixture-key");
     expect(result.stdout).not.toContain("dirty-worktree");
   }, 120_000);
 
+  test("serves the explicit pull request title without changing the selected revision", async () => {
+    const repo = await createCommittedFixtureRepo("explicit-pr-title");
+    const base = await runCapture(["git", "rev-parse", "HEAD"], repo);
+    await writeFile(join(repo, "app.txt"), "selected-head\n");
+    await run(["git", "add", "app.txt"], repo);
+    const head = await commitIndex(repo, base);
+    const result = await runLocalReview(repo, "0", 0, {
+      args: ["--base", base, "--head", head, "--pr-title", "Preserve feedback mode during compatible releases"],
+      env: { POSTIL_FAKE_READ_PR_TITLE: "1" },
+      includeTarget: false,
+    });
+    expect(result.stdout).toContain(`head=${head}`);
+    expect(result.stdout).toContain("served_pr_title=Preserve feedback mode during compatible releases");
+  }, 120_000);
+
   test("diff-file mode continues to serve repository context from the working tree", async () => {
     const repo = await createFixtureRepo("diff-file-working-tree");
     await writeFile(join(repo, "app.txt"), "working-tree-context\n");
