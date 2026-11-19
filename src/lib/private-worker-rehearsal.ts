@@ -1,3 +1,9 @@
+import {
+  appendPreparedReceiptBatch,
+  lockReceiptClaim,
+  prepareClosedJobReceipts,
+  type ReviewClaimLease,
+} from "@/lib/job-attempt-receipts";
 import { randomUUID } from "node:crypto";
 
 import type { Pool, PoolClient } from "pg";
@@ -31,6 +37,7 @@ export interface ArmPrivateWorkerRehearsalInput extends PrivateWorkerRehearsalTa
 export interface StagedPrivateWorkerRehearsalInput {
   reviewId: number;
   reviewJobId: number;
+  reviewClaim?: ReviewClaimLease;
   repoFullName: string;
   prNumber: number;
   headSha: string;
@@ -246,6 +253,10 @@ export async function consumePrivateWorkerRehearsalAfterStaging(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    if (input.reviewClaim?.receiptClaim && !(await lockReceiptClaim(client, input.reviewClaim))?.owned) {
+      await client.query("ROLLBACK");
+      return null;
+    }
     const request = await client.query<{
       nonce: string;
       review_public_id: string;
@@ -288,7 +299,7 @@ export async function consumePrivateWorkerRehearsalAfterStaging(
         FOR UPDATE OF rehearsal`,
       [
         input.reviewId,
-        input.reviewJobId,
+        input.reviewClaim?.receiptClaim?.jobId ?? input.reviewJobId,
         input.repoFullName,
         input.prNumber,
         input.headSha,
@@ -340,7 +351,7 @@ export async function consumePrivateWorkerRehearsalAfterStaging(
           AND status = 'running'
           AND payload->>'recoveryReviewId' = $3
           AND left(locked_by, length($4) + 1) = $4 || '#'`,
-      [input.reviewJobId, row.nonce, String(input.reviewId), input.workerInstanceId],
+      [input.reviewClaim?.receiptClaim?.jobId ?? input.reviewJobId, row.nonce, String(input.reviewId), input.workerInstanceId],
     );
     if ((marked.rowCount ?? 0) !== 1) {
       throw new Error("private worker rehearsal lost its exact recovery job lease");
@@ -413,6 +424,7 @@ export async function reconcilePrivateWorkerRehearsals(
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query("SELECT id FROM jobs WHERE id=$1::bigint FOR UPDATE", [rehearsal.job_id]);
       const verified = await client.query(
         `UPDATE private_worker_rehearsals
             SET state = 'replacement_verified',
@@ -477,6 +489,8 @@ export async function reconcilePrivateWorkerRehearsals(
           result.rehearsalsFailed += 1;
         }
       }
+      const events = await prepareClosedJobReceipts(client, [rehearsal.job_id], "interrupted");
+      await appendPreparedReceiptBatch(client, events);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);

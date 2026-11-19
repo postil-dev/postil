@@ -5,6 +5,8 @@ import {
   check,
   customType,
   index,
+  foreignKey,
+  unique,
   integer,
   jsonb,
   pgEnum,
@@ -20,6 +22,11 @@ import {
 import type { Envelope } from "@/lib/envelope";
 import type { ReviewConfigProvenance } from "@/lib/github/contents";
 import type { ReviewTriggerContext } from "@/lib/review-trigger";
+
+/** Decimal receipt identities preserve all PostgreSQL bigint bits. */
+const receiptIdentity = customType<{ data: string; driverData: string }>({
+  dataType() { return "bigint"; },
+});
 
 /** Raw bytes column for AES-256-GCM sealed secrets. */
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
@@ -283,6 +290,7 @@ export const repositoryEnablementEvents = pgTable(
 export const reviews = pgTable(
   "reviews",
   {
+    originClaimReceiptId: receiptIdentity("origin_claim_receipt_id").references(() => jobAttemptReceipts.receiptId),
     id: bigint("id", { mode: "number" })
       .primaryKey()
       .generatedAlwaysAsIdentity(),
@@ -2112,6 +2120,8 @@ export type JobPayload = Record<string, unknown>;
 export const jobs = pgTable(
   "jobs",
   {
+    activeClaimReceiptId: receiptIdentity("active_claim_receipt_id").references(() => jobAttemptReceipts.receiptId),
+    stagedReviewId: receiptIdentity("staged_review_id"),
     id: bigint("id", { mode: "number" })
       .primaryKey()
       .generatedAlwaysAsIdentity(),
@@ -2622,3 +2632,77 @@ export const orgConfigSnapshots = pgTable("org_config_snapshots", {
     .notNull()
     .defaultNow(),
 });
+
+/** Immutable queue claims and finite review observations. */
+export const jobAttemptReceipts = pgTable("job_attempt_receipts", {
+  receiptId: receiptIdentity("receipt_id").notNull().primaryKey(),
+  predecessorId: receiptIdentity("predecessor_id"),
+  sourceEpoch: uuid("source_epoch"),
+  schemaVersion: integer("schema_version").notNull().default(1),
+  claimReceiptId: receiptIdentity("claim_receipt_id"),
+  claimKind: text("claim_kind").notNull().default("claim"),
+  bindingReceiptId: receiptIdentity("binding_receipt_id"),
+  bindingKind: text("binding_kind").notNull().default("review_bound"),
+  jobId: receiptIdentity("job_id"),
+  ordinal: integer("ordinal"),
+  jobKind: text("job_kind"),
+  reviewId: receiptIdentity("review_id"),
+  reviewPublicId: uuid("review_public_id"),
+  eventKind: text("event_kind").notNull(),
+  outcome: text("outcome"),
+  phase: text("phase"),
+  category: text("category"),
+  recovered: boolean("recovered"),
+  recovery: text("recovery"),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+}, (t) => [
+  unique().on(t.predecessorId),
+  unique().on(t.receiptId, t.jobId, t.ordinal, t.jobKind, t.eventKind),
+  unique().on(t.receiptId, t.claimReceiptId, t.jobId, t.reviewId, t.reviewPublicId, t.eventKind),
+  foreignKey({ columns: [t.predecessorId], foreignColumns: [t.receiptId] }),
+  foreignKey({ columns: [t.claimReceiptId, t.jobId, t.ordinal, t.jobKind, t.claimKind],
+    foreignColumns: [t.receiptId, t.jobId, t.ordinal, t.jobKind, t.eventKind] }),
+  foreignKey({ columns: [t.bindingReceiptId, t.claimReceiptId, t.jobId, t.reviewId, t.reviewPublicId, t.bindingKind],
+    foreignColumns: [t.receiptId, t.claimReceiptId, t.jobId, t.reviewId, t.reviewPublicId, t.eventKind] }),
+  uniqueIndex("job_attempt_one_closure").on(t.claimReceiptId).where(sql`${t.eventKind} = 'queue_closed'`),
+  uniqueIndex("job_attempt_one_binding").on(t.claimReceiptId, t.reviewId).where(sql`${t.eventKind} = 'review_bound'`),
+  uniqueIndex("job_attempt_one_observation").on(t.claimReceiptId, t.reviewId, t.outcome).where(sql`${t.eventKind} = 'review_observed'`),
+  check("job_attempt_receipt_check_1", sql`schema_version = 1`),
+  check("job_attempt_receipt_check_2", sql`claim_kind = 'claim'`),
+  check("job_attempt_receipt_check_3", sql`binding_kind = 'review_bound'`),
+  check("job_attempt_receipt_check_4", sql`job_kind IN ('review','review-feedback')`),
+  check("job_attempt_receipt_check_5", sql`event_kind IN ('genesis','claim','review_bound','review_observed','incident','queue_closed')`),
+  check("job_attempt_receipt_check_6", sql`phase IN ('planner','review','scorer','respond')`),
+  check("job_attempt_receipt_check_7", sql`category IN ('providerError','invalidOutput','timeout','deadline')`),
+  check("job_attempt_receipt_check_8", sql`recovery IN ('repair','fallback')`),
+  check("job_attempt_receipt_check_9", sql`isfinite(occurred_at)`),
+  check("job_attempt_receipt_check_10", sql`
+    (event_kind = 'genesis' AND receipt_id = 0 AND source_epoch IS NOT NULL
+      AND predecessor_id IS NULL AND claim_receipt_id IS NULL AND binding_receipt_id IS NULL
+      AND job_id IS NULL AND ordinal IS NULL AND job_kind IS NULL AND review_id IS NULL
+      AND review_public_id IS NULL AND outcome IS NULL AND phase IS NULL AND category IS NULL
+      AND recovered IS NULL AND recovery IS NULL)
+    OR
+    (event_kind <> 'genesis' AND receipt_id > 0 AND source_epoch IS NULL
+      AND predecessor_id IS NOT NULL AND predecessor_id < receipt_id
+      AND claim_receipt_id IS NOT NULL AND claim_receipt_id <= receipt_id
+      AND job_id IS NOT NULL AND job_id > 0 AND ordinal IS NOT NULL AND ordinal > 0
+      AND job_kind IS NOT NULL AND outcome IS NOT NULL)
+  `),
+  check("job_attempt_receipt_check_11", sql`(review_id IS NULL) = (review_public_id IS NULL)`),
+  check("job_attempt_receipt_check_12", sql`review_id IS NULL OR review_id > 0`),
+  check("job_attempt_receipt_check_13", sql`
+    (event_kind = 'genesis') OR
+    (event_kind = 'claim' AND claim_receipt_id = receipt_id AND review_id IS NULL AND outcome = 'started') OR
+    (event_kind = 'review_bound' AND review_id IS NOT NULL AND outcome = 'bound') OR
+    (event_kind = 'review_observed' AND review_id IS NOT NULL AND outcome IN ('staged','completed','failed','interrupted','cancelled')) OR
+    (event_kind = 'incident' AND review_id IS NOT NULL AND outcome = 'observed') OR
+    (event_kind = 'queue_closed' AND review_id IS NULL AND outcome IN ('succeeded','retry','failed','continued','interrupted','cancelled','coalesced','deferred'))
+  `),
+  check("job_attempt_receipt_check_14", sql`(binding_receipt_id IS NOT NULL) = (event_kind IN ('review_observed','incident'))`),
+  check("job_attempt_receipt_check_15", sql`
+    (event_kind = 'incident' AND phase IS NOT NULL AND category IS NOT NULL AND recovered IS NOT NULL
+      AND recovered = (recovery IS NOT NULL))
+    OR (event_kind <> 'incident' AND phase IS NULL AND category IS NULL AND recovered IS NULL AND recovery IS NULL)
+  `),
+]);

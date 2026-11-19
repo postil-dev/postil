@@ -1,3 +1,5 @@
+import { Client } from "pg";
+import { readAttemptReceiptPageSql } from "@/lib/job-attempt-receipts";
 import { closeDb, getPool } from "@/lib/db";
 
 /**
@@ -7,7 +9,25 @@ import { closeDb, getPool } from "@/lib/db";
  * twelve characters, so this is the scriptable way to read the full value.
  * Read-only.
  */
+export async function readAttemptReceipts(args: string[]): Promise<void> {
+  if (args.length !== 2 || args[0] !== "--attempt-receipts" || !/^(0|[1-9][0-9]{0,18})$/.test(args[1]!)) {
+    throw new Error("usage: --attempt-receipts <decimal receipt prefix>");
+  }
+  const client = new Client({ connectionString: process.env.DATABASE_URL,
+    connectionTimeoutMillis: 2000, query_timeout: 5000,
+    options: "-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=250" });
+  try {
+    await client.connect();
+    const result = await client.query(readAttemptReceiptPageSql, [args[1]]);
+    const output = JSON.stringify({ rows: result.rows });
+    if (Buffer.byteLength(output) > 65536) throw new Error("receipt page exceeds response bound");
+    console.log(output);
+  } finally { await client.end(); }
+}
+
 async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (args.length) { await readAttemptReceipts(args); return; }
   const pool = getPool();
   const reviews = await pool.query(
     `SELECT r.id, r.public_id, r.status, r.queued_at, r.started_at,
@@ -42,7 +62,7 @@ async function main(): Promise<void> {
   await closeDb();
 }
 
-main().catch((error) => {
-  console.error(error);
+if (import.meta.main) main().catch(() => {
+  console.error("review inspection unavailable");
   process.exit(1);
 });

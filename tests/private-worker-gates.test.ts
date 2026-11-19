@@ -17,9 +17,36 @@ describe("private repository worker defense in depth", () => {
     expect(authorLookup).toBeGreaterThan(gate);
     expect(source).toContain("authorGithubId: authorGithubId");
     expect(source).toContain("authorLogin: authorLogin");
+    const reviewInsertion = source.indexOf("await insertReviewForClaim", gate);
+    expect(reviewInsertion).toBeGreaterThan(gate);
+    expect(
+      source.slice(reviewInsertion, source.indexOf("const reviewId", reviewInsertion)),
+    ).toContain('db, { ...reviewValues, status: "running" }, timing.lease');
+    const completion = readFileSync("src/lib/review-completion.ts", "utf8");
+    const insertion = completion.slice(
+      completion.indexOf("export async function insertReviewForClaim"),
+      completion.indexOf("export async function bindStagedReviewClaim"),
+    );
+    expect(insertion).toContain("if (!lease?.receiptClaim)");
+    expect(insertion).toContain("db.insert(schema.reviews).values(values)");
+    const transaction = insertion.indexOf("db.transaction");
+    const ownership = insertion.indexOf("if (!job?.owned) return undefined;");
+    const fencedInsert = insertion.indexOf("tx.insert(schema.reviews)");
+    expect(transaction).toBeGreaterThan(0);
+    expect(ownership).toBeGreaterThan(transaction);
+    expect(fencedInsert).toBeGreaterThan(ownership);
+    expect(insertion.slice(transaction, ownership)).toContain(
+      "await lockReceiptClaim(client, lease)",
+    );
+    expect(insertion.slice(fencedInsert)).toContain(
+      "originClaimReceiptId: lease.receiptClaim!.receiptId",
+    );
+    expect(insertion.indexOf("await appendPreparedReceiptBatch")).toBeGreaterThan(
+      fencedInsert,
+    );
     for (const sideEffect of [
-      "insert(schema.reviews)",
-      "await getInstallationToken",
+      "await insertReviewForClaim",
+      "getInstallationToken(",
       "await createCheckRun",
       "await materializeRepoConfig",
       "await runCli",
@@ -49,10 +76,10 @@ describe("private repository worker defense in depth", () => {
       source.slice(providerFailure, source.indexOf("await runCli", gate)),
     ).toContain("configured provider mode does not match");
     expect(source.indexOf("fetchRepositorySummary", gate)).toBeLessThan(
-      source.indexOf("insert(schema.reviews)", gate),
+      reviewInsertion,
     );
     expect(authorLookup).toBeLessThan(
-      source.indexOf("insert(schema.reviews)", gate),
+      reviewInsertion,
     );
     expect(authorLookup).toBeLessThan(
       source.indexOf("await reserveHostedReviewSpend", gate),
@@ -503,12 +530,25 @@ describe("private repository worker defense in depth", () => {
     );
     expect(stagedBranch).not.toContain('kind: "check-run-cleanup"');
     expect(stagedBranch).toContain("ReviewPublicationReconciliationError");
-    const shutdownBranch = failureBody.slice(
-      failureBody.indexOf("if (err instanceof WorkerShutdownError) {"),
-      failureBody.indexOf("const publicationIncomplete"),
+    const shutdownStart = failureBody.indexOf(
+      "if (err instanceof WorkerShutdownError) {",
     );
+    const failureTransition = failureBody.indexOf(
+      "publicationIncomplete = err instanceof CheckRunPublicationError;",
+      shutdownStart,
+    );
+    expect(shutdownStart).toBeGreaterThan(0);
+    expect(failureTransition).toBeGreaterThan(shutdownStart);
+    const shutdownBranch = failureBody.slice(shutdownStart, failureTransition);
     expect(shutdownBranch).not.toContain('kind: "check-run-cleanup"');
     expect(shutdownBranch).toContain('status: "stale"');
+    expect(shutdownBranch.indexOf("await reconcileInterruptedSpend()")).toBeGreaterThan(
+      0,
+    );
+    expect(shutdownBranch.indexOf("if (!spendError)")).toBeGreaterThan(
+      shutdownBranch.indexOf("await reconcileInterruptedSpend()"),
+    );
+    expect(shutdownBranch).toContain("throw err;");
     expect(failureBody).toContain("db.transaction");
     expect(failureBody).toContain('kind: "check-run-cleanup"');
     expect(failureBody).toContain('intent: "fail"');
@@ -565,16 +605,31 @@ describe("private repository worker defense in depth", () => {
         source.indexOf("export async function runReviewJob"),
       ),
     );
-    const failureUpdate = source.indexOf("const failedRows", catchStart);
-    const supersessionRace = source.slice(catchStart, failureUpdate);
+    const stagedCompletion = source.indexOf("if (completionStaged)", catchStart);
+    expect(catchStart).toBeGreaterThan(0);
+    expect(stagedCompletion).toBeGreaterThan(catchStart);
+    const supersessionRace = source.slice(catchStart, stagedCompletion);
 
     expect(supersessionRace).toContain(
-      "err instanceof CheckRunPublicationError && receiptUsageForRace",
+      "err instanceof CheckRunPublicationError && trustedReceiptUsage",
     );
+    const ingestion = source.indexOf("const ingested = ingestCompletedHostedReview(");
+    const usage = source.indexOf(
+      "const receiptUsage = reviewUsageFromEnvelope(ingested.envelope",
+      ingestion,
+    );
+    const trustedUsage = source.indexOf("trustedReceiptUsage = receiptUsage;", usage);
+    expect(ingestion).toBeGreaterThan(0);
+    expect(usage).toBeGreaterThan(ingestion);
+    expect(trustedUsage).toBeGreaterThan(usage);
+    expect(trustedUsage).toBeLessThan(catchStart);
     expect(supersessionRace).toContain('terminal?.status === "stale"');
     expect(supersessionRace).toContain(
       "await reconcileHostedReviewSpendFromReceipt",
     );
+    expect(supersessionRace).toContain("reservationId: hostedUsageReservationId");
+    expect(supersessionRace).toContain("usage: trustedReceiptUsage");
+    expect(supersessionRace).toContain("usageAccountingComplete: trustedUsageAccountingComplete");
     expect(supersessionRace).toContain("await neutralizeSupersededCheckRuns");
     expect(supersessionRace).toContain("return;");
   });

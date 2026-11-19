@@ -3,6 +3,14 @@ import type { Pool, PoolClient } from "pg";
 import { readNonNegativeIntEnv, readPositiveIntEnv } from "@/lib/env";
 import { redactAndTruncate } from "@/lib/redact";
 import type { ReviewTriggerContext } from "@/lib/review-trigger";
+import {
+  appendPreparedReceiptBatch,
+  claimEvent,
+  transitionReceiptClaim,
+  prepareClosedJobReceipts,
+  type ReceiptClaim,
+  type ReviewClaimLease,
+} from "@/lib/job-attempt-receipts";
 import type { ReviewFeedbackContext } from "@/lib/review-feedback";
 
 /**
@@ -26,6 +34,7 @@ import type { ReviewFeedbackContext } from "@/lib/review-feedback";
  */
 
 export interface ClaimedJob {
+  receiptClaim?: ReceiptClaim;
   id: number;
   kind: string;
   payload: Record<string, unknown>;
@@ -84,18 +93,19 @@ async function withFeedbackControl<T>(
   pool: Pool,
   operation: (client: PoolClient, enabled: boolean) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
+  const ownsTransaction = !("release" in pool);
+  const client = ownsTransaction ? await pool.connect() : pool as unknown as PoolClient;
   try {
-    await client.query("BEGIN");
+    if (ownsTransaction) await client.query("BEGIN");
     const enabled = await lockFeedbackControl(client);
     const result = await operation(client, enabled);
-    await client.query("COMMIT");
+    if (ownsTransaction) await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    if (ownsTransaction) await client.query("ROLLBACK").catch(() => undefined);
     throw error;
   } finally {
-    client.release();
+    if (ownsTransaction) client.release();
   }
 }
 
@@ -191,6 +201,7 @@ export function hostedProviderKeyLifecycleJobPayload(
 }
 
 export interface ExternalSideEffectLease {
+  receiptClaim?: ReceiptClaim;
   id: number;
   lockedBy: string;
   lockedAt: Date;
@@ -208,8 +219,9 @@ export async function externalSideEffectLeaseActive(
         AND status = 'running'
         AND locked_by = $2
         AND locked_at = $3
+        AND ($4::bigint IS NULL OR active_claim_receipt_id = $4::bigint)
       LIMIT 1`,
-    [lease.id, lease.lockedBy, lease.lockedAt],
+    [lease.receiptClaim?.jobId ?? lease.id, lease.lockedBy, lease.lockedAt, lease.receiptClaim?.receiptId ?? null],
   );
   return (result.rowCount ?? 0) === 1;
 }
@@ -226,62 +238,87 @@ export async function cancelPullRequestPublication(
     prNumber: number;
   },
 ): Promise<number> {
-  const result = await pool.query(
-    `WITH matching_jobs AS MATERIALIZED (
-       SELECT id
-         FROM jobs
-        WHERE kind IN ('review', 'review-feedback', 'respond', 'respond-failure-comment', 'webhook-comment')
-          AND status IN ('queued', 'running')
-          AND payload->>'installationId' = $1::text
-          AND payload->>'sourceInstallationId' = $2::text
-          AND payload->>'sourceOrgId' = $3::text
-          AND payload->>'githubRepoId' = $4::text
-          AND lower(payload->>'repoFullName') = lower($5)
-          AND COALESCE((payload->>'prNumber')::integer, (payload->>'number')::integer) = $6
-          AND COALESCE((payload->>'isPr')::boolean, kind IN ('review', 'review-feedback'))
-     ), cancelled_deliveries AS (
-       UPDATE respond_deliveries delivery
-          SET state = 'cancelled',
-              publication_lease_id = NULL,
-              publication_lease_expires_at = NULL,
-              delivery_lease_expires_at = NULL,
-              cancelled_at = now(),
-              updated_at = now()
-        WHERE delivery.source_github_installation_id = $1::bigint
-          AND delivery.source_installation_id = $2::bigint
-          AND delivery.source_org_id = $3::bigint
-          AND delivery.source_github_repo_id = $4::bigint
-          AND lower(delivery.repo_full_name) = lower($5)
-          AND delivery.issue_number = $6
-          AND delivery.is_pr
-          AND delivery.state IN ('prepared', 'delivering')
-      RETURNING delivery.job_id
-     ), delivery_jobs AS (
-       SELECT job.id
-         FROM jobs job
-         JOIN cancelled_deliveries delivery
-           ON job.kind = 'respond-delivery'
-          AND job.payload->>'respondJobId' = delivery.job_id::text
-        WHERE job.status IN ('queued', 'running')
-     ), terminal_ids AS (
-       SELECT id FROM matching_jobs
-       UNION SELECT id FROM delivery_jobs
-     )
-     UPDATE jobs job
-        SET status = 'done', locked_at = NULL, locked_by = NULL,
-            last_error = 'pull request closed'
-      WHERE job.id IN (SELECT id FROM terminal_ids)
-        AND job.status IN ('queued', 'running')`,
-    [
-      String(input.installationId),
-      String(input.sourceInstallationId),
-      String(input.sourceOrgId),
-      String(input.githubRepoId),
-      input.repoFullName,
-      input.prNumber,
-    ],
-  );
-  return result.rowCount ?? 0;
+  const run = async (client: Pick<Pool, "query">, qualified: boolean) => {
+    if (qualified) await client.query(`SELECT id FROM jobs
+      WHERE status IN ('queued', 'running') AND kind IN ('review', 'review-feedback')
+        AND payload->>'installationId' = $1 AND payload->>'sourceInstallationId' = $2
+        AND payload->>'sourceOrgId' = $3 AND payload->>'githubRepoId' = $4
+        AND lower(payload->>'repoFullName') = lower($5)
+        AND (payload->>'prNumber')::integer = $6 ORDER BY id FOR UPDATE`,
+      [String(input.installationId), String(input.sourceInstallationId), String(input.sourceOrgId),
+        String(input.githubRepoId), input.repoFullName, input.prNumber]);
+    const result = await client.query(
+      `WITH matching_jobs AS MATERIALIZED (
+         SELECT id
+           FROM jobs
+          WHERE kind IN ('review', 'review-feedback', 'respond', 'respond-failure-comment', 'webhook-comment')
+            AND status IN ('queued', 'running')
+            AND payload->>'installationId' = $1::text
+            AND payload->>'sourceInstallationId' = $2::text
+            AND payload->>'sourceOrgId' = $3::text
+            AND payload->>'githubRepoId' = $4::text
+            AND lower(payload->>'repoFullName') = lower($5)
+            AND COALESCE((payload->>'prNumber')::integer, (payload->>'number')::integer) = $6
+            AND COALESCE((payload->>'isPr')::boolean, kind IN ('review', 'review-feedback'))
+       ), cancelled_deliveries AS (
+         UPDATE respond_deliveries delivery
+            SET state = 'cancelled',
+                publication_lease_id = NULL,
+                publication_lease_expires_at = NULL,
+                delivery_lease_expires_at = NULL,
+                cancelled_at = now(),
+                updated_at = now()
+          WHERE delivery.source_github_installation_id = $1::bigint
+            AND delivery.source_installation_id = $2::bigint
+            AND delivery.source_org_id = $3::bigint
+            AND delivery.source_github_repo_id = $4::bigint
+            AND lower(delivery.repo_full_name) = lower($5)
+            AND delivery.issue_number = $6
+            AND delivery.is_pr
+            AND delivery.state IN ('prepared', 'delivering')
+        RETURNING delivery.job_id
+       ), delivery_jobs AS (
+         SELECT job.id
+           FROM jobs job
+           JOIN cancelled_deliveries delivery
+             ON job.kind = 'respond-delivery'
+            AND job.payload->>'respondJobId' = delivery.job_id::text
+          WHERE job.status IN ('queued', 'running')
+       ), terminal_ids AS (
+         SELECT id FROM matching_jobs
+         UNION SELECT id FROM delivery_jobs
+       )
+       UPDATE jobs job
+          SET status = 'done', locked_at = NULL, locked_by = NULL,
+              last_error = 'pull request closed'
+        WHERE job.id IN (SELECT id FROM terminal_ids)
+          AND job.status IN ('queued', 'running') RETURNING job.id::text`,
+      [
+        String(input.installationId),
+        String(input.sourceInstallationId),
+        String(input.sourceOrgId),
+        String(input.githubRepoId),
+        input.repoFullName,
+        input.prNumber,
+      ],
+    );
+    if (qualified) {
+      const events = await prepareClosedJobReceipts(client, result.rows.map((r) => String(r.id)), "cancelled");
+      await appendPreparedReceiptBatch(client, events);
+    }
+    return result.rowCount ?? 0;
+  };
+  if (!("connect" in pool) || !("totalCount" in pool)) return run(pool, false);
+  const client = await (pool as Pool).connect();
+  try {
+    await client.query("BEGIN");
+    const count = await run(client, true);
+    await client.query("COMMIT");
+    return count;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
 }
 
 export interface RespondDeliveryJobPayload extends Record<string, unknown> {
@@ -1087,6 +1124,12 @@ export async function claimNextJob(
     ) {
       throw new Error("claimed job returned incomplete candidate data");
     }
+    const receipts = (row.kind === "review" || row.kind === FEEDBACK_REVIEW_JOB_KIND) && (await client.query(
+      "SELECT to_regclass('job_attempt_receipts') IS NOT NULL AS available",
+    )).rows[0]?.available === true;
+    if (receipts) {
+      await client.query("UPDATE jobs SET active_claim_receipt_id = NULL WHERE id = $1", [row.id]);
+    }
     const claimed = await client.query<{ locked_at: Date }>(
       `UPDATE jobs
        SET status = 'running', attempts = attempts + 1,
@@ -1097,6 +1140,13 @@ export async function claimNextJob(
     );
     const lockedAt = claimed.rows[0]?.locked_at;
     if (!lockedAt) throw new Error("claimed job returned no lock timestamp");
+    let receiptClaim: ReceiptClaim | undefined;
+    if (receipts) {
+      const [receiptId] = await appendPreparedReceiptBatch(client,
+        [claimEvent(row.id, row.attempts + 1, null, "claim", "started", null, null, row.kind)]);
+      await client.query("UPDATE jobs SET active_claim_receipt_id = $2::bigint WHERE id = $1::bigint", [row.id, receiptId]);
+      receiptClaim = Object.freeze({ jobId: row.id, receiptId: receiptId! });
+    }
     await client.query("COMMIT");
     return {
       status: "claimed",
@@ -1109,6 +1159,7 @@ export async function claimNextJob(
         createdAt: row.created_at,
         lockedAt,
         lockedBy: workerId,
+        ...(receiptClaim ? { receiptClaim } : {}),
       },
     };
   } catch (err) {
@@ -1118,6 +1169,9 @@ export async function claimNextJob(
     client.release();
   }
 }
+
+type TransitionJob = Pick<ClaimedJob, "lockedBy"> &
+  Partial<Pick<ClaimedJob, "receiptClaim" | "lockedAt">> & { id: number | string };
 
 /**
  * Claim one job, collapsing "empty queue" and "deferred by the cap" into null.
@@ -1174,7 +1228,7 @@ export function nextClaimPollDelay(
  */
 export async function completeJob(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "lockedBy">,
+  job: TransitionJob,
 ): Promise<"done" | "coalesced" | "lost"> {
   return withFeedbackControl(pool, async (client) => {
   // Enqueue takes these advisory locks before its job-row lock. The insert
@@ -1209,6 +1263,9 @@ export async function completeJob(
       ]);
     }
   }
+  if (job.receiptClaim) return transitionReceiptClaim(client as unknown as Pool, job as ReviewClaimLease,
+    (locked) => completeJob(locked as unknown as Pool, { ...job, receiptClaim: undefined, id: job.receiptClaim!.jobId }),
+    (result) => result === "coalesced" ? "coalesced" : "succeeded");
   const result = await client.query<{ outcome: "done" | "coalesced" | "lost" }>(
     `WITH transitioned AS (
        UPDATE jobs
@@ -1236,10 +1293,18 @@ export async function completeJob(
 
 export async function continueClaimedJob(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "lockedBy">,
+  job: TransitionJob,
   payload: Record<string, unknown>,
   options: { runAfter?: Date } = {},
 ): Promise<void> {
+  if (job.receiptClaim) {
+    const result = await transitionReceiptClaim(pool, job as ReviewClaimLease, async (client) => {
+      await continueClaimedJob(client as unknown as Pool, { ...job, receiptClaim: undefined, id: job.receiptClaim!.jobId }, payload, options);
+      return "continued";
+    }, () => "continued");
+    if (result === "lost") throw new Error("job continuation lost its lease");
+    return;
+  }
   const result = await pool.query(
     `UPDATE jobs
         SET payload = $3, status = 'queued', attempts = 0,
@@ -1259,14 +1324,34 @@ export async function requeueJobsOwnedBy(
   lockedByPrefix: string,
   reason: string,
   kinds: readonly string[],
-  jobIds: readonly number[],
+  jobIds: readonly (number | string)[],
+  expectedClaims?: readonly ReviewClaimLease[],
 ): Promise<number> {
+  if (expectedClaims) {
+    let count = 0;
+    for (const lease of expectedClaims) {
+      if (!jobIds.includes(lease.id) || !lease.lockedBy.startsWith(lockedByPrefix)) continue;
+      if (!lease.receiptClaim) {
+        count += await requeueJobsOwnedBy(pool, lockedByPrefix, reason, kinds, [lease.id]);
+        continue;
+      }
+      const result = await withFeedbackControl(pool, (client) => transitionReceiptClaim(client as unknown as Pool, lease, async (client) => {
+        if (!await requeueJobsOwnedBy(client as unknown as Pool, lockedByPrefix, reason, kinds,
+          [lease.receiptClaim!.jobId])) return "lost";
+        const row = (await client.query("SELECT status FROM jobs WHERE id = $1::bigint",
+          [lease.receiptClaim!.jobId])).rows[0];
+        return row?.status === "done" ? "coalesced" : "requeued";
+      }, (result) => result === "coalesced" ? "coalesced" : "interrupted"));
+      if (result !== "lost") count += 1;
+    }
+    return count;
+  }
   if (!lockedByPrefix) throw new Error("requeueJobsOwnedBy requires a lock-owner prefix");
   const allowedKinds = [...new Set(kinds.filter(Boolean))];
   if (allowedKinds.length === 0) {
     throw new Error("requeueJobsOwnedBy requires at least one safe job kind");
   }
-  const ownedJobIds = [...new Set(jobIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  const ownedJobIds = [...new Set(jobIds.filter((id) => typeof id === "string" ? /^[1-9][0-9]*$/.test(id) : Number.isSafeInteger(id) && id > 0))];
   if (ownedJobIds.length === 0) return 0;
   const redactedReason = redactAndTruncate(reason, 2000);
   return withFeedbackControl(pool, async (client, enabled) => {
@@ -1340,7 +1425,7 @@ export function backoffMs(attempts: number): number {
  */
 export async function failJob(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "attempts" | "maxAttempts" | "lockedBy">,
+  job: TransitionJob & Pick<ClaimedJob, "attempts" | "maxAttempts">,
   error: string,
   opts: {
     permanent?: boolean;
@@ -1351,6 +1436,9 @@ export async function failJob(
     };
   } = {},
 ): Promise<"retried" | "failed" | "coalesced" | "lost"> {
+  if (job.receiptClaim) return withFeedbackControl(pool, (client) => transitionReceiptClaim(client as unknown as Pool, job as ReviewClaimLease,
+    (client) => failJob(client as unknown as Pool, { ...job, receiptClaim: undefined, id: job.receiptClaim!.jobId }, error, opts),
+    (result) => result === "retried" ? "retry" : result === "coalesced" ? "coalesced" : "failed"));
   const redactedError = redactAndTruncate(error, 2000);
   return withFeedbackControl(pool, async (client, enabled) => {
   if (!opts.permanent && job.attempts < job.maxAttempts) {
@@ -1497,12 +1585,15 @@ export const PUBLICATION_RECONCILIATION_BUDGET_MS = readPositiveIntEnv(
  */
 export async function retryJobIndefinitely(
   pool: Pool,
-  job: Pick<ClaimedJob, "id" | "attempts" | "lockedBy" | "createdAt">,
+  job: TransitionJob & Pick<ClaimedJob, "attempts" | "createdAt">,
   error: string,
   budget:
     | number
     | { budgetMs?: number; startedAt?: Date } = PUBLICATION_RECONCILIATION_BUDGET_MS,
 ): Promise<"retried" | "lost" | "exhausted"> {
+  if (job.receiptClaim) return transitionReceiptClaim(pool, job as ReviewClaimLease,
+    (client) => retryJobIndefinitely(client as unknown as Pool, { ...job, receiptClaim: undefined, id: job.receiptClaim!.jobId }, error, budget),
+    (result) => result === "exhausted" ? "failed" : "retry");
   const redactedError = redactAndTruncate(error, 2000);
   const budgetMs = typeof budget === "number"
     ? budget
