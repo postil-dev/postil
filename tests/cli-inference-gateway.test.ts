@@ -50,7 +50,7 @@ test("resolves and applies the complete managed gateway policy", async () => {
   expect(profile).toEqual({
     apiBase: "https://openrouter.ai/api/v1",
     apiFormat: "openai-compatible",
-    model: "openai/gpt-5.6-luna",
+    model: "openai/gpt-6-luna",
     providerName: "Azure",
     providerRoute: "azure/eu",
     reasoningEffort: "low",
@@ -78,7 +78,7 @@ test("resolves and applies the complete managed gateway policy", async () => {
     messages: [{ role: "user", content: "review" }],
     max_tokens: 8000,
     temperature: 0.1,
-    model: "openai/gpt-5.6-luna",
+    model: "openai/gpt-6-luna",
     reasoning: { effort: "low" },
     provider: {
       data_collection: "deny",
