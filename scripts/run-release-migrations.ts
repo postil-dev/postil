@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import {
   COMPATIBLE_MANAGED_RELEASE_PROTOCOL,
   applyReviewedFeedbackControlMigration,
+  applyReviewedIlertCanaryAlertKeyMigration,
   applyReviewedMonitoringDeliveryMigration,
   type ManagedReleaseMigrationIdentity,
   prepareCompatibleManagedRelease,
@@ -76,6 +77,16 @@ export async function runReleaseMigrations(
   await runReleaseDatabaseCommand(
     ["bun", "run", "hosted:verify-provider"],
     "hosted provider preflight",
+    databaseEnvironment,
+    spawnCommand,
+    signal,
+  );
+  // The reviewed migrations above add columns only. Their lookup index is
+  // built concurrently here, before preparation, so a failed or blocked build
+  // stops the release while the running fleet is unchanged.
+  await runReleaseDatabaseCommand(
+    ["bun", "run", "operational:indexes", "--managed-release"],
+    "release managed operational indexes",
     databaseEnvironment,
     spawnCommand,
     signal,
@@ -171,40 +182,49 @@ export async function prepareReviewedAdditiveMigration(
     const releaseSha = databaseEnvironment.POSTIL_RELEASE_SHA ?? "";
     const protocol = requireCompatibleReleaseProtocol(databaseEnvironment);
     const migrations = checkedInReleaseMigrations();
-    const predecessor = migrations.at(-2);
-    const latest = migrations.at(-1);
-    if (!predecessor || !latest) throw new Error("reviewed release migration identities are missing");
+    // The reviewed migrations occupy the journal tail in application order.
+    const reviewed = [
+      { apply: applyReviewedMonitoringDeliveryMigration, file: "0062_monitor_delivery_receipt.sql" },
+      { apply: applyReviewedFeedbackControlMigration, file: "0063_review_feedback_control.sql" },
+      { apply: applyReviewedIlertCanaryAlertKeyMigration, file: "0064_ilert_canary_alert_key.sql" },
+    ].map((step, index, steps) => {
+      const through = migrations.slice(0, migrations.length - (steps.length - 1 - index));
+      return { ...step, through, identity: through.at(-1) };
+    });
+    if (migrations.length < reviewed.length || reviewed.some((step) => !step.identity)) {
+      throw new Error("reviewed release migration identities are missing");
+    }
     const journal = await pool.query<{ created_at: string }>(
       "SELECT created_at::text FROM drizzle.__drizzle_migrations WHERE created_at = ANY($1::bigint[])",
-      [[predecessor.folderMillis, latest.folderMillis]],
+      [reviewed.map((step) => step.identity!.folderMillis)],
     );
-    const applied = new Set(journal.rows.map((row) => row.created_at));
-    if (applied.has(String(latest.folderMillis)) && !applied.has(String(predecessor.folderMillis))) {
+    const journaled = new Set(journal.rows.map((row) => row.created_at));
+    const applied = reviewed.map((step) => journaled.has(String(step.identity!.folderMillis)));
+    const latestApplied = applied.lastIndexOf(true);
+    if (applied[1] && !applied[0]) {
       throw new Error("reviewed feedback control migration is missing its monitoring predecessor");
     }
-    let monitoringPending = false;
-    if (!applied.has(String(latest.folderMillis))) {
-      monitoringPending = await applyReviewedMonitoringDeliveryMigration(
+    if (applied[2] && !applied[1]) {
+      throw new Error("reviewed alert key migration is missing its feedback control predecessor");
+    }
+    // The latest journaled step is verified against exactly its own history,
+    // and every later step applies in order. A retry therefore never presents
+    // an already journaled migration to an earlier step as unknown.
+    let pending = false;
+    for (const step of reviewed.slice(Math.max(latestApplied, 0))) {
+      const stepPending = await step.apply(
         pool,
         sourceReleaseSha,
         releaseSha,
         protocol,
-        migrations.slice(0, -1),
-        await readFile(new URL("../drizzle/0062_monitor_delivery_receipt.sql", import.meta.url), "utf8"),
+        step.through,
+        await readFile(new URL(`../drizzle/${step.file}`, import.meta.url), "utf8"),
         { dryRun },
       );
-      if (dryRun && monitoringPending) return true;
+      if (dryRun && stepPending) return true;
+      pending ||= stepPending;
     }
-    const feedbackPending = await applyReviewedFeedbackControlMigration(
-      pool,
-      sourceReleaseSha,
-      releaseSha,
-      protocol,
-      migrations,
-      await readFile(new URL("../drizzle/0063_review_feedback_control.sql", import.meta.url), "utf8"),
-      { dryRun },
-    );
-    return monitoringPending || feedbackPending;
+    return pending;
   } finally {
     if (!existingPool) await pool.end();
   }

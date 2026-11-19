@@ -5,11 +5,12 @@ import {
   expect,
   test,
 } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client, type Notification, type Pool } from "pg";
 
+import { ensureOperationalIndexes } from "../scripts/ensure-operational-indexes";
 import { closeDb, schema, type Database } from "@/lib/db";
 import {
   authorizeIlertAlertStream,
@@ -23,13 +24,14 @@ import {
 } from "./ephemeral-database";
 
 const describeDb = process.env.POSTIL_TEST_DATABASE_URL ? describe : describe.skip;
-const TEST_WEBHOOK_SECRET = "test-ilert-webhook-password-32-bytes";
+const TEST_WEBHOOK_SECRET = randomBytes(32).toString("base64url");
+const TEST_CANARY_KEY = `postil-ilert-webhook-canary-${randomInt(1_000_000_000, 10_000_000_000)}-2`;
 const OPERATOR_GITHUB_ID = 991_001;
 const CUSTOMER_ADMIN_GITHUB_ID = 991_002;
-const OPERATOR_TOKEN = `pcli_${"a".repeat(43)}`;
-const CUSTOMER_ADMIN_TOKEN = `pcli_${"b".repeat(43)}`;
-const LEGACY_OPERATOR_TOKEN = `pcli_${"c".repeat(43)}`;
-const ROTATING_OPERATOR_TOKEN = `pcli_${"d".repeat(43)}`;
+const OPERATOR_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
+const CUSTOMER_ADMIN_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
+const LEGACY_OPERATOR_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
+const ROTATING_OPERATOR_TOKEN = `pcli_${randomBytes(32).toString("base64url")}`;
 
 describeDb("iLert durable operator alert stream", () => {
   let ephemeral: EphemeralDatabase;
@@ -107,6 +109,42 @@ describeDb("iLert durable operator alert stream", () => {
     restoreEnvironment("POSTIL_ILERT_WEBHOOK_SECRET", originalWebhookSecret);
   }, 30_000);
 
+  test("installs the partial canary observation index without requiring legacy keys", async () => {
+    const absent = await pool.query<{ index_name: string | null }>(
+      `SELECT to_regclass(
+         'public.ilert_alert_events_canary_observation_idx'
+       )::text AS index_name`,
+    );
+    expect(absent.rows).toEqual([{ index_name: null }]);
+
+    const installed = await ensureOperationalIndexes(pool);
+    expect(installed).toContain("ilert_alert_events_canary_observation_idx");
+
+    const index = await pool.query<{ definition: string; predicate: string | null }>(
+      `SELECT pg_get_indexdef(indexrelid) AS definition,
+              pg_get_expr(indpred, indrelid) AS predicate
+         FROM pg_index
+        WHERE indexrelid = to_regclass(
+          'public.ilert_alert_events_canary_observation_idx'
+        )`,
+    );
+
+    expect(index.rows).toEqual([{
+      definition: expect.stringContaining(
+        "USING btree (alert_key, event_type, alert_source_id)",
+      ),
+      predicate: "(alert_key IS NOT NULL)",
+    }]);
+    const column = await pool.query<{ is_nullable: string }>(
+      `SELECT is_nullable
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ilert_alert_events'
+          AND column_name = 'alert_key'`,
+    );
+    expect(column.rows).toEqual([{ is_nullable: "YES" }]);
+  });
+
   test("deduplicates event ids and notifies only after the row commits", async () => {
     const listener = new Client({ connectionString: ephemeral.url });
     await listener.connect();
@@ -156,7 +194,48 @@ describeDb("iLert durable operator alert stream", () => {
       sequence,
       eventId: "7b21f505-bd0f-49a2-bf8f-f238919b23fc",
       alertId: "12797430",
+      alertKey: null,
     });
+  });
+
+  test("accepts an empty alert key and stores it as absent", async () => {
+    const eventId = "0f0e9c5e-6d0b-4c57-9a55-3f8f2f3f6a10";
+    const response = await postWebhook(eventFixture({ alertKey: "", eventId }));
+    expect(response.status).toBe(202);
+    const stored = await pool.query<{ alert_key: string | null }>(
+      "SELECT alert_key FROM ilert_alert_events WHERE event_id = $1",
+      [eventId],
+    );
+    expect(stored.rows).toEqual([{ alert_key: null }]);
+  });
+
+  test("observes only exact persisted canary lifecycle events", async () => {
+    const created = await postWebhook(eventFixture({
+      alertKey: TEST_CANARY_KEY,
+      eventId: "f57d2564-908d-40d1-89cc-bc60a0e816ec",
+    }));
+    expect(created.status).toBe(202);
+
+    const { GET } = await import("@/app/api/webhooks/ilert/route");
+    const observe = (eventType: "alert-created" | "alert-resolved") => GET(
+      new Request(
+        `https://postil.dev/api/webhooks/ilert?alertKey=${TEST_CANARY_KEY}&eventType=${eventType}&sourceId=2269078`,
+        { headers: { authorization: basicAuthorization() } },
+      ),
+    );
+    expect(await (await observe("alert-created")).json()).toEqual({ received: true });
+    expect(await (await observe("alert-resolved")).json()).toEqual({ received: false });
+
+    const resolved = await postWebhook(eventFixture({
+      alertKey: TEST_CANARY_KEY,
+      eventId: "18da024f-9d34-4a3c-8fd7-a5919b99c074",
+      eventType: "alert-resolved",
+      status: "RESOLVED",
+    }));
+    expect(resolved.status).toBe(202);
+    const resolution = await observe("alert-resolved");
+    expect(resolution.headers.get("cache-control")).toBe("no-store");
+    expect(await resolution.json()).toEqual({ received: true });
   });
 
   test("requires both a renewable CLI token and the operator GitHub allowlist", async () => {
@@ -265,6 +344,7 @@ describeDb("iLert durable operator alert stream", () => {
     );
     const names = columns.rows.map((row) => row.column_name);
     expect(names).toContain("payload_sha256");
+    expect(names).toContain("alert_key");
     expect(names).not.toContain("payload");
     expect(names).not.toContain("raw_payload");
     expect(names).not.toContain("authorization");
