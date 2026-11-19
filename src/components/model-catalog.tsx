@@ -122,11 +122,11 @@ export function ModelCatalog() {
         </tbody>
       </table>
       <p className="mt-3 text-xs text-charcoal/60">
-        Price values are a committed public snapshot from the{" "}
+        Price values are committed public snapshots from the{" "}
         <a href="https://openrouter.ai/models" rel="noopener noreferrer" className="text-rust underline">
           OpenRouter catalog
         </a>
-        , captured {captureDate}. Re-check provider pricing before committing to
+        , last updated {captureDate}. Re-check provider pricing before committing to
         a procurement number. Capability badges are maintained in this repo.
       </p>
     </div>

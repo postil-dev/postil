@@ -560,7 +560,7 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       model_used: release.hostedCliDefaultModel,
       prompt_tokens: 10,
       completion_tokens: 2,
-      cost_micros: "5",
+      cost_micros: "2",
     }]);
   });
 
@@ -666,7 +666,7 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         model_used: returnedModel ?? "server/default",
         prompt_tokens: 10,
         completion_tokens: 2,
-        cost_micros: returnedModel ? "5" : "0",
+        cost_micros: returnedModel ? "2" : "0",
       }]);
     }
   });
@@ -833,7 +833,7 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         prompt_tokens: 120,
         completion_tokens: 30,
         model_used: release.hostedCliDefaultModel,
-        cost_micros: "60",
+        cost_micros: "27",
       },
     ]);
 

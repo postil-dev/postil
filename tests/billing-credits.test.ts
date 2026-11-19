@@ -12,7 +12,8 @@ describe("billing credit calculations", () => {
   test.each([
     ["anthropic/claude-haiku-4.5", 6_000_000],
     ["openai/gpt-5-mini", 2_250_000],
-  ] as const)("prices configured scorer %s", (model, expected) => {
+    ["openai/gpt-6-luna", 600_000],
+  ] as const)("prices configured inference model %s", (model, expected) => {
     expect(calculateUsageCostMicrosForModel(model, 1_000_000, 1_000_000)).toBe(expected);
   });
 

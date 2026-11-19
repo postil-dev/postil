@@ -8,7 +8,8 @@
 // entry stays after a model leaves the docs table if usage was ever attributed
 // to its id.
 
-export const MODEL_CATALOG_CAPTURE_DATE = "2026-08-19";
+// Latest catalog update; existing rows retain their earlier price snapshots.
+export const MODEL_CATALOG_CAPTURE_DATE = "2026-11-19";
 
 export type ParamClass = "unknown" | "<40B" | "40B-200B" | ">200B";
 
@@ -120,6 +121,18 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: false,
     tested: false,
     pricePerToken: { input: 0.000000083, output: 0.000000165 },
+  },
+  {
+    // Azure standard-context route, captured from OpenRouter on 2026-11-19.
+    id: "openai/gpt-6-luna",
+    name: "GPT-6 Luna",
+    contextLength: 1_050_000,
+    vision: true,
+    openWeights: false,
+    paramClass: "unknown",
+    locallyRunnable: false,
+    tested: false,
+    pricePerToken: { input: 0.0000001, output: 0.0000005 },
   },
   {
     id: "openai/gpt-5.6-luna",
