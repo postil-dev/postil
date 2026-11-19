@@ -810,7 +810,7 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     const body = (await response.json()) as {
       usage: { prompt_tokens: number };
     };
-    expect(body.usage.prompt_tokens).toBe(120);
+    expect(body.usage.prompt_tokens).toBe(promptTokens);
 
     const usage = await pool!.query<{
       billing_scope: string;
