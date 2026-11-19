@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 import type { Pool } from "pg";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
 import { ilertEventTransport, withFallbackTransport } from "@/lib/operator-notifications";
@@ -607,7 +611,7 @@ describe("private monitoring public probes", () => {
 
 describeDb("operational review repository reconciliation", () => {
   let db: EphemeralDatabase;
-  beforeAll(async () => { db = await createEphemeralDatabase("monitor_open_heads"); }, 30_000);
+  beforeAll(async () => { db = await createEphemeralDatabase("monitor_open_heads"); }, 120_000);
   afterAll(async () => { await db?.drop(); }, 30_000);
 
   test("118 historical failures across eleven repositories clear after two current heads recover", async () => {
@@ -686,6 +690,199 @@ describeDb("operational review repository reconciliation", () => {
   });
 });
 
+describeDb("failed-job notification threshold", () => {
+  let db: EphemeralDatabase;
+  let pool: Pool;
+  beforeAll(async () => {
+    db = await createEphemeralDatabase("notification_threshold");
+    pool = db.pool;
+  }, 120_000);
+  beforeEach(async () => {
+    await pool.query("TRUNCATE private_monitor_incidents, private_monitor_incident_events, private_monitor_check_failures, private_monitor_runs, private_monitor_state, service_heartbeats RESTART IDENTITY");
+  }, 30_000);
+  afterAll(async () => { await db?.drop(); }, 30_000);
+
+  test("pages on the third recent failed job in both monitoring paths", async () => {
+    const source = readFileSync(new URL("../.github/workflows/production-monitor.yml", import.meta.url), "utf8");
+    const start = source.indexOf("            incident_found=0");
+    const end = source.indexOf("            for status in queued running; do", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const policy = source.slice(start, end).replace(/^ {12}/gm, "");
+    const directory = mkdtempSync(join(tmpdir(), "postil-failed-job-policy-"));
+    const ids: number[] = [];
+    try {
+      mkdirSync(join(directory, ".cache"));
+      for (const count of [0, 1, 2, 3, 4]) {
+        if (count > 0) {
+          const job = await pool.query<{ id: number }>(
+            `INSERT INTO jobs (kind, payload, status, run_after)
+             VALUES ('check-run-cleanup', '{}', 'failed', now()) RETURNING id`,
+          );
+          ids.push(job.rows[0]!.id);
+        }
+        const checks = await runDatabaseMonitoringChecks(pool);
+        const check = checks.find((check) => check.key === "failed-jobs")!;
+        if (count === 1) expect(checks.find((check) => check.key === "check-run-cleanup")).toMatchObject({ healthy: false });
+        expect(checks.find((check) => check.key === "worker-heartbeat")).toMatchObject({ healthy: false });
+        const expectedHealthy = count < 3;
+        expect(check.healthy).toBe(expectedHealthy);
+        const categories = ["operational_failure", "scorer_failure", "scorer_fallback", "model_fallback", "invalid_output", "failed_job"];
+        const evaluate = (category: string, value: number | null) => {
+          writeFileSync(join(directory, ".cache/metrics.out"), categories
+            .filter((candidate) => candidate !== category || value !== null)
+            .map((candidate) => `postil_review_incidents_30m{category="${candidate}"} ${candidate === category ? value : 0}`)
+            .join("\n"));
+          return spawnSync("bash", ["-c", `set -euo pipefail\n${policy}\nexit "${"${incident_found}"}"`], {
+            cwd: directory, encoding: "utf8",
+          }).status;
+        };
+        expect(evaluate("failed_job", count)).toBe(expectedHealthy ? 0 : 1);
+        if (count === 0) {
+          // Missing metrics fail closed; unrelated category policies retain their boundaries.
+          expect(evaluate("failed_job", null)).toBe(1);
+          for (const [category, limit] of [["operational_failure", 0], ["scorer_failure", 2], ["scorer_fallback", 2], ["model_fallback", 5], ["invalid_output", 2]] as const) {
+            expect(evaluate(category, limit)).toBe(0);
+            expect(evaluate(category, limit + 1)).toBe(1);
+          }
+        }
+      }
+    } finally {
+      await pool.query("DELETE FROM jobs WHERE id = ANY($1::int[])", [ids]);
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  test("keeps default worker and stuck-queue outage checks immediate", async () => {
+    const jobs = await pool.query<{ id: number }>(
+      `INSERT INTO jobs (kind, payload, status, run_after, locked_at)
+       VALUES ('check-run-cleanup', '{}', 'queued', now() - interval '31 minutes', NULL),
+              ('check-run-cleanup', '{}', 'running', now() - interval '31 minutes', now() - interval '31 minutes')
+       RETURNING id`,
+    );
+    try {
+      await recordServiceHeartbeat(pool, "worker", "threshold-worker");
+      await pool.query("UPDATE service_heartbeats SET observed_at = now() - interval '181 seconds' WHERE component = 'worker'");
+      const checks = await runDatabaseMonitoringChecks(pool);
+      for (const key of ["worker-heartbeat", "queued-job-age", "running-job-age"]) {
+        expect(checks.find((check) => check.key === key)).toMatchObject({ healthy: false });
+      }
+      expect(checks.find((check) => check.key === "failed-jobs")).toMatchObject({ healthy: true });
+    } finally {
+      await pool.query("DELETE FROM jobs WHERE id = ANY($1::int[])", [jobs.rows.map((job) => job.id)]);
+    }
+  });
+
+  for (const seed of [7, 41, 137, 2026]) {
+    test(`generated failed-job lifecycle with window expiry and legacy recovery (seed ${seed})`, async () => {
+      let random = seed;
+      const next = () => (random = (Math.imul(random, 1664525) + 1013904223) >>> 0);
+      const minute = 60_000;
+      const window = 30 * minute;
+      // The prefix guarantees isolated failures, crossing, repeated passes, exact
+      // inclusive expiry, resolution, and a new burst in every generated history.
+      const commands = [
+        { advance: 0, add: seed % 2 }, { advance: minute, add: 1 },
+        { advance: minute, add: 1 }, { advance: minute, add: 1 },
+        { advance: minute, add: 0 }, { advance: 27 * minute, add: 0 },
+        { advance: 1, add: 0 }, { advance: minute, add: 3 },
+        ...Array.from({ length: 12 }, () => ({
+          advance: [minute, 5 * minute, 31 * minute][next() % 3]!, add: next() % 5,
+        })),
+        { advance: 31 * minute, add: 0 },
+      ];
+      const jobs: { id: number; at: number }[] = [];
+      const transitions: string[] = [];
+      const delivered: string[] = [];
+      const observations: { elapsed: number; count: number; transition: string | null }[] = [];
+      let elapsed = 0;
+      let state: "open" | "resolved" | null = seed % 2 ? "open" : null;
+      let occurrences = state ? 1 : 0;
+      let firstDetected = NOW;
+      if (state) {
+        // Represents an incident delivered under the legacy one-failure rule.
+        await pool.query(
+          `INSERT INTO private_monitor_incidents
+             (key, "group", severity, summary, detail, opened_detail, state,
+              occurrence_count, first_detected_at, last_detected_at, last_notified_at, updated_at)
+           VALUES ('failed-jobs', 'queue', 'critical', 'Queue jobs are failing',
+                   '1 count observed; threshold 0.', '1 count observed; threshold 0.', 'open', 1, $1, $1, $1, $1)`,
+          [NOW],
+        );
+      }
+      const transport: OperatorNotificationTransport = { async send() { return { messageId: "synthetic-delivery" }; } };
+      try {
+        for (const command of commands) {
+          elapsed += command.advance;
+          const now = new Date(NOW.getTime() + elapsed);
+          for (let i = 0; i < command.add; i++) {
+            const job = await pool.query<{ id: number }>(
+              `INSERT INTO jobs (kind, payload, status, run_after)
+               VALUES ('check-run-cleanup', '{}', 'failed', now()) RETURNING id`,
+            );
+            jobs.push({ id: job.rows[0]!.id, at: elapsed });
+          }
+          // Freeze SQL now() within this transaction so exact 30-minute and
+          // 30-minute-plus-1ms boundaries do not depend on execution speed.
+          const client = await pool.connect();
+          let check: PrivateMonitoringCheck;
+          try {
+            await client.query("BEGIN");
+            for (const job of jobs) {
+              await client.query("UPDATE jobs SET run_after = now() - $2 * interval '1 millisecond' WHERE id = $1", [job.id, elapsed - job.at]);
+            }
+            const checks = await runDatabaseMonitoringChecks({ query: client.query.bind(client) } as unknown as Pool);
+            check = checks.find((candidate) => candidate.key === "failed-jobs")!;
+            await client.query("COMMIT");
+          } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+          } finally { client.release(); }
+          const count = jobs.filter((job) => elapsed - job.at <= window).length;
+          const unhealthy = count >= 3;
+          expect(check!.healthy).toBe(!unhealthy);
+          let transition: "opened" | "resolved" | null = null;
+          if (unhealthy) {
+            if (state !== "open") { transition = "opened"; occurrences = 0; firstDetected = now; }
+            state = "open";
+            occurrences++;
+          } else if (state === "open") { state = "resolved"; transition = "resolved"; }
+          if (transition) transitions.push(transition);
+          observations.push({ elapsed, count, transition });
+          expect(await acquirePrivateMonitorLease(pool, "history-monitor", now)).toBe(true);
+          const pass = await startPrivateMonitoringPass(pool, "history-monitor", now, now);
+          expect(pass).not.toBeNull();
+          await finishPrivateMonitoringPass(pool, pass!, [check!], now);
+          const incident = await pool.query("SELECT state, occurrence_count, first_detected_at FROM private_monitor_incidents WHERE key = 'failed-jobs'");
+          if (state) expect(incident.rows[0]).toMatchObject({ state, occurrence_count: occurrences, first_detected_at: firstDetected });
+          else expect(incident.rows).toHaveLength(0);
+          const events = await pool.query("SELECT transition FROM private_monitor_incident_events WHERE key = 'failed-jobs' ORDER BY id");
+          expect(events.rows.map((row) => row.transition)).toEqual(transitions);
+          const notifications = await claimPrivateMonitoringNotifications(pool, "history-monitor", now);
+          expect(notifications.map((notification) => notification.kind)).toEqual(transition ? [transition] : []);
+          for (const notification of notifications) {
+            delivered.push(notification.kind);
+            await deliverPrivateMonitoringNotification(pool, notification, {
+              recipient: "operator@example.test", publicOrigin: "https://postil.dev", transport, now,
+            });
+          }
+          expect(await claimPrivateMonitoringNotifications(pool, "history-monitor", now)).toHaveLength(0);
+          expect(delivered).toEqual(transitions);
+          // Collection and reconciliation preserve every terminal failed job.
+          const retained = await pool.query("SELECT count(*)::int AS count FROM jobs WHERE id = ANY($1::int[]) AND status = 'failed'", [jobs.map((job) => job.id)]);
+          expect(retained.rows[0].count).toBe(jobs.length);
+        }
+        expect(transitions.filter((transition) => transition === "opened").length).toBeGreaterThanOrEqual(2);
+        expect(state).toBe("resolved");
+        console.info(JSON.stringify({ seed, passes: commands.length, transitions, observations }));
+      } finally {
+        await pool.query("DELETE FROM jobs WHERE id = ANY($1::int[])", [jobs.map((job) => job.id)]);
+      }
+    }, 30_000);
+  }
+
+});
+
 describeDb("private monitoring durability", () => {
   let db: EphemeralDatabase;
   let pool: Pool;
@@ -695,7 +892,7 @@ describeDb("private monitoring durability", () => {
       db = await createEphemeralDatabase("private_monitoring");
       pool = db.pool;
     },
-    30_000,
+    120_000,
   );
 
   beforeEach(async () => {
@@ -1486,7 +1683,7 @@ describeDb("private monitoring durability", () => {
     }
   });
 
-  test("reports recent terminal job failures", async () => {
+  test("keeps check cleanup failures immediate below the failed-jobs paging threshold", async () => {
     const job = await pool.query<{ id: number }>(
       `INSERT INTO jobs (kind, payload, status, run_after)
        VALUES ('check-run-cleanup', '{}'::jsonb, 'failed', now())
@@ -1498,7 +1695,7 @@ describeDb("private monitoring durability", () => {
         healthy: false,
       });
       expect(checks.find((check) => check.key === "failed-jobs")).toMatchObject({
-        healthy: false,
+        healthy: true,
       });
     } finally {
       await pool.query("DELETE FROM jobs WHERE id = $1", [job.rows[0]!.id]);

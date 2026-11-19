@@ -1178,7 +1178,7 @@ export async function runDatabaseMonitoringChecks(
     // a window is a flaky upstream completion, and the scheduled GitHub
     // monitor applies the same threshold to this category.
     thresholdCheck("invalid-model-output", "provider", "critical", "Model output validates", count("invalid_outputs"), 2),
-    thresholdCheck("failed-jobs", "queue", "critical", "Queue jobs avoid terminal failure", count("failed_jobs"), 0),
+    thresholdCheck("failed-jobs", "queue", "critical", "Terminal job failures remain below three in 30 minutes", count("failed_jobs"), 2),
   ];
 }
 

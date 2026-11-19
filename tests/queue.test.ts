@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 
+import { createCheckRun, GitHubHttpError } from "@/lib/github/checks";
+
 import type { Pool, PoolClient } from "pg";
 
 import { createEphemeralDatabase, type EphemeralDatabase } from "./ephemeral-database";
@@ -1001,6 +1003,229 @@ describeDb("postgres job queue", () => {
     await enqueueJob(pool, "review", { n: 1 }, { runAfter: new Date(Date.now() + 60_000) });
     expect(await claimJob(pool, "w")).toBeNull();
     expect(await queueDepth(pool)).toBe(1);
+  });
+
+  for (const scenario of ["primary", "secondary", "retry-after", "permission"] as const) {
+    test(`GitHub rate-limit ${scenario} response reaches PostgreSQL run_after`, async () => {
+      const originalFetch = globalThis.fetch;
+      const before = Date.now();
+      const reset = Math.floor(before / 1000) + 600;
+      const headers: Record<string, string> = scenario === "primary"
+        ? { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) }
+        : scenario === "retry-after" ? { "retry-after": "180" } : {};
+      globalThis.fetch = (async () => new Response("synthetic rejection", {
+        status: scenario === "secondary" || scenario === "retry-after" ? 429 : 403, headers,
+      })) as unknown as typeof fetch;
+      let error: GitHubHttpError;
+      try {
+        error = await createCheckRun(crypto.randomUUID(), "octo/repo", "postil/review", "a".repeat(40), {
+          externalId: "postil:synthetic:review",
+        }).catch((error: unknown) => error) as GitHubHttpError;
+      } finally { globalThis.fetch = originalFetch; }
+      expect(error).toBeInstanceOf(GitHubHttpError);
+      await enqueueJob(pool, "review", { installationId: 1 });
+      const job = (await claimJob(pool, "rate-worker"))!;
+      expect(await failJob(pool, job, error.message, { retryAt: error.retryAt })).toBe("retried");
+      const row = (await pool.query("SELECT run_after, attempts, status FROM jobs WHERE id = $1", [job.id])).rows[0];
+      const minimum = scenario === "primary" ? reset * 1000 + 1000
+        : before + (scenario === "secondary" ? 60_000 : scenario === "retry-after" ? 181_000 : 30_000);
+      expect(row.run_after.getTime()).toBeGreaterThanOrEqual(minimum);
+      expect(row).toMatchObject({ attempts: 1, status: "queued" });
+      expect(await claimJob(pool, "early-worker")).toBeNull();
+    });
+  }
+
+  for (const deadline of ["absent", "invalid", "past", "short"] as const) {
+    test(`GitHub rate-limit ${deadline} deadline preserves finite backoff and exhaustion`, async () => {
+      await enqueueJob(pool, "review", { installationId: 1 });
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const job = (await claimJob(pool, "rate-worker"))!;
+        expect(job.attempts).toBe(attempt);
+        const retryAt = deadline === "absent" ? undefined : new Date(
+          deadline === "invalid" ? NaN : Date.now() + (deadline === "past" ? -60_000 : 1_000),
+        );
+        const before = Date.now();
+        expect(await failJob(pool, job, "synthetic", { retryAt })).toBe(attempt === 3 ? "failed" : "retried");
+        const row = (await pool.query("SELECT status, attempts, run_after FROM jobs WHERE id = $1", [job.id])).rows[0];
+        expect(row.attempts).toBe(attempt);
+        expect(row.run_after.getTime()).toBeGreaterThanOrEqual(before + (attempt === 3 ? 0 : backoffMs(attempt)));
+        expect(row.run_after.getTime()).toBeLessThanOrEqual(Date.now() + (attempt === 3 ? 0 : backoffMs(attempt)));
+        expect(await claimJob(pool, "early-worker")).toBeNull();
+        if (attempt < 3) await pool.query("UPDATE jobs SET run_after = now() WHERE id = $1", [job.id]);
+      }
+    });
+  }
+
+  test("GitHub rate-limit future deadline cannot extend attempts or override permanent failure", async () => {
+    for (const permanent of [false, true]) {
+      await enqueueJob(pool, "review", { installationId: 1 }, { maxAttempts: permanent ? 3 : 1 });
+      const job = (await claimJob(pool, "rate-worker"))!;
+      expect(await failJob(pool, job, "synthetic", { permanent, retryAt: new Date(Date.now() + 600_000) })).toBe("failed");
+      expect((await pool.query("SELECT status, attempts FROM jobs WHERE id = $1", [job.id])).rows[0])
+        .toEqual({ status: "failed", attempts: 1 });
+    }
+  });
+
+  test("GitHub rate-limit stale claim cannot defer or promote another owner's job", async () => {
+    const initial = { installationId: 1, githubRepoId: 99, repoFullName: "octo/rate-stale", prNumber: 41, headSha: "a".repeat(40), baseSha: "base" };
+    const id = await enqueueReviewJobOnce(pool, initial);
+    const old = (await claimJob(pool, "old-worker"))!;
+    await enqueueReviewJobOnce(pool, { ...initial, forceFullReview: true });
+    await pool.query("UPDATE jobs SET locked_by = 'new-worker', attempts = 2 WHERE id = $1", [id]);
+    const before = (await pool.query("SELECT * FROM jobs WHERE id = $1", [id])).rows[0];
+    expect(await failJob(pool, old, "late quota error", { retryAt: new Date(Date.now() + 600_000) })).toBe("lost");
+    expect(await failJob(pool, old, "late terminal quota error", { permanent: true, retryAt: new Date(Date.now() + 600_000) })).toBe("lost");
+    expect((await pool.query("SELECT * FROM jobs WHERE id = $1", [id])).rows[0]).toEqual(before);
+    expect((await pool.query("SELECT count(*)::int AS count FROM jobs")).rows[0].count).toBe(1);
+  });
+
+  for (const mode of ["transient", "exhausted", "permanent-followup"] as const) {
+    for (const installationId of [1, 2]) {
+      test(`GitHub rate-limit ${mode} successor installation ${installationId} preserves admission and failed identity`, async () => {
+        const initial = { installationId: 1, githubRepoId: 99, repoFullName: "octo/rate-successor", prNumber: 42, headSha: "b".repeat(40), baseSha: "base" };
+        const id = await enqueueReviewJobOnce(pool, initial);
+        if (mode === "exhausted") await pool.query("UPDATE jobs SET max_attempts = 1 WHERE id = $1", [id]);
+        const job = (await claimJob(pool, "rate-worker"))!;
+        await enqueueReviewJobOnce(pool, { ...initial, installationId, forceFullReview: true, sourceDeliveryId: "retained" });
+        const retryAt = new Date(Date.now() + 600_000);
+        expect(await failJob(pool, job, "synthetic quota error", {
+          retryAt, permanent: mode === "permanent-followup",
+          ...(mode === "permanent-followup" ? { failureFollowup: {
+            kind: "respond-failure-comment" as const, payload: { respondJobId: id }, maxAttempts: 5,
+          } } : {}),
+        })).toBe("coalesced");
+        const rows = (await pool.query("SELECT id, status, attempts, max_attempts, payload, run_after, last_error FROM jobs ORDER BY id")).rows;
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toMatchObject({ id: String(id), status: "failed", attempts: 1, last_error: "synthetic quota error", payload: initial });
+        expect(rows[1]).toMatchObject({ status: "queued", attempts: 0, max_attempts: job.maxAttempts, last_error: null,
+          payload: { ...initial, installationId, forceFullReview: true, sourceDeliveryId: "retained" } });
+        expect(rows[1].id).not.toBe(String(id));
+        if (installationId === 1) {
+          expect(rows[1].run_after.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+          expect(await claimJob(pool, "early-worker")).toBeNull();
+        } else expect((await claimJob(pool, "successor-worker"))?.id).toBe(Number(rows[1].id));
+      });
+    }
+  }
+
+  for (const withDeadline of [false, true]) {
+    test(`GitHub rate-limit retained successor ${withDeadline ? "short deadline keeps backoff" : "without deadline stays immediately admissible"}`, async () => {
+      const initial = { installationId: 1, githubRepoId: 99, repoFullName: "octo/rate-backoff", prNumber: 43, headSha: "c".repeat(40), baseSha: "base" };
+      await enqueueReviewJobOnce(pool, initial);
+      const job = (await claimJob(pool, "rate-worker"))!;
+      await enqueueReviewJobOnce(pool, { ...initial, forceFullReview: true });
+      const before = Date.now();
+      expect(await failJob(pool, job, "synthetic", withDeadline ? { retryAt: new Date(before + 1_000) } : {})).toBe("coalesced");
+      const row = (await pool.query("SELECT run_after FROM jobs WHERE status = 'queued'")).rows[0];
+      if (withDeadline) {
+        expect(row.run_after.getTime()).toBeGreaterThanOrEqual(before + backoffMs(1));
+        expect(await claimJob(pool, "early-worker")).toBeNull();
+      } else expect(await claimJob(pool, "successor-worker")).not.toBeNull();
+    });
+  }
+
+  for (const enabled of [true, false]) {
+    test(`GitHub rate-limit retained feedback input obeys ${enabled ? "enabled" : "disabled"} admission`, async () => {
+      const prior = (await pool.query("SELECT mode FROM review_feedback_control WHERE id = 1")).rows[0].mode;
+      try {
+        await pool.query("UPDATE review_feedback_control SET mode = 'enabled' WHERE id = 1");
+        const initial = { installationId: 1, sourceOrgId: 1, githubRepoId: 99, repoFullName: enabled ? "octo/rate-feedback-enabled" : "octo/rate-feedback-disabled", prNumber: enabled ? 44 : 45, headSha: "d".repeat(40), baseSha: "base" };
+        const id = await enqueueReviewJobOnce(pool, initial);
+        const job = (await claimJob(pool, "rate-worker"))!;
+        expect(await enqueueReviewJobOnce(pool, { ...initial, forceFullReview: true,
+          reviewFeedback: { version: 1, repository: initial.repoFullName, prNumber: initial.prNumber, headSha: initial.headSha, threads: [] },
+        })).toBe(id);
+        const payload = (await pool.query("SELECT payload FROM jobs WHERE id = $1", [id])).rows[0].payload;
+        if (!enabled) await pool.query("UPDATE review_feedback_control SET mode = 'disabled' WHERE id = 1");
+        const retryAt = new Date(Date.now() + 600_000);
+        expect(await failJob(pool, job, "synthetic quota", { retryAt })).toBe(enabled ? "coalesced" : "retried");
+        const original = (await pool.query("SELECT payload, status, attempts FROM jobs WHERE id = $1", [id])).rows[0];
+        expect(original).toMatchObject({ payload, status: enabled ? "failed" : "queued", attempts: 1 });
+        const queued = (await pool.query("SELECT kind, run_after FROM jobs WHERE status = 'queued'")).rows;
+        expect(queued).toHaveLength(1);
+        expect(queued[0].kind).toBe(enabled ? "review-feedback" : "review");
+        expect(queued[0].run_after.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+      } finally { await pool.query("UPDATE review_feedback_control SET mode = $1 WHERE id = 1", [prior]); }
+    });
+  }
+
+  for (let seed = 1; seed <= 40; seed += 1) {
+    test(`GitHub rate-limit generated ownership history seed ${seed}`, async () => {
+      let state = Math.imul(seed, 0x9e3779b1) >>> 0;
+      const next = (limit: number) => {
+        state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+        return Math.floor(state / 0x1_0000_0000 * limit);
+      };
+      const initial = { installationId: 17, githubRepoId: 99, repoFullName: "octo/generated-rate", prNumber: seed, headSha: "e".repeat(40), baseSha: "base" };
+      const id = await enqueueReviewJobOnce(pool, initial);
+      if (id === null) throw new Error("generated review was not admitted");
+      const loseClaim = next(3) === 0;
+      await pool.query("UPDATE jobs SET attempts = $2 WHERE id = $1", [id, next(loseClaim ? 2 : 3)]);
+      const originalClaim = (await claimJob(pool, "first-generated-owner"))!;
+      let claim = originalClaim;
+      if (loseClaim) {
+        await requeueJobsOwnedBy(pool, "first-generated-owner", "synthetic shutdown", ["review"], [id]);
+        claim = (await claimJob(pool, "second-generated-owner"))!;
+      }
+      const coalesce = next(2) === 0;
+      const installationId = next(2) === 0 ? initial.installationId : 23;
+      if (coalesce) await enqueueReviewJobOnce(pool, { ...initial, installationId, forceFullReview: true, sourceDeliveryId: `generated-${seed}` });
+      const permanent = next(4) === 0;
+      const deadlineKind = next(5);
+      const deadline = deadlineKind === 0 ? undefined : new Date(deadlineKind === 1 ? NaN : Date.now() + (deadlineKind === 2 ? -next(60_000) : deadlineKind === 3 ? next(2_000) : 120_000 + next(480_000)));
+      const snapshot = await pool.query("SELECT * FROM jobs ORDER BY id");
+      if (loseClaim) {
+        expect(await failJob(pool, originalClaim, "stale generated failure", { retryAt: deadline, permanent })).toBe("lost");
+        expect((await pool.query("SELECT * FROM jobs ORDER BY id")).rows).toEqual(snapshot.rows);
+      }
+      const before = Date.now();
+      const outcome = await failJob(pool, claim, "current generated failure", { retryAt: deadline, permanent });
+      const expected = coalesce ? "coalesced" : permanent || claim.attempts >= claim.maxAttempts ? "failed" : "retried";
+      expect(outcome).toBe(expected);
+      const rows = (await pool.query("SELECT id, status, attempts, max_attempts, payload, run_after, locked_by FROM jobs ORDER BY id")).rows;
+      expect(rows).toHaveLength(coalesce ? 2 : 1);
+      expect(rows[0].attempts).toBe(claim.attempts);
+      expect(rows[0].locked_by).toBeNull();
+      expect(rows[0].status).toBe(expected === "retried" ? "queued" : "failed");
+      const queued = rows.find(row => row.status === "queued");
+      if (!queued) return;
+      if (coalesce) {
+        expect(queued.attempts).toBe(0);
+        expect(queued.max_attempts).toBe(claim.maxAttempts);
+        expect(queued.payload.installationId).toBe(installationId);
+        expect(rows[0].payload).toMatchObject(initial);
+        expect(rows[0].payload.sourceDeliveryId).toBeUndefined();
+      }
+      const hasDeadline = deadline !== undefined && Number.isFinite(deadline.getTime());
+      const inheritsDeadline = !coalesce || installationId === initial.installationId;
+      if (!coalesce || hasDeadline && inheritsDeadline) {
+        const lower = Math.max(before + backoffMs(claim.attempts), hasDeadline && inheritsDeadline ? deadline!.getTime() : 0);
+        const upper = Math.max(Date.now() + backoffMs(claim.attempts), hasDeadline && inheritsDeadline ? deadline!.getTime() + 1000 : 0);
+        expect(queued.run_after.getTime()).toBeGreaterThanOrEqual(lower);
+        expect(queued.run_after.getTime()).toBeLessThanOrEqual(upper);
+        expect(await claimJob(pool, "too-early-generated-owner")).toBeNull();
+      } else {
+        expect((await claimJob(pool, "immediate-generated-successor"))?.id).toBe(Number(queued.id));
+      }
+    });
+  }
+
+  test("GitHub rate-limit spreads a shared reset within one second", async () => {
+    const deadline = new Date(Date.now() + 600_000);
+    const originalDeadline = deadline.getTime();
+    const times = [];
+    for (let i = 0; i < 8; i += 1) {
+      const id = await enqueueJob(pool, "review", { installationId: 17 });
+      const job = (await claimJob(pool, `spread-worker-${i}`))!;
+      expect(await failJob(pool, job, "shared quota reset", { retryAt: deadline })).toBe("retried");
+      const row = (await pool.query("SELECT run_after FROM jobs WHERE id = $1", [id])).rows[0];
+      times.push(row.run_after.getTime());
+    }
+    expect(new Set(times).size).toBeGreaterThan(1);
+    expect(Math.min(...times)).toBeGreaterThanOrEqual(deadline.getTime());
+    expect(Math.max(...times)).toBeLessThanOrEqual(deadline.getTime() + 1000);
+    expect(deadline.getTime()).toBe(originalDeadline);
+    expect(await claimJob(pool, "early-shared-reset")).toBeNull();
   });
 
   test("failJob requeues with backoff until attempts are exhausted", async () => {
