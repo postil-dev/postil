@@ -12,9 +12,28 @@ describe("billing credit calculations", () => {
   test.each([
     ["anthropic/claude-haiku-4.5", 6_000_000],
     ["openai/gpt-5-mini", 2_250_000],
-    ["openai/gpt-6-luna", 600_000],
+    ["openai/gpt-6-luna", 950_000],
   ] as const)("prices configured inference model %s", (model, expected) => {
     expect(calculateUsageCostMicrosForModel(model, 1_000_000, 1_000_000)).toBe(expected);
+  });
+
+  test.each([
+    [128_000, 8_000, 16_800],
+    [271_999, 1_000, 27_700],
+    [272_000, 1_000, 55_150],
+  ] as const)("prices Luna's prompt threshold at %i input tokens", (input, output, expected) => {
+    expect(calculateUsageCostMicrosForModel("openai/gpt-6-luna", input, output)).toBe(expected);
+  });
+
+  test("preserves an already recorded Luna charge across rate tiers", () => {
+    expect(usageEventCostMicros({
+      id: 1,
+      promptTokens: 272_000,
+      completionTokens: 1_000,
+      modelUsed: "openai/gpt-6-luna",
+      costMicros: 27_700,
+      createdAt: new Date("2026-11-19T00:00:00Z"),
+    })).toBe(27_700);
   });
 
   test("snapshots sub-cent usage in USD micros from the model catalog", () => {

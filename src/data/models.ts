@@ -16,6 +16,11 @@ export type ParamClass = "unknown" | "<40B" | "40B-200B" | ">200B";
 export interface ModelPrice {
   input: number;
   output: number;
+  longContext?: {
+    fromPromptTokens: number;
+    input: number;
+    output: number;
+  };
 }
 
 export interface CatalogModel {
@@ -134,7 +139,11 @@ export const MODELS: CatalogModel[] = [
     paramClass: "unknown",
     locallyRunnable: false,
     tested: false,
-    pricePerToken: { input: 0.0000001, output: 0.0000005 },
+    pricePerToken: {
+      input: 0.0000001,
+      output: 0.0000005,
+      longContext: { fromPromptTokens: 272_000, input: 0.0000002, output: 0.00000075 },
+    },
     pricingNote: "Below 272,000 prompt tokens. At 272,000 or more: $0.20 input / $0.75 output per 1M tokens.",
   },
   {

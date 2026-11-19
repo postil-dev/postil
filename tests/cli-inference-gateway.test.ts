@@ -793,8 +793,11 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     expect(upstreamCalled).toBe(false);
   });
 
-  test("a successful call records a private_hosted usage_events row and reconciles the reservation", async () => {
-    mockUpstreamSuccess(120, 30);
+  test.each([
+    [120, 30, "27"],
+    [272_000, 8_000, "60400"],
+  ] as const)("a successful call records usage and reconciles the reservation at %i prompt tokens", async (promptTokens, completionTokens, costMicros) => {
+    mockUpstreamSuccess(promptTokens, completionTokens);
     const { POST } =
       await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
@@ -830,10 +833,10 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         trigger_source: "unknown",
         repository_id: null,
         review_id: null,
-        prompt_tokens: 120,
-        completion_tokens: 30,
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
         model_used: release.hostedCliDefaultModel,
-        cost_micros: "27",
+        cost_micros: costMicros,
       },
     ]);
 
