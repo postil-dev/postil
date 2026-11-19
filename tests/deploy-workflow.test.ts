@@ -100,7 +100,9 @@ function runStep(id: string, machines = fleet(), snapshot = fleet(), secrets = i
               touch "$RUNNER_TEMP/list-observed"
               cat "$RUNNER_TEMP/machines.json"
             fi ;;
-          "secrets list") cat "$RUNNER_TEMP/secrets.json" ;;
+          "secrets list")
+            [[ "\${TEST_SECRETS_READ_FAIL:-0}" != "1" ]] || return 1
+            cat "$RUNNER_TEMP/secrets.json" ;;
           "secrets import")
             [[ "$*" == "secrets import --stage --app postil-web" ]] || return 98
             cat > "$RUNNER_TEMP/staged-input"
@@ -295,7 +297,7 @@ describe("managed deployment contract", () => {
       expect(rejected.code).not.toBe(0);
       expect(rejected.updates).toBe("");
     }
-    expect(runStep("verify", fleet(), fleet(), partialSecrets).code).not.toBe(0);
+    expect(runStep("verify", fleet(), fleet(), partialSecrets).code).toBe(0);
   });
 
   test("no peer replacement follows missing acceptance, dependency failure or mixed-fleet drift", () => {
@@ -975,21 +977,94 @@ describe("managed deployment contract", () => {
     }
   });
 
-  test("successful verification requires the staged flag to deploy with its original digest", () => {
+  test("successful verification accepts the unchanged staged flag after active runtime proof", () => {
     const sourceSecrets = [...secretMetadata, stagedFeedback];
-    const accepted = runStep("verify", fleet(), fleet(), [...secretMetadata, deployedFeedback], undefined,
-      fleet(), undefined, {}, sourceSecrets);
-    expect(accepted.code).toBe(0);
+    for (const status of ["Partial", "Deployed"]) {
+      const observed = [...secretMetadata, { ...deployedFeedback, status }];
+      const accepted = runStep("verify", fleet(), fleet(), observed, undefined,
+        fleet(), undefined, {}, sourceSecrets);
+      expect(accepted.code, accepted.error).toBe(0);
+      const enabled = fleet(); Object.assign(enabled[3]!, { feedback_runtime_on: true });
+      const rejected = runStep("verify", enabled, fleet(), observed, undefined,
+        fleet(), undefined, {}, sourceSecrets);
+      expect(rejected.code).not.toBe(0);
+    }
     for (const changed of [
       sourceSecrets,
       [...secretMetadata, { ...deployedFeedback, digest: "changed-digest" }],
+      [...secretMetadata, { ...deployedFeedback, status: "Unknown" }],
       [{ ...secretMetadata[0]!, status: "Staged" }, deployedFeedback],
+      [{ ...secretMetadata[0]!, status: "Partial" }, deployedFeedback],
+      [deployedFeedback, deployedFeedback],
       [...secretMetadata, deployedFeedback, { name: "EXTRA", digest: "extra-digest", status: "Deployed" }],
     ]) {
       const result = runStep("verify", fleet(), fleet(), changed, undefined, fleet(), undefined, {}, sourceSecrets);
       expect(result.code).not.toBe(0);
     }
   });
+
+  test("generated captured secret metadata permits only the final verified transition", () => {
+    const feedbackName = stagedFeedback.name;
+    const byName = (entries: typeof secretMetadata) => [...entries].sort((a, b) => a.name.localeCompare(b.name));
+    const rotate = (entries: typeof secretMetadata, offset: number) =>
+      [...entries.slice(offset), ...entries.slice(0, offset)];
+
+    // Each source is a valid secret-contract capture, including sorted metadata.
+    for (let seed = 0; seed < 6; seed++) {
+      const feedback = { ...stagedFeedback, status: seed % 3 === 0 ? "Deployed" : "Staged" };
+      const extras = Array.from({ length: 1 + seed % 3 }, (_, index) => ({
+        name: `GENERATED_${seed}_${index}`, digest: `digest-${seed}-${index}`, status: "Deployed",
+      }));
+      const source = byName([...secretMetadata, feedback, ...extras]);
+      const statuses = feedback.status === "Staged" ? ["Partial", "Deployed"] : ["Deployed"];
+      for (const status of statuses) {
+        const observed = rotate(source.map(entry => entry.name === feedbackName
+          ? { ...entry, status } : { ...entry }), (seed + 1) % source.length);
+        const result = runStep("verify", fleet(), fleet(), observed, undefined, fleet(), undefined, {}, source);
+        expect(result.code, `seed=${seed} status=${status}: ${result.error}`).toBe(0);
+      }
+    }
+
+    const source = byName([...secretMetadata, stagedFeedback,
+      { name: "GENERATED_OTHER", digest: "other-digest", status: "Deployed" }]);
+    const accepted = source.map(entry => entry.name === feedbackName
+      ? { ...entry, status: "Partial" } : { ...entry });
+    const feedbackIndex = accepted.findIndex(entry => entry.name === feedbackName);
+    const otherIndex = accepted.findIndex(entry => entry.name === "GENERATED_OTHER");
+    const drift = [
+      { label: "feedback stays staged", entries: source },
+      { label: "feedback digest", entries: accepted.map((entry, index) => index === feedbackIndex ? { ...entry, digest: "changed" } : entry) },
+      { label: "feedback unknown status", entries: accepted.map((entry, index) => index === feedbackIndex ? { ...entry, status: "Unknown" } : entry) },
+      { label: "unrelated digest", entries: accepted.map((entry, index) => index === otherIndex ? { ...entry, digest: "changed" } : entry) },
+      { label: "unrelated status", entries: accepted.map((entry, index) => index === otherIndex ? { ...entry, status: "Partial" } : entry) },
+      { label: "unrelated name", entries: accepted.map((entry, index) => index === otherIndex ? { ...entry, name: "RENAMED" } : entry) },
+      { label: "duplicate", entries: [...accepted, accepted[otherIndex]!] },
+      { label: "extra", entries: [...accepted, { name: "EXTRA", digest: "extra", status: "Deployed" }] },
+      { label: "missing", entries: accepted.filter((_, index) => index !== otherIndex) },
+      { label: "empty name", entries: accepted.map((entry, index) => index === otherIndex ? { ...entry, name: "" } : entry) },
+      { label: "empty digest", entries: accepted.map((entry, index) => index === otherIndex ? { ...entry, digest: "" } : entry) },
+      { label: "empty status", entries: accepted.map((entry, index) => index === otherIndex ? { ...entry, status: "" } : entry) },
+    ];
+    for (const { label, entries } of drift) {
+      const result = runStep("verify", fleet(), fleet(), rotate(entries, 1), undefined, fleet(), undefined, {}, source);
+      expect(result.code, label).not.toBe(0);
+      expect(result.updates, label).toBe("");
+    }
+    const readFailure = runStep("verify", fleet(), fleet(), accepted, undefined, fleet(), undefined,
+      { TEST_SECRETS_READ_FAIL: "1" }, source);
+    expect(readFailure.code).not.toBe(0);
+    const runtimeOn = fleet(); Object.assign(runtimeOn[3]!, { feedback_runtime_on: true });
+    const noRuntimeProof = runStep("verify", runtimeOn, fleet(), accepted, undefined, runtimeOn, undefined, {}, source);
+    expect(noRuntimeProof.code).not.toBe(0);
+    expect(noRuntimeProof.stdout).toContain("target machine did not prove feedback runtime is off");
+
+    const rollbackCondition = steps.find(step => step.id === "rollback") as { if: string };
+    expect(rollbackCondition.if).toContain("steps.verify.outcome == 'failure'");
+    expect(rollbackCondition.if).toContain("steps.deploy.outputs.attempted == 'true'");
+    const restored = runStep("rollback", mixedFleet(), fleet(), accepted, undefined, mixedFleet(), undefined, {}, source);
+    expect(restored.code, restored.error).toBe(0);
+    expect(restored.updates).toContain("machine update");
+  }, 30_000);
 
   test("verification and activation reject deployed Machine identity drift", () => {
     const changed = fleet(); changed[4]!.id = "a5";

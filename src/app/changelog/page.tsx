@@ -35,6 +35,22 @@ const LABEL_STYLE: Record<Change["label"], string> = {
 
 const RELEASES: Release[] = [
   {
+    version: "0.9.22",
+    date: "November 19, 2026",
+    summary:
+      "CLI v0.9.22 accepts valid empty-file and rename-only diffs.",
+    changes: [
+      {
+        label: "Fixed",
+        text: "Reconstructed diffs accept complete markers for empty additions, deletions and renames without text hunks. Malformed change sections still fail validation.",
+      },
+      {
+        label: "Changed",
+        text: "The default review model is GPT-6 Luna.",
+      },
+    ],
+  },
+  {
     version: "0.9.21",
     date: "November 7, 2026",
     summary:

@@ -76,7 +76,7 @@ describe("hosted provider preflight", () => {
       fetchImpl: async (_input, init) => {
         observedBody = JSON.parse(String(init?.body));
         return Response.json({
-          model: "openai/gpt-5.6-luna",
+          model: "openai/gpt-6-luna",
           provider: "Azure",
           choices: [{ finish_reason: "stop", message: { content: "ready" } }],
           usage: {
@@ -92,7 +92,7 @@ describe("hosted provider preflight", () => {
     expect(profile).toEqual({
       apiBase: "https://openrouter.ai/api/v1",
       apiFormat: "openai-compatible",
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
       providerName: "Azure",
       providerRoute: "azure/eu",
       reasoningEffort: "low",
@@ -105,7 +105,7 @@ describe("hosted provider preflight", () => {
       messages: [{ role: "user", content: "Reply with exactly: ready" }],
       max_tokens: 128,
       temperature: 0.1,
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
       reasoning: { effort: "low" },
       provider: {
         data_collection: "deny",
@@ -126,7 +126,7 @@ describe("hosted provider preflight", () => {
         requestBody,
         fetchImpl: async () =>
           Response.json({
-            model: "openai/gpt-5.6-luna",
+            model: "openai/gpt-6-luna",
             provider: "OpenAI",
             choices: [
               { finish_reason: "stop", message: { content: "ready" } },

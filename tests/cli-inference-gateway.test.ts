@@ -50,7 +50,7 @@ test("resolves and applies the complete managed gateway policy", async () => {
   expect(profile).toEqual({
     apiBase: "https://openrouter.ai/api/v1",
     apiFormat: "openai-compatible",
-    model: "openai/gpt-5.6-luna",
+    model: "openai/gpt-6-luna",
     providerName: "Azure",
     providerRoute: "azure/eu",
     reasoningEffort: "low",
@@ -78,7 +78,7 @@ test("resolves and applies the complete managed gateway policy", async () => {
     messages: [{ role: "user", content: "review" }],
     max_tokens: 8000,
     temperature: 0.1,
-    model: "openai/gpt-5.6-luna",
+    model: "openai/gpt-6-luna",
     reasoning: { effort: "low" },
     provider: {
       data_collection: "deny",
@@ -560,7 +560,7 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
       model_used: release.hostedCliDefaultModel,
       prompt_tokens: 10,
       completion_tokens: 2,
-      cost_micros: "5",
+      cost_micros: "2",
     }]);
   });
 
@@ -666,7 +666,7 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         model_used: returnedModel ?? "server/default",
         prompt_tokens: 10,
         completion_tokens: 2,
-        cost_micros: returnedModel ? "5" : "0",
+        cost_micros: returnedModel ? "2" : "0",
       }]);
     }
   });
@@ -793,8 +793,11 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     expect(upstreamCalled).toBe(false);
   });
 
-  test("a successful call records a private_hosted usage_events row and reconciles the reservation", async () => {
-    mockUpstreamSuccess(120, 30);
+  test.each([
+    [120, 30, "27"],
+    [272_000, 8_000, "60400"],
+  ] as const)("a successful call records usage and reconciles the reservation at %i prompt tokens", async (promptTokens, completionTokens, costMicros) => {
+    mockUpstreamSuccess(promptTokens, completionTokens);
     const { POST } =
       await import("@/app/api/inference/v1/chat/completions/route");
     const orgId = await createOrgWithHostedEntitlement();
@@ -807,7 +810,7 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
     const body = (await response.json()) as {
       usage: { prompt_tokens: number };
     };
-    expect(body.usage.prompt_tokens).toBe(120);
+    expect(body.usage.prompt_tokens).toBe(promptTokens);
 
     const usage = await pool!.query<{
       billing_scope: string;
@@ -830,10 +833,10 @@ describeDb("POST /api/inference/v1/chat/completions", () => {
         trigger_source: "unknown",
         repository_id: null,
         review_id: null,
-        prompt_tokens: 120,
-        completion_tokens: 30,
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
         model_used: release.hostedCliDefaultModel,
-        cost_micros: "60",
+        cost_micros: costMicros,
       },
     ]);
 

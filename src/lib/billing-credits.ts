@@ -105,8 +105,11 @@ export function calculateUsageCostMicrosForModel(
   completionTokens: number,
 ): number | null {
   if (!modelUsed) return null;
-  const price = MODEL_PRICES.get(modelUsed);
-  if (!price) return null;
+  const modelPrice = MODEL_PRICES.get(modelUsed);
+  if (!modelPrice) return null;
+  const price = modelPrice.longContext && promptTokens >= modelPrice.longContext.fromPromptTokens
+    ? modelPrice.longContext
+    : modelPrice;
   const dollars = promptTokens * price.input + completionTokens * price.output;
   if (dollars <= 0) return 0;
   return Math.ceil(dollars * 1_000_000 - 1e-9);
