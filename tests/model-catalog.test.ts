@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import benchResults from "@/data/bench-results.json";
 import { MODEL_CATALOG_CAPTURE_DATE, MODELS } from "@/data/models";
 import sitemap from "@/app/sitemap";
+import { ModelCatalog } from "@/components/model-catalog";
+import { calculateUsageCostMicrosForModel } from "@/lib/billing-credits";
 
 describe("model catalog evidence", () => {
+  test("shows Luna context pricing tiers while hosted usage keeps its bounded rate", () => {
+    const html = renderToStaticMarkup(ModelCatalog());
+    expect(html).toContain("Below 272,000 prompt tokens.");
+    expect(html).toContain("At 272,000 or more: $0.20 input / $0.75 output per 1M tokens.");
+    expect(calculateUsageCostMicrosForModel("openai/gpt-6-luna", 128_000, 8_000)).toBe(16_800);
+  });
+
   test("marks only checked-in bench models as tested", () => {
     // The bench scores models the catalogue does not carry, so this is a
     // subset rather than an equality: a `tested` badge must be backed by a

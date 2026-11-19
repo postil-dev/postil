@@ -31,6 +31,8 @@ export interface CatalogModel {
   tested: boolean;
   /** Public OpenRouter price per token for docs display. */
   pricePerToken: ModelPrice;
+  /** Conditions or tiers that qualify the displayed price. */
+  pricingNote?: string;
 }
 
 export const MODELS: CatalogModel[] = [
@@ -133,6 +135,7 @@ export const MODELS: CatalogModel[] = [
     locallyRunnable: false,
     tested: false,
     pricePerToken: { input: 0.0000001, output: 0.0000005 },
+    pricingNote: "Below 272,000 prompt tokens. At 272,000 or more: $0.20 input / $0.75 output per 1M tokens.",
   },
   {
     id: "openai/gpt-5.6-luna",

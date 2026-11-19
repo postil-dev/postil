@@ -116,6 +116,9 @@ export function ModelCatalog() {
               </td>
               <td className="border-b border-stone py-3 pr-3 align-top">
                 <PriceCell price={model.pricePerToken} />
+                {model.pricingNote && (
+                  <p className="mt-1 text-xs text-charcoal/70">{model.pricingNote}</p>
+                )}
               </td>
             </tr>
           ))}
